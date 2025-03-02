@@ -74,22 +74,68 @@ fn modify_asm(unit: &mut asm::Asm, rand_num: i32) {
 // Set exit code of 102 after 101 to denote that the test skipped.
 const SKIP_TEST: i32 = 102;
 
-/// Tests write_c.
+// /// Tests write_c.
+// pub fn test_write_c(path: &Path) {
+//     assert_eq!(path.extension(), Some(std::ffi::OsStr::new("c")));
+//     let unit = Parse
+//         .translate(&path)
+//         .unwrap_or_else(|_| panic!("parse failed {}", path.display()));
+
+//     let temp_dir = tempdir().expect("temp dir creation failed");
+//     let temp_file_path = temp_dir.path().join("temp.c");
+//     let mut temp_file = File::create(&temp_file_path).unwrap();
+
+//     write(&unit, &mut temp_file).unwrap();
+
+//     let new_unit = Parse
+//         .translate(&temp_file_path.as_path())
+//         .expect("parse failed while parsing the output from implemented printer");
+
+//     if !unit.is_equiv(&new_unit) {
+//         let mut buf = String::new();
+//         // FIXME: For some reason we cannot reuse `temp_file`.
+//         let _ = File::open(&temp_file_path)
+//             .unwrap()
+//             .read_to_string(&mut buf)
+//             .unwrap();
+
+//         panic!("[write-c] Failed to correctly write {path:?}.\n\n[incorrect result]\n\n{buf}");
+//     }
+// }
+
+use std::path::PathBuf;
+
 pub fn test_write_c(path: &Path) {
     assert_eq!(path.extension(), Some(std::ffi::OsStr::new("c")));
     let unit = Parse
         .translate(&path)
         .unwrap_or_else(|_| panic!("parse failed {}", path.display()));
 
+    println!("translation unit:\n{:?}\n", unit); // Prof. Recommendation
+
     let temp_dir = tempdir().expect("temp dir creation failed");
     let temp_file_path = temp_dir.path().join("temp.c");
     let mut temp_file = File::create(&temp_file_path).unwrap();
 
+    // println!("Temporary file path: {}", temp_file_path.display()); // ME
+
     write(&unit, &mut temp_file).unwrap();
+    println!("success to write");
+
+    // 🔹 기존 `HW1_debug` 폴더에 복사
+    let debug_dir = PathBuf::from(
+        "/home/hanjeongjin/Workspace_ubuntu/cs420_ubuntu/kecc-private/examples/HW1_debug",
+    ); // ME
+    let debug_file_path = debug_dir.join("hw1_debug.c"); // ME
+
+    let _ =
+        fs::copy(&temp_file_path, &debug_file_path).expect("Failed to copy temp file to HW1_debug"); // ME
 
     let new_unit = Parse
         .translate(&temp_file_path.as_path())
         .expect("parse failed while parsing the output from implemented printer");
+
+    println!("translation new_unit:\n{:?}\n", new_unit); // Prof. Recommendation
 
     if !unit.is_equiv(&new_unit) {
         let mut buf = String::new();
@@ -99,7 +145,8 @@ pub fn test_write_c(path: &Path) {
             .read_to_string(&mut buf)
             .unwrap();
 
-        panic!("[write-c] Failed to correctly write {path:?}.\n\n[incorrect result]\n\n{buf}");
+        // panic!("[write-c] Failed to correctly write {path:?}.\n\n[incorrect result]\n\n{buf}");
+        panic!("[write-c] Failed to correctly write {path:?}.\n\n[incorrect result]\n\n");
     }
 }
 

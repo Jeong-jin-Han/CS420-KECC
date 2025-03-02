@@ -87,10 +87,18 @@ const ASMGEN_SMALL_TEST_IGNORE_LIST: [&str; 12] = [
 fn test_examples_write_c() {
     println!("[testing write_c for \"examples/c/{HELLO_MAIN}.c\"]");
     test_write_c(Path::new(&format!("examples/c/{HELLO_MAIN}.c")));
+
+    println!("[testing write_c for \"examples/HW1_fuzz_c/me_test_polished.c\"]");
+    test_write_c(Path::new(&format!(
+        "examples/HW1_fuzz_c/me_test_polished.c"
+    )));
+    // println!("[testing write_c for \"examples/me_fuzz_c/test_polished.c\"]");
+    // test_write_c(Path::new(&format!("examples/me_fuzz_c/test_polished.c")));
+
     test_dir(Path::new("examples/c"), OsStr::new("c"), |path| {
         if !path.to_str().unwrap().contains(HELLO_MAIN) {
             println!("[testing write_c for {path:?}]");
-            test_write_c(path);
+            test_write_c(path)
         }
     });
 }
