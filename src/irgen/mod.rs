@@ -374,10 +374,24 @@ impl Irgen {
 
         // Creates the end block
         let ret = signature.ret.set_const(false);
-        let value = if ret == ir::Dtype::unit() {
+        // let value = if ret == ir::Dtype::unit() {
+        //     ir::Operand::constant(ir::Constant::unit())
+        // } else if ret == ir::Dtype::INT {
+        //     // If "main" function, default return value is `0` when return type is `int`
+        //     if name == "main" {
+        //         // ir::Operand::constant(ir::Constant::int(0, ret))
+        //         ir::Operand::constant(ir::Constant::int(0, ret))
+        //     } else {
+        //         ir::Operand::constant(ir::Constant::undef(ret))
+        //     }
+        // } else {
+        //     ir::Operand::constant(ir::Constant::undef(ret))
+        // };
+        let value = if let Some(ret_value) = context.return_value.clone() {
+            ret_value
+        } else if ret == ir::Dtype::unit() {
             ir::Operand::constant(ir::Constant::unit())
         } else if ret == ir::Dtype::INT {
-            // If "main" function, default return value is `0` when return type is `int`
             if name == "main" {
                 ir::Operand::constant(ir::Constant::int(0, ret))
             } else {
@@ -452,6 +466,7 @@ struct Context {
     bid: ir::BlockId,
     /// Current instructions of the block.
     instrs: Vec<Named<ir::Instruction>>,
+    return_value: Option<ir::Operand>, // me
 }
 
 impl Context {
@@ -460,6 +475,7 @@ impl Context {
         Self {
             bid,
             instrs: Vec::new(),
+            return_value: None, // me
         }
     }
 
@@ -546,6 +562,14 @@ impl IrgenFunc<'_> {
         }
     }
 
+    // fn remove_block(&mut self) -> Option<ir::BlockId> {
+    //     if let Some((&last_bid, _)) = self.blocks.iter().rev().next() {
+    //         let _unused = self.blocks.remove(&last_bid);
+    //         return Some(last_bid);
+    //     }
+    //     None
+    // }
+
     /// Enter a scope and create a new symbol table entry, i.e, we are at a `{` in the function.
     fn enter_scope(&mut self) {
         self.symbol_table.push(HashMap::new());
@@ -590,8 +614,123 @@ impl IrgenFunc<'_> {
         bid_continue: Option<ir::BlockId>,
         bid_break: Option<ir::BlockId>,
     ) -> Result<(), IrgenError> {
-        todo!()
+        // todo!()
+        match stmt {
+            // 1️⃣ Block Statement (Compound Statement)
+            Statement::Compound(compound_stmt) => {
+                self.enter_scope(); // 새 스코프 생성
+                for inner_stmt in compound_stmt {
+                    if let BlockItem::Statement(inner_stmt) = &inner_stmt.node {
+                        self.translate_stmt(&inner_stmt.node, context, bid_continue, bid_break)?;
+                    }
+                }
+                self.exit_scope(); // 스코프 종료
+            }
+            Statement::Return(return_stmt) => {
+                let ret_value = if let Some(expr) = return_stmt {
+                    let translated = self.translate_expr(&expr.node, context)
+                        .map_err(|e| IrgenError::new("Error in return expression".to_string(), e))?;
+                    println!("Translated return value: {:?}", translated); // 디버깅 로그 추가
+            
+                    // ✅ 변환된 값을 `context.return_value`에 저장
+                    context.return_value = Some(translated.clone());
+            
+                    translated
+                } else {
+                    ir::Operand::constant(ir::Constant::unit())
+                };
+            
+            }
+            _ => todo!()
+        }
+        
+        Ok(())
+        
     }
+
+
+    fn translate_expr(
+        &mut self,
+        expr: &Expression,
+        context: &mut Context,
+    ) -> Result<ir::Operand, IrgenErrorMessage> {
+        match expr {
+            // 1️⃣ 리터럴(Constant) 변환
+            Expression::Constant(constant) => {
+                let const_value = ir::Constant::try_from(&constant.node)
+                    .map_err(|_| IrgenErrorMessage::Misc {
+                        message: "Invalid constant".to_string(),
+                    })?;
+                println!("const_value: {}", const_value);
+                Ok(ir::Operand::constant(const_value))
+            }
+    
+            // 2️⃣ 변수 참조 (Identifier)
+            // Expression::Identifier(ident) => {
+            //     let var_name = ident.node.name.clone();
+            //     if let Some(operand) = self.lookup_variable(&var_name) {
+            //         Ok(operand)
+            //     } else {
+            //         Err(IrgenErrorMessage::Misc {
+            //             message: format!("Undefined variable `{}`", var_name),
+            //         })
+            //     }
+            // }
+    
+            // 3️⃣ 이항 연산(Binary Operator)
+            // Expression::BinaryOperator(bin_op) => {
+            //     let lhs = self.translate_expr(&bin_op.node.lhs.node, context)?;
+            //     let rhs = self.translate_expr(&bin_op.node.rhs.node, context)?;
+    
+            //     let instr = ir::Instruction::BinOp {
+            //         op: bin_op.node.operator.node.clone(),
+            //         lhs,
+            //         rhs,
+            //         dtype: lhs.dtype(), // 결과 타입은 lhs와 동일하다고 가정
+            //     };
+    
+            //     context.insert_instruction(instr)
+            // }
+    
+            // 4️⃣ 단항 연산(Unary Operator)
+            // Expression::UnaryOperator(unary_op) => {
+            //     let operand = self.translate_expr(&unary_op.node.operand.node, context)?;
+    
+            //     let instr = ir::Instruction::UnaryOp {
+            //         op: unary_op.node.operator.node.clone(),
+            //         operand,
+            //         dtype: operand.dtype(),
+            //     };
+    
+            //     context.insert_instruction(instr)
+            // }
+    
+            // 5️⃣ 함수 호출(Call)
+            Expression::Call(call_expr) => {
+                let callee = self.translate_expr(&call_expr.node.callee.node, context)?;
+                let args: Result<Vec<_>, _> = call_expr
+                    .node
+                    .arguments
+                    .iter()
+                    .map(|arg| self.translate_expr(&arg.node, context))
+                    .collect();
+    
+                let instr = ir::Instruction::Call {
+                    callee,
+                    args: args?,
+                    return_type: ir::Dtype::unit(), // 기본적으로 unit()을 반환, 실제 타입은 추후 결정
+                };
+    
+                context.insert_instruction(instr)
+            }
+    
+            _ => Err(IrgenErrorMessage::Misc {
+                message: "Unsupported expression type".to_string(),
+            }),
+        }
+    }
+    
+
 
     /// Translate initial parameter declarations of the functions to IR.
     ///
@@ -666,7 +805,39 @@ impl IrgenFunc<'_> {
         name_of_params: &[String],
         context: &mut Context,
     ) -> Result<(), IrgenErrorMessage> {
-        todo!()
+    // todo!()
+    // 매개변수 개수 확인
+    if signature.params.len() != name_of_params.len() {
+        return Err(IrgenErrorMessage::Misc {
+            message: "Mismatched parameter count".to_string(),
+        });
+    }
+
+    // 매개변수마다 처리
+    for (i, param_name) in name_of_params.iter().enumerate() {
+        let param_type = &signature.params[i];
+
+        // 1. `alloc`을 통해 로컬 변수 확보
+        let alloc_name = format!("%l{}:{}", i, param_name);
+        let alloc_reg = self.insert_alloc(Named::new(Some(alloc_name.clone()), param_type.clone()));
+
+        // 2. `phi` 노드 추가 (함수 시작 시 전달되는 값)
+        let phi_name = format!("%b{}:p{}:{}", bid_init.0, i, param_name);
+        let phi_value = ir::Operand::register(ir::RegisterId::arg(bid_init, i), param_type.clone());
+        self.phinodes_init.push(Named::new(Some(phi_name), param_type.clone()));
+
+        // 3. `store` 명령어 추가 (매개변수를 alloc한 메모리에 저장)
+        let store_instr = ir::Instruction::Store {
+            ptr: ir::Operand::register(alloc_reg, param_type.clone()),
+            value: phi_value.clone(),
+        };
+        let unused_result= context.insert_instruction(store_instr)?;
+
+        // 4. Context에 변수 추가 (이후 참조 가능하도록)
+        self.insert_symbol_table_entry(param_name.clone(), ir::Operand::register(alloc_reg, param_type.clone()))?;
+    }
+    Ok(())
+
     }
 }
 
