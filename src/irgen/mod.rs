@@ -40,6 +40,7 @@ use core::{fmt, mem};
 use std::collections::{BTreeMap, HashMap};
 use std::ops::Deref;
 
+use ir::JumpArg;
 use itertools::izip;
 use lang_c::ast::*;
 use lang_c::driver::Parse;
@@ -400,6 +401,7 @@ impl Irgen {
         } else {
             ir::Operand::constant(ir::Constant::undef(ret))
         };
+        println!("Irgen | before blockexit {:?}", value);
 
         // Last Block of the function
         irgen.insert_block(context, ir::BlockExit::Return { value });
@@ -562,13 +564,6 @@ impl IrgenFunc<'_> {
         }
     }
 
-    // fn remove_block(&mut self) -> Option<ir::BlockId> {
-    //     if let Some((&last_bid, _)) = self.blocks.iter().rev().next() {
-    //         let _unused = self.blocks.remove(&last_bid);
-    //         return Some(last_bid);
-    //     }
-    //     None
-    // }
 
     /// Enter a scope and create a new symbol table entry, i.e, we are at a `{` in the function.
     fn enter_scope(&mut self) {
@@ -616,38 +611,1021 @@ impl IrgenFunc<'_> {
     ) -> Result<(), IrgenError> {
         // todo!()
         match stmt {
+            // {
+            //     stmt1;
+            //     stmt2;
+            // }
             // 1️⃣ Block Statement (Compound Statement)
-            Statement::Compound(compound_stmt) => {
+            Statement::Compound(items) => {
+                // Enter variable scope for compound statement
                 self.enter_scope(); // 새 스코프 생성
-                for inner_stmt in compound_stmt {
-                    if let BlockItem::Statement(inner_stmt) = &inner_stmt.node {
-                        self.translate_stmt(&inner_stmt.node, context, bid_continue, bid_break)?;
+                for item in items {
+                    match &item.node {
+                        BlockItem::Declaration(decl) => {
+                            self.translate_decl(&decl.node, context)
+                                .map_err(|e| IrgenError::new(decl.write_string(), e))?;
+                        }
+                        BlockItem::StaticAssert(_) => {
+                            panic!("BlockItem::StaticAssert is unsupported")
+                        }
+                        BlockItem::Statement(stmt) => {
+                            self.translate_stmt(&stmt.node, context, bid_continue, bid_break)?;
+                        }
                     }
                 }
+                // Exit variable scope created above
                 self.exit_scope(); // 스코프 종료
+                Ok(())
             }
-            Statement::Return(return_stmt) => {
-                let ret_value = if let Some(expr) = return_stmt {
-                    let translated = self.translate_expr(&expr.node, context)
-                        .map_err(|e| IrgenError::new("Error in return expression".to_string(), e))?;
-                    println!("Translated return value: {:?}", translated); // 디버깅 로그 추가
-            
-                    // ✅ 변환된 값을 `context.return_value`에 저장
-                    context.return_value = Some(translated.clone());
-            
-                    translated
-                } else {
-                    ir::Operand::constant(ir::Constant::unit())
+            // x + 1;
+            Statement::Expression(expr) => {
+                if let Some(expr) = expr {
+                    let _ = self
+                        .translate_expr_rvalue(&expr.node, context)
+                        .map_err(|e| IrgenError::new(expr.write_string(), e))?;
+                }
+                Ok(())
+            }
+            Statement::If(stmt) => {
+                let bid_then = self.alloc_bid();
+                let bid_else = self.alloc_bid();
+                let bid_end = self.alloc_bid();
+
+                self.translate_condition(
+                    &stmt.node.condition.node,
+                    mem::replace(context, Context::new(bid_end)),
+                    bid_then,
+                    bid_else,
+                )
+                .map_err(|e| IrgenError::new(stmt.node.condition.write_string(), e))?;
+
+                // Translates then branch
+                let mut context_then = Context::new(bid_then);
+                self.translate_stmt(
+                    &stmt.node.then_statement.node,
+                    &mut context_then,
+                    bid_continue,
+                    bid_break,
+                )?;
+                self.insert_block(
+                    context_then,
+                    ir::BlockExit::Jump {
+                        arg: ir::JumpArg::new(bid_end, Vec::new())
+                    }
+                );
+
+                // Translates else branch
+                let mut context_else = Context::new(bid_else);
+                if let Some(else_stmt) = &stmt.node.else_statement {
+                    self.translate_stmt(
+                        &else_stmt.node,
+                        &mut context_else,
+                        bid_continue,
+                        bid_break,
+                    )?;
+                }
+                self.insert_block(
+                    context_else,
+                    ir::BlockExit::Jump {
+                        arg: ir::JumpArg::new(bid_end, Vec::new())
+                    }
+                );
+                Ok(())
+            }
+            // return x + 1;
+            Statement::Return(expr) => {
+                let value = match expr {
+                    Some(expr) => self
+                        .translate_expr_rvalue(&expr.node, context)
+                        .map_err(|e| IrgenError::new(expr.write_string(), e))?,
+                    None => ir::Operand::constant(ir::Constant::unit())
                 };
-            
+
+                // Implicit type casting
+                let value = self
+                    .translate_typecast(value, self.return_type.clone(), context)
+                    .map_err(|e| IrgenError::new(expr.write_string(), e))?;
+                
+                let bid_end = self.alloc_bid();
+                self.insert_block(
+                    mem::replace(
+                        context, Context::new(bid_end)),
+                        ir::BlockExit::Return { value } 
+                );
+                Ok(())
             }
+
+            // for (int i = 0; i < 10; ++i) {
+            //     A;
+            // }
+            // B;
+            // block 1: for initializer (int i = 0),    bid_init
+            // block 2: for condition (i < 10),         bid_cond
+            // block 3: for increment (++i),            bid_incr
+            // block 4: for body (A),                   bid_body
+            // block 5: for continuation (B),           bid_cont
+
+
+            Statement::For(for_stmt) => {
+                let for_stmt = &for_stmt.node;
+
+                // Jumps to the for-loop initializer block
+                let bid_init = self.alloc_bid();
+                self.insert_block(
+                    mem::replace(context, Context::new(bid_init)),
+                    ir::BlockExit::Jump {
+                        arg: ir::JumpArg::new(bid_init, Vec::new()) 
+                    }
+                );
+
+                // Enter variable scope for for-loop initializer
+                self.enter_scope();
+                self.translate_for_initializer(&for_stmt.initializer.node, context)
+                    .map_err(|e| IrgenError::new(for_stmt.initializer.write_string(), e))?;
+
+                // Jump to the for-loop conditional block
+                let bid_cond = self.alloc_bid();
+                self.insert_block(
+                    mem::replace(context, Context::new(bid_cond)), 
+                    ir::BlockExit::Jump { 
+                        arg: ir::JumpArg::new(bid_cond, Vec::new()), 
+                    }
+                );
+
+                let bid_body = self.alloc_bid();
+                let bid_step = self.alloc_bid();
+                let bid_end = self.alloc_bid();
+                self.translate_opt_condition(
+                    &for_stmt.condition,
+                    mem::replace(context, Context::new(bid_end)),
+                    bid_body,
+                    bid_end,
+                )
+                .map_err(|e| IrgenError::new(for_stmt.condition.write_string(), e))?;
+
+                // Enter variable scope for for-loop body
+                self.enter_scope();
+
+                let mut context_body = Context::new(bid_body);
+                self.translate_stmt(
+                    &for_stmt.statement.node,
+                    &mut context_body,
+                    Some(bid_step),
+                    Some(bid_end),
+                )?;
+
+                //  for (.. x ..; ++i) { // not possible
+                //      int x;
+                //      A;
+                //      
+                //      continue; // jump to "++i" (bid_step)
+                //      break; // jump to "B" (bid_end)       
+                //  }
+                //  B
+
+                // Exit variable scope for for-loop body
+                self.exit_scope();
+
+                self.insert_block(
+                    context_body,
+                    ir::BlockExit::Jump {
+                        arg: ir::JumpArg::new(bid_step,Vec::new())
+                     }
+                );
+
+                let mut context_step = Context::new(bid_step);
+                if let Some(step_expr) = &for_stmt.step {
+                    let _ = self
+                        .translate_expr_rvalue(&step_expr.node, &mut context_step)
+                        .map_err(|e| IrgenError::new(for_stmt.step.write_string(), e))?;
+                }
+                self.insert_block(
+                    context_step, 
+                    ir::BlockExit::Jump { 
+                        arg: ir::JumpArg::new(bid_cond, Vec::new())
+                     }
+                );
+                // ++i -> i < 10?
+
+
+                // Exit variable scope for for-loop initializer // ME
+                self.exit_scope(); // ME
+                Ok(())
+            }
+            // While (C) {A}
+            Statement::While(while_stmt) => {
+                let while_stmt = &while_stmt.node;
+
+                // Jump to starting block of while-loop
+                let bid_cond = self.alloc_bid();
+                self.insert_block(
+                    mem::replace(context, Context::new(bid_cond)),
+                    ir::BlockExit::Jump {
+                        arg: ir::JumpArg::new(bid_cond, Vec::new()),
+                    }
+                );
+
+                let bid_body = self.alloc_bid();
+                let bid_end = self.alloc_bid();
+                self.translate_condition(
+                    &while_stmt.expression.node,
+                    mem::replace(context, Context::new(bid_end)),
+                    bid_body,
+                    bid_end,
+                )
+                .map_err(|e| IrgenError::new(while_stmt.expression.write_string(), e))?;
+
+                // Enter variable scope for while-loop body
+                self.enter_scope();
+
+                let mut context_body = Context::new(bid_body);
+                self.translate_stmt(
+                    &while_stmt.statement.node,
+                    &mut context_body,
+                    Some(bid_cond),
+                    Some(bid_end),
+                )?;
+                self.insert_block(
+                    context_body, 
+                    ir::BlockExit::Jump {
+                        arg: ir::JumpArg::new(bid_cond, Vec::new())
+                    }
+                );
+
+                // Exit variable scope created above
+                self.exit_scope();
+
+                Ok(())
+            }
+            Statement::DoWhile(do_while_stmt) => {
+                let while_stmt = &do_while_stmt.node;
+
+                // Jump to starting blok of do-while loop
+                let bid_body= self.alloc_bid();
+                self.insert_block(
+                    mem::replace(context, Context::new(bid_body)), 
+                    ir::BlockExit::Jump {
+                        arg: ir::JumpArg::new(bid_body, Vec::new())
+                    }
+                );
+
+                // Enter variable scope for do-while-loop body 
+                self.enter_scope();
+
+                let bid_cond = self.alloc_bid();
+                let bid_end = self.alloc_bid();
+                self.translate_stmt(
+                    &while_stmt.statement.node, 
+                    context, 
+                    Some(bid_cond),
+                    Some(bid_end),
+                )?;
+
+                // Exit variablescope created above
+                self.exit_scope();
+
+                self.insert_block(
+                    mem::replace(context, Context::new(bid_cond)),
+                    ir::BlockExit::Jump {
+                        arg: ir::JumpArg::new(bid_cond, Vec::new())
+                    }
+                );
+
+                self.translate_condition(
+                    &while_stmt.expression.node,
+                    mem::replace(context, Context::new(bid_end)),
+                    bid_body,
+                    bid_end,
+                )
+                .map_err(|e| IrgenError::new(while_stmt.expression.write_string(), e))?;
+
+                Ok(())
+            }
+            // switch (e) {
+            //     case v1: {A1; break;}
+            //     case v2: {A2; break;}
+            //     case v3: {A3}
+            //     case v4: {A4}
+            //     default: A; 
+            // }
+
+            // switch (e) {
+            //     case v1: {A1; break;}
+            //     case v2: {A2; break;}
+            //     default: D; 
+            // }
+            // B;
+            Statement::Switch(switch_stmt) => {
+                let value = self
+                    .translate_expr_rvalue(&switch_stmt.node.expression.node, context)
+                    .map_err(|e| IrgenError::new(switch_stmt.node.expression.write_string(), e))?;
+
+                let bid_end = self.alloc_bid();
+                let (cases, bid_default) = 
+                    self.translate_switch_body(&switch_stmt.node.statement.node, bid_end)?;
+                
+                self.insert_block(
+                    mem::replace(context, Context::new(bid_end)), 
+                    ir::BlockExit::Switch { 
+                        value, 
+                        default: ir::JumpArg::new(bid_default, Vec::new()), 
+                        cases 
+                    },
+                );
+
+                Ok(())
+            }
+            Statement::Continue => {
+                let bid_continue = bid_continue.ok_or_else(||{
+                    IrgenError::new(
+                        "continue;".to_string(),
+                        IrgenErrorMessage::Misc {
+                            message: "contiue statement not whithn a loop".to_string(),
+                        },
+                    )
+                })?;
+
+                let next_context = Context::new(self.alloc_bid());
+                self.insert_block(
+                    mem::replace(context, next_context),
+                    ir::BlockExit::Jump {
+                        arg: ir::JumpArg::new(bid_continue, Vec::new())
+                    },
+                );
+
+                Ok(())
+            }
+            Statement::Break => {
+                let bid_break = bid_break.ok_or_else(|| {
+                    IrgenError::new(
+                        "break".to_string(),
+                        IrgenErrorMessage::Misc {
+                            message: "break statement not within a loop or switch".to_string(),
+                        },
+                    )
+                })?;
+
+                let next_context = Context::new(self.alloc_bid());
+                self.insert_block(
+                    mem::replace(context, next_context),
+                    ir::BlockExit::Jump {
+                        arg: ir::JumpArg::new(bid_break, Vec::new())
+                    }
+                );
+                Ok(())
+            }
+            Statement::Labeled(label_stmt) => {
+                Err(IrgenError::new(
+                    label_stmt.node.label.write_string(),
+                    IrgenErrorMessage::Misc {
+                        message: "label statement not within a switch".to_string()
+                    },
+                ))
+            }
+            // Statement::Return(return_stmt) => {
+            //     let ret_value = if let Some(expr) = return_stmt {
+            //         let translated = self.translate_expr(&expr.node, context)
+            //             .map_err(|e| IrgenError::new("Error in return expression".to_string(), e))?;
+            //         println!("Translated return value: {:?}", translated); // 디버깅 로그 추가
+            
+            //         // ✅ 변환된 값을 `context.return_value`에 저장
+            //         context.return_value = Some(translated.clone());
+            
+            //         translated
+            //     } else {
+            //         ir::Operand::constant(ir::Constant::unit())
+            //     };
+            
+            // }
             _ => todo!()
         }
         
-        Ok(())
-        
     }
 
+    fn translate_decl(
+        &mut self,
+        decl: &Declaration,
+        context: &mut Context,
+    ) -> Result<(), IrgenErrorMessage> {
+        let (base_dtype, is_typedef) = 
+            ir::Dtype::try_from_ast_declaration_specifiers(&decl.specifiers)
+            .map_err(|e| IrgenErrorMessage::InvalidDtype { dtype_error: e })?;
+
+        // We do not cover typedef declaration inside function
+        assert!(!is_typedef);
+
+        // TODO: consider various declarator format in the future
+        for init_decl in &decl.declarators {
+            let declarator = &init_decl.node.declarator.node;
+            let dtype = base_dtype
+                .clone()
+                .with_ast_declarator(declarator)
+                .map_err(|e| IrgenErrorMessage::InvalidDtype { dtype_error: e })?;
+
+            let dtype = <ir::Dtype as Clone>::clone(&dtype); // ME
+            let dtype = dtype
+                .resolve_typedefs(&self.typedefs)
+                .map_err(|e| IrgenErrorMessage::InvalidDtype { dtype_error: e })?;
+
+            let name = name_of_declarator(declarator);
+
+            match &dtype {
+                ir::Dtype::Unit { .. } => todo!(),
+                // TODO: when applying initiallizer, type checking is necessary
+                ir::Dtype::Int { .. }
+                | ir::Dtype::Float {..}
+                | ir::Dtype::Pointer {..}
+                | ir::Dtype::Array {..} => {
+                    // Check whether Initializer is exist
+                    let value = if let Some(initializer) = &init_decl.node.initializer {
+                        Some(self.translate_initializer(&initializer.node, context)?)
+                    } else {
+                        None
+                    };
+
+                    let _ = self.translate_alloc(name, dtype.clone(), value, context)?;
+                }
+                ir::Dtype::Function {..} => todo!(),
+                ir::Dtype::Typedef {..} => panic!("typedef should be replaced by real dtype"),
+                _ => todo!()
+            }
+        }
+
+        Ok(())
+    }
+
+    fn translate_switch_body(
+        &mut self,
+        stmt: &Statement,
+        bid_end: ir::BlockId
+    ) -> Result<(Vec<(ir::Constant, ir::JumpArg)>, ir::BlockId), IrgenError> {
+        let mut cases = Vec::new();
+        let mut default = None;
+
+        let items = if let Statement::Compound(items) = stmt {
+            items
+        } else {
+            panic!("'Statement' in the 'switch' is unsupported except 'Statement::Compound'")
+        };
+
+        // Enter variable scope for compound statement
+        self.enter_scope();
+
+        for item in items {
+            // Extract Statement from Block Item
+            match &item.node {
+                BlockItem::Statement(stmt) => {
+                    self.translate_switch_body_inner(&stmt.node, &mut cases, &mut default, bid_end)?
+                },
+                _ => panic!("is unsupported")
+            }
+        }
+
+        self.exit_scope();
+
+        // If 'default' is not present, just jump to 'bid_end'
+        let default = default.unwrap_or(bid_end);
+        Ok((cases, default))
+    }
+
+    fn translate_switch_body_inner(
+        &mut self,
+        stmt: &Statement,
+        cases: &mut Vec<(ir::Constant, ir::JumpArg)>,
+        default: &mut Option<ir::BlockId>,
+        bid_end: ir::BlockId
+    ) -> Result<(), IrgenError> {   
+        // stmt = case 1; {A1; break}
+        let label_stmt = if let Statement::Labeled(label_stmt) = stmt{
+            &label_stmt.node
+        } else {
+            panic!(r"'BlockItem::Statement' in the 'Statement::Compound' of the 'switch' \
+            is unsupported except 'Satement::Labeled")
+        };
+
+        let bid = self.alloc_bid();
+        let case = self.translate_switch_body_label_statement(label_stmt, bid, bid_end)?;
+
+        if let Some(case) = case {
+            if !case.is_integer_constant() {
+                return Err(IrgenError::new(
+                    label_stmt.label.write_string(),
+                    IrgenErrorMessage::Misc { message: 
+                    "expression is inot an integer cnstant expression".to_string() }
+                ));
+            }
+
+            // TODO: consider the case that same 'value' but different 'width'
+            if cases.iter().any(|(c,_)| &case==c) {
+                return Err(
+                    IrgenError::new(
+                        label_stmt.label.write_string(),
+                        IrgenErrorMessage::Misc { message:
+                            "duplicate case value".to_string()
+                        }
+                    )
+                )
+            }
+            cases.push((case, ir::JumpArg::new(bid, Vec::new())));
+        } else {
+            if default.is_some() {
+                return Err(
+                    IrgenError::new(
+                        label_stmt.label.write_string(),
+                        IrgenErrorMessage::Misc { message:
+                            "previous default already exists".to_string()
+                        }
+                    )
+                )
+            }
+        }
+
+        Ok(())
+    }
+    fn translate_switch_body_label_statement(
+        &mut self,
+        label_stmt: &LabeledStatement,
+        bid: ir::BlockId,
+        bid_end: ir::BlockId,
+    ) -> Result<Option<ir::Constant>, IrgenError> {
+        // Get case value from constant expression
+        let case = match &label_stmt.label.node {
+            Label::Identifier(_) => panic!("'Label::Identifier' is unsupported"),
+            Label::Case(expr) => {
+                // case 1: {...}
+                let constant = ir::Constant::try_from(&expr.node)
+                    .map_err(|_| IrgenError::new(
+                        expr.write_string(),
+                        IrgenErrorMessage::Misc { message: 
+                            "case label does not reduce to an integer constant".to_string()
+                        }
+                    ))?;
+
+                Some(constant)
+            }
+            Label::Default => None,
+            Label::CaseRange(_) => todo!(),
+        };
+
+        let items = if let Statement::Compound(items) = &label_stmt.statement.node {
+            items
+        } else {
+            panic!("'Statement' in the 'label' is unsupported except 'Statement::Compound'")
+        };
+
+        // Enter variable scope for compound statement
+        self.enter_scope();
+
+        // Split last and all the rest of the elements of the 'Compound' items
+        let (last, item) = items
+            .split_last()
+            .expect("'Statement::Compound' has no item");
+
+        let mut context = Context::new(bid);
+        for item in items {
+            match &item.node {
+                BlockItem::Declaration(decl) => {
+                    self.translate_decl(&decl.node, &mut context)
+                        .map_err(|e| IrgenError::new(decl.write_string(), e))?;
+                }
+                BlockItem::Statement(stmt) => {
+                    self.translate_stmt(&stmt.node, &mut context, None, None)?
+                }
+                _ => panic!("is unsupported")
+            }
+        }
+
+        // The last element of the 'Compound' items must be 'Statement::Break'
+        let stmt = if let BlockItem::Statement(stmt) = &last.node {
+            &stmt.node
+        } else {
+            panic!(
+                r"'BlockItem' in the 'Statement::Compound' of the 'babel' \
+                is unsupported except 'BlockItem::Statement'"
+            )
+        };
+
+        assert_eq!(
+            stmt,
+            &Statement::Break,
+            r"the lats 'Block::Item' in the 'Statement::Compound' \
+            of the 'label' must be 'Statement::Break'"
+        );
+
+        // Translate 'Statement::Break' to IR
+        self.insert_block(context, 
+            ir::BlockExit::Jump { 
+                arg: ir::JumpArg::new(bid_end, Vec::new())
+            }
+        );
+
+        self.exit_scope();
+
+        Ok(case)
+    }
+
+    fn translate_for_initializer(
+        &mut self,
+        initializer: &ForInitializer,
+        context: &mut Context
+    ) -> Result<(), IrgenErrorMessage> {
+        match initializer {
+            ForInitializer::Empty => (),
+            ForInitializer::Expression(expr) => {
+                let _ = self.translate_expr_rvalue(&expr.node, context)?;
+            }
+            ForInitializer::Declaration(decl) => {
+                return self.translate_decl(&decl.node, context);
+            }
+            ForInitializer::StaticAssert(_) => {
+                panic!("ForInitializer::StaticAssert is unsupported")
+            }
+            _ => todo!()
+        }
+        todo!();
+        Ok(())
+    }
+
+    /// Translate allocation to IR instructions
+    fn translate_alloc(
+        &mut self,
+        var: String,
+        dtype: ir::Dtype,
+        value: Option<ir::Operand>,
+        context: &mut Context
+    ) -> Result<ir::Operand, IrgenErrorMessage> {
+        // Insert allocation
+        let id = self.insert_alloc(Named::new(Some(var.clone()),dtype.clone()));
+
+        // Create pointer
+        let pointer_type = ir::Dtype::pointer(dtype.clone());
+        // let rid = ir::RegisterId::local(id); // ME
+        let ptr = ir::Operand::register(id, pointer_type);
+        self.insert_symbol_table_entry(var, ptr.clone())?;
+
+        // Initialize allocated register if "value" is not 'None'
+        if let Some(value) = value {
+            // Implicit type cast
+            let value = self.translate_typecast(value, dtype, context)?;
+            return context.insert_instruction(ir::Instruction::Store { ptr, value})
+        }
+
+        // Return alloc register if there is no store instruction
+        Ok(ptr)
+    }
+
+    /// Translate Initializer to IR instruction
+    fn translate_initializer(
+        &mut self,
+        initializer: &Initializer,
+        context: &mut Context
+    ) -> Result<ir::Operand, IrgenErrorMessage> {
+        match initializer {
+            Initializer::Expression(expr) => self.translate_expr_rvalue(&expr.node, context),
+            Initializer::List(_) => panic!("Initializer:;List is unsupported"),
+        }
+    }
+
+    fn translate_expr_rvalue(
+        &mut self,
+        expr: &Expression,
+        context: &mut Context
+    ) -> Result<ir::Operand, IrgenErrorMessage> {
+        match expr {
+            Expression::Identifier(identifier) => {
+                let ptr = self.lookup_symbol_table(&identifier.node.name)?;
+
+                let dtype_of_ptr = ptr.dtype();
+                let ptr_inner_type = dtype_of_ptr
+                    .get_pointer_inner()
+                    .ok_or_else(|| panic!("'Operand' from 'symbol_table' must be pointer type"))?;
+
+                // When 'ptr' pointer from identifier of which inner type represents
+                // 'function' or 'array', 'return', 'ptr' without 'Load' instructions
+                if ptr_inner_type.get_function_inner().is_some() {
+                    return Ok(ptr);
+                }
+
+                // let's say two declarations are 'int a' and 'int b[10], 'a' and 'b' represent
+                // int* and '[10 x i32]' respectively. When 'a' is used as an r-value, it's an 
+                // integer value from 'int*' by 'Load' instruction. On the other hand, when 'b' is 
+                // used as an r-value, it's interpreted as an integer pointer that will be indexed.
+                if let Some(array_inner) = ptr_inner_type.get_array_inner() {
+                    // We convert array into pointer if, e.g. 'b' is used as an r-value
+                    return self.convert_array_to_pointer(ptr, array_inner.clone(), context);
+                }
+
+                context.insert_instruction(ir::Instruction::Load { ptr })
+            }
+            Expression::Constant(constant) => {
+                let constant = ir::Constant::try_from(&constant.node)
+                    .expect("'constant' must be interpreted to 'ir::Constant' value");
+                Ok(ir::Operand::constant(constant))
+            }
+            Expression::StringLiteral(_string_llt) => todo!(),
+            Expression::Member(_member) => todo!(),
+            Expression::Call(call) => {
+                self.translate_func_call(&call.node, context)
+            }
+            Expression::SizeOfTy(type_name) => {
+                // let tmp = &type_name.node.0.node; // TypeName
+                let dtype = ir::Dtype::try_from(&type_name.node.0.node)
+                    .map_err(|e| IrgenErrorMessage::InvalidDtype { dtype_error: e })?;
+                let (size_of, _) = dtype
+                    .size_align_of(self.structs) // ME
+                    .map_err(|e| IrgenErrorMessage::InvalidDtype { dtype_error: e })?;
+
+                // TODO: 'is_signed' must be 'false' in the future (unsigned)
+                Ok(ir::Operand::constant(ir::Constant::int(
+                    size_of as u128, 
+                    ir::Dtype::LONG 
+                )))
+            }
+            Expression::SizeOfVal(sizeval) => {
+                Err(IrgenErrorMessage::Misc {
+                    message: "Unsupported expression type: sizeval".to_string(),
+                })
+            }
+            Expression::AlignOf(alignof) => {
+                let tmp = &alignof.node.0.node;
+                let dtype = ir::Dtype::try_from(&alignof.node.0.node)
+                    .map_err(|e| IrgenErrorMessage::InvalidDtype { dtype_error: e })?;
+                let (_, align_of) = dtype
+                    .size_align_of(self.structs)
+                    .map_err(|e| IrgenErrorMessage::InvalidDtype { dtype_error: e })?;
+
+                // TODO: 'is_signed' must be 'false' in the future (unsigned)
+                Ok(ir::Operand::constant(
+                    ir::Constant::int(
+                        align_of as u128,
+                        ir::Dtype::LONG,
+                    )
+                ))
+            }
+            Expression::UnaryOperator(unary) => {
+                self.translate_unary_op(&unary.node, context)
+            }
+            Expression::Cast(cast) => {
+                let target_dtype = ir::Dtype::try_from(&cast.node.type_name.node)
+                    .map_err(|e| IrgenErrorMessage::InvalidDtype { dtype_error: e })?;
+                let target_dtype = target_dtype
+                    .resolve_typedefs(&self.typedefs)
+                    .map_err(|e| IrgenErrorMessage::InvalidDtype { dtype_error: e })?;
+
+                let operand = self.translate_expr_rvalue(&cast.node.expression.node, context);
+                
+                self.translate_typecast(operand, target_dtype, context)
+            }
+            Expression::BinaryOperator(binary) => {
+                self.translate_binary_op(
+                    binary.node.operator.node.clone(),
+                    &binary.node.lhs.node,
+                    &binary.node.rhs.node,
+                    context,
+                )
+            }
+            Expression::Conditional(conditional) => {
+                self.translate_conditional(&conditional.node, context)
+            }
+            Expression::Comma(exprs) => {
+                self.translate_comma(&exprs, context)
+            }
+            _ => todo!()
+        }
+    }
+
+    fn translate_conditional(
+        &mut self,
+        conditional_expr: &ConditionalExpression,
+        context: &mut Context,
+    ) -> Result<ir::Operand, IrgenErrorMessage> {
+        let bid_then = self.alloc_bid();
+        let bid_else = self.alloc_bid();
+        let bid_end = self.alloc_bid();
+
+        self.translate_condition(
+            &conditional_expr.condition.node,
+            mem::replace(context, Context::new(bid_end)),
+            bid_then,
+            bid_else,
+        )?;
+
+        // Translate the then branch.
+        let mut context_then = Context::new(bid_then);
+        let val_then = 
+            self.translate_expr_rvalue(&conditional_expr.then_expression.node, &mut context_then)?;
+        
+        // Translate the else branch.
+        let mut context_else = Context::new(bid_else);
+        let val_else =
+            self.translate_expr_lvalue(&conditional_expr.else_expression.node, &mut context_else)?;
+        
+        let merged_dtype = self.merge_dtype(val_then.dtype(), val_else.dtype());
+        let val_then = 
+            self.translate_typecast(val_then, merged_dtype.clone(), &mut context_then);
+        let val_else =
+            self.translate_typecast(val_else, merged_dtype.clone(), &mut context_else);
+        
+        // Allocates at the satck.
+        let var = self.alloc_tempid();
+        // let ptr = self.translate_alloc(var, merged_dtype)?; // ME 
+        let ptr = self.translate_alloc(var, merged_dtype, None, context)?; // ME 
+
+
+        // Finishes the then branch
+        let _ = context_then.insert_instruction(
+            ir::Instruction::Store {
+                ptr: ptr.clone(),
+                value: val_then,
+            }
+        );
+        self.insert_block(
+            context_then,
+            ir::BlockExit::Jump {
+                arg: ir::JumpArg::new(bid_end, Vec::new())
+            }
+        );
+        
+        // Finishes the else branch
+        let _ = context_else.insert_instruction(
+            ir::Instruction::Store {
+                ptr: ptr.clone(),
+                value: val_else
+            }
+        );
+        self.insert_block(
+            context_else, 
+            ir::BlockExit::Jump {
+                arg: ir::JumpArg::new(bid_end, Vec::new())
+            }
+        );
+
+
+        context.insert_instruction(ir::Instruction::Load {ptr})
+    }
+
+    /// Translate comma expression to IR instructions
+    fn translate_comma(
+        &mut self,
+        exprs: &[Node<Expression>],
+        context: &mut Context
+    ) -> Result<ir::Operand, IrgenErrorMessage> {
+        let mut result = exprs
+            .iter()
+            .map(|e| self.translate_expr_rvalue(&e.node, context))
+            .collect::<Result<Vec<_>, _>>()?;
+        
+        Ok(result.pop().expect("Comma expression expected expressions"))
+    }
+
+    fn translate_func_call(
+        &mut self,
+        call: &CallExpression,
+        context: &mut Context
+    ) -> Result<ir::Operand, IrgenErrorMessage> {
+        // Extract function signature of callee
+        let callee = self.translate_expr_rvalue(&call.callee.node, context)?;
+        let function_pointer_type = callee.dtype();
+        let function = function_pointer_type.get_pointer_inner().ok_or_else(|| {
+            IrgenErrorMessage::NeedFunctionOrFunctionPointer { callee: callee.clone() }
+        })?;
+        let (return_type, parameters) = function.get_function_inner().ok_or_else(|| {
+            IrgenErrorMessage::NeedFunctionOrFunctionPointer { callee: callee.clone() }
+        })?;
+
+        let args = call
+            .arguments
+            .iter()
+            .map(|a| self.translate_expr_rvalue(&a.node, context))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        // Implicit type casting
+        if args.len() != parameters.len() {
+            return Err(
+                IrgenErrorMessage::Misc { message: 
+                    format!("too few arguments to function '{}'", call.callee.write_string()) // ME
+                }
+            );
+        }
+
+        let args = izip!(args, parameters)
+            .map(|(a,p)| self.translate_typecast(a, p.clone(), context))
+            .collect::<Result<Vec<_>,_>>()?;
+
+        let return_type = return_type.clone().set_const(false);
+        context.insert_instruction(
+            ir::Instruction::Call {
+                callee, 
+                args,
+                return_type
+            }
+        )
+    }
+
+    fn translate_binary_op(
+        &mut self,
+        op: BinaryOperator,
+        lhs: &Expression,
+        rhs: &Expression,
+        context: &mut Context,
+    ) -> Result<ir::Operand, IrgenErrorMessage> {
+        todo!()
+    }
+
+    fn translate_expr_lvalue(
+        &mut self,
+        expr: &Expression,
+        context: &mut Context
+    ) -> Result<ir::Operand, IrgenErrorMessage> {
+        match expr {
+            Expression::Identifier(identifier) => {
+                self.lookup_symbol_table(&identifier.node.name)
+            }
+            Expression::UnaryOperator(unary) => {
+                match &unary.node.operator.node {
+                    UnaryOperator::Indirection => {
+                        self.translate_expr_rvalue(&unary.node.operand.node, context)
+                    }
+                    _ => Err(IrgenErrorMessage::Misc { 
+                        message: "This error occurred at 'IrgenFunc::translate_expr_lvalue"
+                            .to_string()
+                    })
+                }
+            }
+            Expression::BinaryOperator(binary) => {
+                match binary.node.operator.node {
+                    BinaryOperator::Index => {
+                        self.translate_index_op(&binary.node.lhs.node, &binary.node.rhs.node, context)
+                    }
+                    _ => Err(IrgenErrorMessage::Misc { 
+                        message: r"binary operator expression cannot be used as l-value except \ 
+                        index operator expression".to_string()
+                    })
+                }
+            }
+            Expression::StringLiteral(_string_llt) => todo!(),
+            Expression::Member(_member) => todo!(),
+            Expression::Conditional(_)
+            | Expression::Constant(_)
+            | Expression::Call(_)
+            | Expression::Comma(_)
+            | Expression::SizeOfTy(_)
+            | Expression::SizeOfVal(_)
+            | Expression::AlignOf(_)
+            | Expression::Cast(_) => {
+                Err(IrgenErrorMessage::Misc { 
+                    message: "This error occurred at 'IrgenFunc::translate_expr_lvalue'".to_string() 
+                })
+            }
+            _ => todo!()
+        }
+    }
+
+    /// Translate Condition Expression of for-loop to IR block
+    fn translate_opt_condition(
+        &mut self,
+        condition: &Option<Box<Node<Expression>>>,
+        context: Context,
+        bid_then: ir::BlockId,
+        bid_else: ir::BlockId
+    ) -> Result<(), IrgenErrorMessage> {
+        if let Some(condition) = condition {
+            self.translate_condition(&condition.node, context, bid_then, bid_else)
+        } else {
+            self.insert_block(
+                context,
+                ir::BlockExit::Jump {
+                    arg: ir::JumpArg::new(bid_then, Vec::new())
+                }
+            );
+            Ok(())
+        }
+    }
+
+    /// Translate Condition Expression of (do-)while-loop and if statement to IR block
+    fn translate_condition(
+        &mut self,
+        condition: &Expression,
+        mut context: Context,
+        bid_then: ir::BlockId,
+        bid_else: ir::BlockId,
+    ) -> Result<(), IrgenErrorMessage> {
+        let condition = self.translate_expr_rvalue(condition, &mut context)?;
+        
+        // Implicit type casting
+        let condition = self.translate_typecast_to_bool(condition, &mut context)?;
+
+        self.insert_block(
+            context,
+            ir::BlockExit::ConditionalJump { 
+                condition, 
+                arg_then: ir::JumpArg::new(bid_then, Vec::new()), 
+                arg_else: ir::JumpArg::new(bid_else, Vec::new()) 
+            }
+        );
+
+        Ok(())
+    }
 
     fn translate_expr(
         &mut self,
@@ -655,6 +1633,11 @@ impl IrgenFunc<'_> {
         context: &mut Context,
     ) -> Result<ir::Operand, IrgenErrorMessage> {
         match expr {
+            Expression::Identifier(ident) => {
+                Err(IrgenErrorMessage::Misc {
+                    message: "Unsupported expression type: ident".to_string(),
+                })
+            }
             // 1️⃣ 리터럴(Constant) 변환
             Expression::Constant(constant) => {
                 let const_value = ir::Constant::try_from(&constant.node)
@@ -664,7 +1647,50 @@ impl IrgenFunc<'_> {
                 println!("const_value: {}", const_value);
                 Ok(ir::Operand::constant(const_value))
             }
+            Expression::StringLiteral(strlit) =>{
+                Err(IrgenErrorMessage::Misc {
+                    message: "Unsupported expression type: strlit".to_string(),
+                })
+            }
+            Expression::GenericSelection(gensel) => {
+                Err(IrgenErrorMessage::Misc {
+                    message: "Unsupported expression type: gensel".to_string(),
+                })
+            }
+            Expression::Member(memexpr) => {
+                Err(IrgenErrorMessage::Misc {
+                    message: "Unsupported expression type: memexpr".to_string(),
+                })
+            }
+            // 5️⃣ 함수 호출(Call)
+            Expression::Call(call_expr) => {
+                let callee = self.translate_expr(&call_expr.node.callee.node, context)?;
+                let args: Result<Vec<_>, _> = call_expr
+                    .node
+                    .arguments
+                    .iter()
+                    .map(|arg| self.translate_expr(&arg.node, context))
+                    .collect();
     
+                let instr = ir::Instruction::Call {
+                    callee,
+                    args: args?,
+                    return_type: ir::Dtype::unit(), // 기본적으로 unit()을 반환, 실제 타입은 추후 결정
+                };
+    
+                context.insert_instruction(instr)
+            }
+            Expression::CompoundLiteral(complit) => {
+                Err(IrgenErrorMessage::Misc {
+                    message: "Unsupported expression type: complit".to_string(),
+                })
+            }
+            Expression::SizeOfTy(sizet) => {
+                Err(IrgenErrorMessage::Misc {
+                    message: "Unsupported expression type: sizet".to_string(),
+                })
+            }
+
             // 2️⃣ 변수 참조 (Identifier)
             // Expression::Identifier(ident) => {
             //     let var_name = ident.node.name.clone();
@@ -705,25 +1731,85 @@ impl IrgenFunc<'_> {
             //     context.insert_instruction(instr)
             // }
     
-            // 5️⃣ 함수 호출(Call)
-            Expression::Call(call_expr) => {
-                let callee = self.translate_expr(&call_expr.node.callee.node, context)?;
-                let args: Result<Vec<_>, _> = call_expr
-                    .node
-                    .arguments
-                    .iter()
-                    .map(|arg| self.translate_expr(&arg.node, context))
-                    .collect();
-    
-                let instr = ir::Instruction::Call {
-                    callee,
-                    args: args?,
-                    return_type: ir::Dtype::unit(), // 기본적으로 unit()을 반환, 실제 타입은 추후 결정
-                };
-    
+
+            Expression::AlignOf(alignof) => {
+                // Type name 가져오기
+                let type_name = &alignof.node.0.node;
+
+                // 타입 정보를 변환하여 align 값을 가져오기
+                let dtype= ir::Dtype::try_from(type_name)
+                .map_err(|e| IrgenErrorMessage::InvalidDtype { dtype_error: e })?;
+        
+                // let (_, align_value) = dtype
+                //     .size_align_of(&self.structs)
+                //     .map_err(|e| IrgenErrorMessage::Misc { message: format!("align_size error: {:?}", e) })?;
+                
+           
+                let (size, align_value) = dtype
+                    .size_align_of(&self.structs)
+                    .map_err(|e| IrgenErrorMessage::Misc { message: format!("align_size error: {:?}", e) })?;
+                
+                let const_align = ir::Operand::constant(ir::Constant::int(align_value as u128, dtype.clone()));
+                
+                println!("_Alignof({:?}) -> {}, size: {}, align: {}", dtype, align_value, size, align_value);
+                println!("const_align {}", const_align.clone());
+                let instr = ir::Instruction::Value { value: const_align };
+                context.insert_instruction(instr)
+            
+                // Ok(const_align) // 변환된 값 반환
+            }
+            Expression::UnaryOperator(unaryop) =>{
+                Err(IrgenErrorMessage::Misc {
+                    message: "Unsupported expression type: unaryop".to_string(),
+                })
+            }
+            Expression::Cast(cast) => {
+                Err(IrgenErrorMessage::Misc {
+                    message: "Unsupported expression type: cast".to_string(),
+                })
+            }
+            Expression::BinaryOperator(binop) => {
+                // let tmp = &binop.node.lhs.node;
+                let tmp = &binop.node.operator.node;
+
+                let lhs = self.translate_expr(&binop.node.lhs.node, context)?;
+                let lhs_type = lhs.dtype();
+                let rhs = self.translate_expr(&binop.node.rhs.node, context)?;
+                let rhs_type =  rhs.dtype();
+                if lhs_type != rhs_type {
+                    return Err(IrgenErrorMessage::Misc {
+                        message: "Mismatched expression type: lhs!=rhs".to_string(),
+                    });
+                }
+                let operator = &binop.node.operator.node;
+                let instr =ir::Instruction::BinOp { op: operator.clone(), lhs, rhs, dtype: lhs_type };
                 context.insert_instruction(instr)
             }
-    
+            Expression::Conditional(condexpr) => {
+                Err(IrgenErrorMessage::Misc {
+                    message: "Unsupported expression type: condexpr".to_string(),
+                })
+            }
+            Expression::Comma(exprs) => {
+                Err(IrgenErrorMessage::Misc {
+                    message: "Unsupported expression type: comma".to_string(),
+                })
+            }
+            Expression::OffsetOf(offsetexpr) => {
+                Err(IrgenErrorMessage::Misc {
+                    message: "Unsupported expression type: offsetexpr".to_string(),
+                })
+            }
+            Expression::VaArg(vaargexpr) => {
+                Err(IrgenErrorMessage::Misc {
+                    message: "Unsupported expression type: vaargexpr".to_string(),
+                })
+            }
+            Expression::Statement(stmt) => {
+                Err(IrgenErrorMessage::Misc {
+                    message: "Unsupported expression type: stmt".to_string(),
+                })
+            }
             _ => Err(IrgenErrorMessage::Misc {
                 message: "Unsupported expression type".to_string(),
             }),
@@ -805,39 +1891,51 @@ impl IrgenFunc<'_> {
         name_of_params: &[String],
         context: &mut Context,
     ) -> Result<(), IrgenErrorMessage> {
-    // todo!()
-    // 매개변수 개수 확인
+    // // todo!()
+    // // 매개변수 개수 확인
+    // if signature.params.len() != name_of_params.len() {
+    //     return Err(IrgenErrorMessage::Misc {
+    //         message: "Mismatched parameter count".to_string(),
+    //     });
+    // }
+
+    // // 매개변수마다 처리
+    // for (i, param_name) in name_of_params.iter().enumerate() {
+    //     let param_type = &signature.params[i];
+
+    //     // 1. `alloc`을 통해 로컬 변수 확보
+    //     let alloc_name = format!("%l{}:{}", i, param_name);
+    //     let alloc_reg = self.insert_alloc(Named::new(Some(alloc_name.clone()), param_type.clone()));
+
+    //     // 2. `phi` 노드 추가 (함수 시작 시 전달되는 값)
+    //     let phi_name = format!("%b{}:p{}:{}", bid_init.0, i, param_name);
+    //     let phi_value = ir::Operand::register(ir::RegisterId::arg(bid_init, i), param_type.clone());
+    //     self.phinodes_init.push(Named::new(Some(phi_name), param_type.clone()));
+
+    //     // 3. `store` 명령어 추가 (매개변수를 alloc한 메모리에 저장)
+    //     let store_instr = ir::Instruction::Store {
+    //         ptr: ir::Operand::register(alloc_reg, param_type.clone()),
+    //         value: phi_value.clone(),
+    //     };
+    //     let unused_result= context.insert_instruction(store_instr)?;
+
+    //     // 4. Context에 변수 추가 (이후 참조 가능하도록)
+    //     self.insert_symbol_table_entry(param_name.clone(), ir::Operand::register(alloc_reg, param_type.clone()))?;
+    // }
+    // Ok(())
+
     if signature.params.len() != name_of_params.len() {
-        return Err(IrgenErrorMessage::Misc {
-            message: "Mismatched parameter count".to_string(),
-        });
+        panic!("length of 'parameters' and 'name_of_params' must be same")
     }
 
-    // 매개변수마다 처리
-    for (i, param_name) in name_of_params.iter().enumerate() {
-        let param_type = &signature.params[i];
-
-        // 1. `alloc`을 통해 로컬 변수 확보
-        let alloc_name = format!("%l{}:{}", i, param_name);
-        let alloc_reg = self.insert_alloc(Named::new(Some(alloc_name.clone()), param_type.clone()));
-
-        // 2. `phi` 노드 추가 (함수 시작 시 전달되는 값)
-        let phi_name = format!("%b{}:p{}:{}", bid_init.0, i, param_name);
-        let phi_value = ir::Operand::register(ir::RegisterId::arg(bid_init, i), param_type.clone());
-        self.phinodes_init.push(Named::new(Some(phi_name), param_type.clone()));
-
-        // 3. `store` 명령어 추가 (매개변수를 alloc한 메모리에 저장)
-        let store_instr = ir::Instruction::Store {
-            ptr: ir::Operand::register(alloc_reg, param_type.clone()),
-            value: phi_value.clone(),
-        };
-        let unused_result= context.insert_instruction(store_instr)?;
-
-        // 4. Context에 변수 추가 (이후 참조 가능하도록)
-        self.insert_symbol_table_entry(param_name.clone(), ir::Operand::register(alloc_reg, param_type.clone()))?;
+    for (i, (dtype, var)) in izip!(&signature.params, name_of_params).enumerate() {
+        let value = Some(ir::Operand::register(
+            ir::RegisterId::arg(bid_init, i), 
+            dtype.clone()
+        ));
+        let _ = self.translate_alloc(var.clone(), dtype.clone(), value, context)?;
     }
     Ok(())
-
     }
 }
 
