@@ -1274,7 +1274,7 @@ impl IrgenFunc<'_> {
         Ok(ptr)
     }
 
-    fn translate_typecast(
+    fn translate_typecast( // ME
         &mut self,
         value: ir::Operand,
         dtype: ir::Dtype,
@@ -1468,7 +1468,42 @@ impl IrgenFunc<'_> {
         ty1: ir::Dtype,
         ty2: ir::Dtype,
     ) -> ir::Dtype {
-        todo!()
+    use ir::Dtype::*;
+    // 1. 같은 타입이면 그대로 반환
+    if ty1 == ty2 {
+        return ty1;
+    }
+
+    match (&ty1, &ty2) {
+        // 2. 정수와 실수 연산이면 실수로 변환
+        (Int { .. }, Float { .. }) | (Float { .. }, Int { .. }) => Float {
+            width: std::cmp::max(ty1.get_float_width().unwrap_or(32), ty2.get_float_width().unwrap_or(32)),
+            is_const: ty1.is_const() || ty2.is_const(),
+        },
+
+        // 3. 정수끼리 연산이면 더 큰 크기의 정수로 변환
+        (Int { .. }, Int { .. }) => {
+            let width = std::cmp::max(ty1.get_int_width().unwrap(), ty2.get_int_width().unwrap());
+            println!("merge_dtype | int int | {}", width);
+            Int {
+                width,
+                is_signed: ty1.is_int_signed() || ty2.is_int_signed(),
+                is_const: ty1.is_const() || ty2.is_const(),
+            }
+        },
+
+        // 4. 포인터 + 정수 연산이면 포인터 유지
+        (Pointer { .. }, Int { .. }) | (Int { .. }, Pointer { .. }) => {
+            let pointer = if ty1.get_pointer_inner().is_some() { ty1 } else { ty2 };
+            pointer.clone()
+        },
+
+        // 5. 포인터끼리 연산은 허용되지 않음
+        (Pointer { .. }, Pointer { .. }) => panic!("Cannot perform arithmetic on two pointers"),
+
+        // 6. 지원되지 않는 타입 조합
+        _ => panic!("Invalid type merge: {:?} and {:?}", ty1, ty2),
+    }
     }
 
     fn translate_conditional(
@@ -1599,23 +1634,32 @@ impl IrgenFunc<'_> {
         )
     }
 
-    fn translate_binary_op(
+    fn translate_binary_op( // ME
         &mut self,
         op: BinaryOperator,
         lhs: &Expression,
         rhs: &Expression,
         context: &mut Context,
     ) -> Result<ir::Operand, IrgenErrorMessage> {
-        todo!()
+        let lhs = self.translate_expr_rvalue(lhs, context)?;
+        let rhs = self.translate_expr_rvalue(rhs, context)?;
+        let dtype = self.merge_dtype(lhs.dtype(), rhs.dtype());
+        let lhs = self.translate_typecast(lhs, dtype.clone(), context)?; // typecast
+        let rhs = self.translate_typecast(rhs, dtype.clone(), context)?; // typecast
+
+        context.insert_instruction(
+            ir::Instruction::BinOp { op, lhs, rhs, dtype }
+        )
     }
-    fn translate_unary_op(
+
+    fn translate_unary_op( // ME
         &mut self,
         unary: &UnaryOperatorExpression,
         context: &mut Context
     ) -> Result<ir::Operand, IrgenErrorMessage> {
         todo!()
     }
-    fn translate_index_op(
+    fn translate_index_op( // ME
         &mut self,
         lhs: &Expression,
         rhs: &Expression,
