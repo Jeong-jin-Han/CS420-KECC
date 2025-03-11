@@ -640,7 +640,7 @@ impl IrgenFunc<'_> {
             // x + 1;
             Statement::Expression(expr) => {
                 if let Some(expr) = expr {
-                    let _ = self
+                    let _unused = self
                         .translate_expr_rvalue(&expr.node, context)
                         .map_err(|e| IrgenError::new(expr.write_string(), e))?;
                 }
@@ -795,7 +795,7 @@ impl IrgenFunc<'_> {
 
                 let mut context_step = Context::new(bid_step);
                 if let Some(step_expr) = &for_stmt.step {
-                    let _ = self
+                    let _unused = self
                         .translate_expr_rvalue(&step_expr.node, &mut context_step)
                         .map_err(|e| IrgenError::new(for_stmt.step.write_string(), e))?;
                 }
@@ -1043,7 +1043,7 @@ impl IrgenFunc<'_> {
                         None
                     };
 
-                    let _ = self.translate_alloc(name, dtype.clone(), value, context)?;
+                    let _unused = self.translate_alloc(name, dtype.clone(), value, context)?;
                 }
                 ir::Dtype::Function {..} => todo!(),
                 ir::Dtype::Typedef {..} => panic!("typedef should be replaced by real dtype"),
@@ -1232,7 +1232,7 @@ impl IrgenFunc<'_> {
         match initializer {
             ForInitializer::Empty => (),
             ForInitializer::Expression(expr) => {
-                let _ = self.translate_expr_rvalue(&expr.node, context)?;
+                let _unused = self.translate_expr_rvalue(&expr.node, context)?;
             }
             ForInitializer::Declaration(decl) => {
                 return self.translate_decl(&decl.node, context);
@@ -1274,6 +1274,23 @@ impl IrgenFunc<'_> {
         Ok(ptr)
     }
 
+    fn translate_typecast(
+        &mut self,
+        value: ir::Operand,
+        dtype: ir::Dtype,
+        context: &mut Context,
+    ) -> Result<ir::Operand, IrgenErrorMessage> {
+        todo!()
+    }
+
+    fn translate_typecast_to_bool(
+        &mut self, 
+        condition: ir::Operand,
+        context: &mut Context
+    ) -> Result<ir::Operand, IrgenErrorMessage> {
+        todo!()
+    }
+
     /// Translate Initializer to IR instruction
     fn translate_initializer(
         &mut self,
@@ -1286,6 +1303,22 @@ impl IrgenFunc<'_> {
         }
     }
 
+    fn lookup_symbol_table(
+        &mut self,
+        identifier: &String,
+    ) -> Result<ir::Operand, IrgenErrorMessage> {
+        todo!()
+    }
+
+    fn convert_array_to_pointer(
+        &mut self,
+        ptr: ir::Operand,
+        dtype: ir::Dtype,
+        context: &mut Context,
+    ) -> Result<ir::Operand, IrgenErrorMessage> {
+        todo!()
+    }
+
     fn translate_expr_rvalue(
         &mut self,
         expr: &Expression,
@@ -1293,6 +1326,7 @@ impl IrgenFunc<'_> {
     ) -> Result<ir::Operand, IrgenErrorMessage> {
         match expr {
             Expression::Identifier(identifier) => {
+                // let tmp = &identifier.node.name;
                 let ptr = self.lookup_symbol_table(&identifier.node.name)?;
 
                 let dtype_of_ptr = ptr.dtype();
@@ -1372,7 +1406,7 @@ impl IrgenFunc<'_> {
                     .resolve_typedefs(&self.typedefs)
                     .map_err(|e| IrgenErrorMessage::InvalidDtype { dtype_error: e })?;
 
-                let operand = self.translate_expr_rvalue(&cast.node.expression.node, context);
+                let operand = self.translate_expr_rvalue(&cast.node.expression.node, context)?;
                 
                 self.translate_typecast(operand, target_dtype, context)
             }
@@ -1392,6 +1426,14 @@ impl IrgenFunc<'_> {
             }
             _ => todo!()
         }
+    }
+
+    fn merge_dtype(
+        &mut self,
+        ty1: ir::Dtype,
+        ty2: ir::Dtype,
+    ) -> ir::Dtype {
+        todo!()
     }
 
     fn translate_conditional(
@@ -1422,9 +1464,9 @@ impl IrgenFunc<'_> {
         
         let merged_dtype = self.merge_dtype(val_then.dtype(), val_else.dtype());
         let val_then = 
-            self.translate_typecast(val_then, merged_dtype.clone(), &mut context_then);
+            self.translate_typecast(val_then, merged_dtype.clone(), &mut context_then)?;
         let val_else =
-            self.translate_typecast(val_else, merged_dtype.clone(), &mut context_else);
+            self.translate_typecast(val_else, merged_dtype.clone(), &mut context_else)?;
         
         // Allocates at the satck.
         let var = self.alloc_tempid();
@@ -1433,7 +1475,7 @@ impl IrgenFunc<'_> {
 
 
         // Finishes the then branch
-        let _ = context_then.insert_instruction(
+        let _unused = context_then.insert_instruction(
             ir::Instruction::Store {
                 ptr: ptr.clone(),
                 value: val_then,
@@ -1447,7 +1489,7 @@ impl IrgenFunc<'_> {
         );
         
         // Finishes the else branch
-        let _ = context_else.insert_instruction(
+        let _unused = context_else.insert_instruction(
             ir::Instruction::Store {
                 ptr: ptr.clone(),
                 value: val_else
@@ -1525,6 +1567,21 @@ impl IrgenFunc<'_> {
     fn translate_binary_op(
         &mut self,
         op: BinaryOperator,
+        lhs: &Expression,
+        rhs: &Expression,
+        context: &mut Context,
+    ) -> Result<ir::Operand, IrgenErrorMessage> {
+        todo!()
+    }
+    fn translate_unary_op(
+        &mut self,
+        unary: &UnaryOperatorExpression,
+        context: &mut Context
+    ) -> Result<ir::Operand, IrgenErrorMessage> {
+        todo!()
+    }
+    fn translate_index_op(
+        &mut self,
         lhs: &Expression,
         rhs: &Expression,
         context: &mut Context,
@@ -1933,7 +1990,7 @@ impl IrgenFunc<'_> {
             ir::RegisterId::arg(bid_init, i), 
             dtype.clone()
         ));
-        let _ = self.translate_alloc(var.clone(), dtype.clone(), value, context)?;
+        let _unused = self.translate_alloc(var.clone(), dtype.clone(), value, context)?;
     }
     Ok(())
     }
