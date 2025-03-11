@@ -1280,7 +1280,42 @@ impl IrgenFunc<'_> {
         dtype: ir::Dtype,
         context: &mut Context,
     ) -> Result<ir::Operand, IrgenErrorMessage> {
-        todo!()
+        let value_dtype = value.dtype();
+
+        // 변환이 필요 없는 경우 그대로 반환
+        if value_dtype == dtype {
+            return Ok(value);
+        }
+    
+
+        match (&value_dtype, &dtype) {
+            // ✅ 정수 -> 정수 변환 (예: int -> char, short -> long)
+            (&ir::Dtype::Int { .. }, &ir::Dtype::Int { .. }) => {
+                context.insert_instruction(ir::Instruction::TypeCast { value, target_dtype: dtype })
+            }
+    
+            // ✅ 정수 <-> 실수 변환 (예: int -> float, double -> int)
+            (&ir::Dtype::Int { .. }, &ir::Dtype::Float { .. }) |
+            (&ir::Dtype::Float { .. }, &ir::Dtype::Int { .. }) => {
+                context.insert_instruction(ir::Instruction::TypeCast { value, target_dtype: dtype })
+            }
+    
+            // ✅ 포인터 <-> 정수 변환 (예: (int*) 0x1234, (int) ptr)
+            (&ir::Dtype::Pointer { .. }, &ir::Dtype::Int { .. }) |
+            (&ir::Dtype::Int { .. }, &ir::Dtype::Pointer { .. }) => {
+                context.insert_instruction(ir::Instruction::TypeCast { value, target_dtype: dtype })
+            }
+    
+            // ✅ 포인터 <-> 포인터 변환 (예: void* → int*)
+            (&ir::Dtype::Pointer { .. }, &ir::Dtype::Pointer { .. }) => {
+                context.insert_instruction(ir::Instruction::TypeCast { value, target_dtype: dtype })
+            }
+    
+            // ❌ 변환이 불가능한 경우 (예: struct → int)
+            _ => Err(IrgenErrorMessage::Misc {
+                message: format!("Invalid type cast from {:?} to {:?}", value_dtype, dtype),
+            }),
+        }
     }
 
     fn translate_typecast_to_bool(
