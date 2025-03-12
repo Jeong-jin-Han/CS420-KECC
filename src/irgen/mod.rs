@@ -375,25 +375,12 @@ impl Irgen {
 
         // Creates the end block
         let ret = signature.ret.set_const(false);
-        // let value = if ret == ir::Dtype::unit() {
-        //     ir::Operand::constant(ir::Constant::unit())
-        // } else if ret == ir::Dtype::INT {
-        //     // If "main" function, default return value is `0` when return type is `int`
-        //     if name == "main" {
-        //         // ir::Operand::constant(ir::Constant::int(0, ret))
-        //         ir::Operand::constant(ir::Constant::int(0, ret))
-        //     } else {
-        //         ir::Operand::constant(ir::Constant::undef(ret))
-        //     }
-        // } else {
-        //     ir::Operand::constant(ir::Constant::undef(ret))
-        // };
-        let value = if let Some(ret_value) = context.return_value.clone() {
-            ret_value
-        } else if ret == ir::Dtype::unit() {
+        let value = if ret == ir::Dtype::unit() {
             ir::Operand::constant(ir::Constant::unit())
         } else if ret == ir::Dtype::INT {
+            // If "main" function, default return value is `0` when return type is `int`
             if name == "main" {
+                // ir::Operand::constant(ir::Constant::int(0, ret))
                 ir::Operand::constant(ir::Constant::int(0, ret))
             } else {
                 ir::Operand::constant(ir::Constant::undef(ret))
@@ -401,7 +388,6 @@ impl Irgen {
         } else {
             ir::Operand::constant(ir::Constant::undef(ret))
         };
-        println!("Irgen | before blockexit {:?}", value);
 
         // Last Block of the function
         irgen.insert_block(context, ir::BlockExit::Return { value });
@@ -468,7 +454,7 @@ struct Context {
     bid: ir::BlockId,
     /// Current instructions of the block.
     instrs: Vec<Named<ir::Instruction>>,
-    return_value: Option<ir::Operand>, // me
+    // return_value: Option<ir::Operand>, // me
 }
 
 impl Context {
@@ -477,7 +463,7 @@ impl Context {
         Self {
             bid,
             instrs: Vec::new(),
-            return_value: None, // me
+            // return_value: None, // me
         }
     }
 
@@ -982,21 +968,6 @@ impl IrgenFunc<'_> {
                     },
                 ))
             }
-            // Statement::Return(return_stmt) => {
-            //     let ret_value = if let Some(expr) = return_stmt {
-            //         let translated = self.translate_expr(&expr.node, context)
-            //             .map_err(|e| IrgenError::new("Error in return expression".to_string(), e))?;
-            //         println!("Translated return value: {:?}", translated); // 디버깅 로그 추가
-            
-            //         // ✅ 변환된 값을 `context.return_value`에 저장
-            //         context.return_value = Some(translated.clone());
-            
-            //         translated
-            //     } else {
-            //         ir::Operand::constant(ir::Constant::unit())
-            //     };
-            
-            // }
             _ => todo!()
         }
         
@@ -1323,7 +1294,62 @@ impl IrgenFunc<'_> {
         condition: ir::Operand,
         context: &mut Context
     ) -> Result<ir::Operand, IrgenErrorMessage> {
-        todo!()
+        let dtype = condition.dtype(); // condition의 타입 가져오기
+
+        match dtype {
+            // 이미 bool 타입이면 변환 불필요
+            ir::Dtype::BOOL => Ok(condition),
+            
+            // 정수형이면 0인지 비교하여 bool 변환
+            ir::Dtype::Int { .. } => {
+                let zero = ir::Operand::Constant(ir::Constant::Int {
+                    value: 0,
+                    width: dtype.get_int_width().unwrap(),
+                    is_signed: dtype.is_int_signed(),
+                });
+                context.insert_instruction(ir::Instruction::BinOp {
+                    op: BinaryOperator::NotEquals, 
+                    lhs: condition, 
+                    rhs: zero, 
+                    dtype: ir::Dtype::BOOL, // 변환된 결과는 BOOL 타입
+                })
+            },
+    
+            // 실수형이면 0.0인지 비교하여 bool 변환
+            ir::Dtype::Float { .. } => {
+                let zero = ir::Operand::Constant(ir::Constant::Float {
+                    value: ordered_float::OrderedFloat(0.0),
+                    width: dtype.get_float_width().unwrap(),
+                });
+                context.insert_instruction(ir::Instruction::BinOp {
+                    op: BinaryOperator::NotEquals, 
+                    lhs: condition, 
+                    rhs: zero, 
+                    dtype: ir::Dtype::BOOL,
+                })
+            },
+    
+            // 포인터이면 NULL (0)과 비교하여 bool 변환
+            ir::Dtype::Pointer { .. } => {
+                let null = ir::Operand::Constant(ir::Constant::Int {
+                    value: 0,
+                    width: ir::Dtype::SIZE_OF_POINTER * 8, // 포인터 크기에 맞게 설정
+                    is_signed: false,
+                });
+                context.insert_instruction(ir::Instruction::BinOp {
+                    op: BinaryOperator::NotEquals, 
+                    lhs: condition, 
+                    rhs: null, 
+                    dtype: ir::Dtype::BOOL,
+                })
+            },
+    
+            // 변환 불가능한 타입
+            _ => Err(IrgenErrorMessage::Misc {
+                message: format!("Cannot convert {:?} to bool", dtype),
+            }),
+        }
+    
     }
 
     /// Translate Initializer to IR instruction
@@ -1342,7 +1368,26 @@ impl IrgenFunc<'_> {
         &mut self,
         identifier: &String,
     ) -> Result<ir::Operand, IrgenErrorMessage> {
-        todo!()
+        /*
+        조건
+        높은 layer부터 순차적으로 이름이 존재하는지 확이
+
+        높은 layer에 해당 key가 없으면 낮음 layer까지 순차적으로 이동하기
+        
+        self.symbol_table을 사용하기
+        &Vec<HashMap<String, Operand>>
+        */
+        for layer in self.symbol_table.iter().rev() {
+            if let Some(operand) = layer.get(identifier) {
+                return Ok(operand.clone());
+            }
+        }
+
+        Err(
+            IrgenErrorMessage::Misc { message:  
+                format!("Undefined variable: {}", identifier)
+            }
+        )
     }
 
     fn convert_array_to_pointer(
@@ -1657,7 +1702,13 @@ impl IrgenFunc<'_> {
         unary: &UnaryOperatorExpression,
         context: &mut Context
     ) -> Result<ir::Operand, IrgenErrorMessage> {
-        todo!()
+        let op = unary.operator.node.clone();
+        let operand = self.translate_expr_rvalue(&unary.operand.node, context)?;
+        let dtype = operand.dtype();
+
+        context.insert_instruction(
+            ir::Instruction::UnaryOp { op, operand, dtype }
+        )
     }
     fn translate_index_op( // ME
         &mut self,
@@ -1762,195 +1813,6 @@ impl IrgenFunc<'_> {
 
         Ok(())
     }
-
-    fn translate_expr(
-        &mut self,
-        expr: &Expression,
-        context: &mut Context,
-    ) -> Result<ir::Operand, IrgenErrorMessage> {
-        match expr {
-            Expression::Identifier(ident) => {
-                Err(IrgenErrorMessage::Misc {
-                    message: "Unsupported expression type: ident".to_string(),
-                })
-            }
-            // 1️⃣ 리터럴(Constant) 변환
-            Expression::Constant(constant) => {
-                let const_value = ir::Constant::try_from(&constant.node)
-                    .map_err(|_| IrgenErrorMessage::Misc {
-                        message: "Invalid constant".to_string(),
-                    })?;
-                println!("const_value: {}", const_value);
-                Ok(ir::Operand::constant(const_value))
-            }
-            Expression::StringLiteral(strlit) =>{
-                Err(IrgenErrorMessage::Misc {
-                    message: "Unsupported expression type: strlit".to_string(),
-                })
-            }
-            Expression::GenericSelection(gensel) => {
-                Err(IrgenErrorMessage::Misc {
-                    message: "Unsupported expression type: gensel".to_string(),
-                })
-            }
-            Expression::Member(memexpr) => {
-                Err(IrgenErrorMessage::Misc {
-                    message: "Unsupported expression type: memexpr".to_string(),
-                })
-            }
-            // 5️⃣ 함수 호출(Call)
-            Expression::Call(call_expr) => {
-                let callee = self.translate_expr(&call_expr.node.callee.node, context)?;
-                let args: Result<Vec<_>, _> = call_expr
-                    .node
-                    .arguments
-                    .iter()
-                    .map(|arg| self.translate_expr(&arg.node, context))
-                    .collect();
-    
-                let instr = ir::Instruction::Call {
-                    callee,
-                    args: args?,
-                    return_type: ir::Dtype::unit(), // 기본적으로 unit()을 반환, 실제 타입은 추후 결정
-                };
-    
-                context.insert_instruction(instr)
-            }
-            Expression::CompoundLiteral(complit) => {
-                Err(IrgenErrorMessage::Misc {
-                    message: "Unsupported expression type: complit".to_string(),
-                })
-            }
-            Expression::SizeOfTy(sizet) => {
-                Err(IrgenErrorMessage::Misc {
-                    message: "Unsupported expression type: sizet".to_string(),
-                })
-            }
-
-            // 2️⃣ 변수 참조 (Identifier)
-            // Expression::Identifier(ident) => {
-            //     let var_name = ident.node.name.clone();
-            //     if let Some(operand) = self.lookup_variable(&var_name) {
-            //         Ok(operand)
-            //     } else {
-            //         Err(IrgenErrorMessage::Misc {
-            //             message: format!("Undefined variable `{}`", var_name),
-            //         })
-            //     }
-            // }
-    
-            // 3️⃣ 이항 연산(Binary Operator)
-            // Expression::BinaryOperator(bin_op) => {
-            //     let lhs = self.translate_expr(&bin_op.node.lhs.node, context)?;
-            //     let rhs = self.translate_expr(&bin_op.node.rhs.node, context)?;
-    
-            //     let instr = ir::Instruction::BinOp {
-            //         op: bin_op.node.operator.node.clone(),
-            //         lhs,
-            //         rhs,
-            //         dtype: lhs.dtype(), // 결과 타입은 lhs와 동일하다고 가정
-            //     };
-    
-            //     context.insert_instruction(instr)
-            // }
-    
-            // 4️⃣ 단항 연산(Unary Operator)
-            // Expression::UnaryOperator(unary_op) => {
-            //     let operand = self.translate_expr(&unary_op.node.operand.node, context)?;
-    
-            //     let instr = ir::Instruction::UnaryOp {
-            //         op: unary_op.node.operator.node.clone(),
-            //         operand,
-            //         dtype: operand.dtype(),
-            //     };
-    
-            //     context.insert_instruction(instr)
-            // }
-    
-
-            Expression::AlignOf(alignof) => {
-                // Type name 가져오기
-                let type_name = &alignof.node.0.node;
-
-                // 타입 정보를 변환하여 align 값을 가져오기
-                let dtype= ir::Dtype::try_from(type_name)
-                .map_err(|e| IrgenErrorMessage::InvalidDtype { dtype_error: e })?;
-        
-                // let (_, align_value) = dtype
-                //     .size_align_of(&self.structs)
-                //     .map_err(|e| IrgenErrorMessage::Misc { message: format!("align_size error: {:?}", e) })?;
-                
-           
-                let (size, align_value) = dtype
-                    .size_align_of(&self.structs)
-                    .map_err(|e| IrgenErrorMessage::Misc { message: format!("align_size error: {:?}", e) })?;
-                
-                let const_align = ir::Operand::constant(ir::Constant::int(align_value as u128, dtype.clone()));
-                
-                println!("_Alignof({:?}) -> {}, size: {}, align: {}", dtype, align_value, size, align_value);
-                println!("const_align {}", const_align.clone());
-                let instr = ir::Instruction::Value { value: const_align };
-                context.insert_instruction(instr)
-            
-                // Ok(const_align) // 변환된 값 반환
-            }
-            Expression::UnaryOperator(unaryop) =>{
-                Err(IrgenErrorMessage::Misc {
-                    message: "Unsupported expression type: unaryop".to_string(),
-                })
-            }
-            Expression::Cast(cast) => {
-                Err(IrgenErrorMessage::Misc {
-                    message: "Unsupported expression type: cast".to_string(),
-                })
-            }
-            Expression::BinaryOperator(binop) => {
-                // let tmp = &binop.node.lhs.node;
-                let tmp = &binop.node.operator.node;
-
-                let lhs = self.translate_expr(&binop.node.lhs.node, context)?;
-                let lhs_type = lhs.dtype();
-                let rhs = self.translate_expr(&binop.node.rhs.node, context)?;
-                let rhs_type =  rhs.dtype();
-                if lhs_type != rhs_type {
-                    return Err(IrgenErrorMessage::Misc {
-                        message: "Mismatched expression type: lhs!=rhs".to_string(),
-                    });
-                }
-                let operator = &binop.node.operator.node;
-                let instr =ir::Instruction::BinOp { op: operator.clone(), lhs, rhs, dtype: lhs_type };
-                context.insert_instruction(instr)
-            }
-            Expression::Conditional(condexpr) => {
-                Err(IrgenErrorMessage::Misc {
-                    message: "Unsupported expression type: condexpr".to_string(),
-                })
-            }
-            Expression::Comma(exprs) => {
-                Err(IrgenErrorMessage::Misc {
-                    message: "Unsupported expression type: comma".to_string(),
-                })
-            }
-            Expression::OffsetOf(offsetexpr) => {
-                Err(IrgenErrorMessage::Misc {
-                    message: "Unsupported expression type: offsetexpr".to_string(),
-                })
-            }
-            Expression::VaArg(vaargexpr) => {
-                Err(IrgenErrorMessage::Misc {
-                    message: "Unsupported expression type: vaargexpr".to_string(),
-                })
-            }
-            Expression::Statement(stmt) => {
-                Err(IrgenErrorMessage::Misc {
-                    message: "Unsupported expression type: stmt".to_string(),
-                })
-            }
-            _ => Err(IrgenErrorMessage::Misc {
-                message: "Unsupported expression type".to_string(),
-            }),
-        }
-    }
     
 
 
@@ -2027,38 +1889,7 @@ impl IrgenFunc<'_> {
         name_of_params: &[String],
         context: &mut Context,
     ) -> Result<(), IrgenErrorMessage> {
-    // // todo!()
-    // // 매개변수 개수 확인
-    // if signature.params.len() != name_of_params.len() {
-    //     return Err(IrgenErrorMessage::Misc {
-    //         message: "Mismatched parameter count".to_string(),
-    //     });
-    // }
-
-    // // 매개변수마다 처리
-    // for (i, param_name) in name_of_params.iter().enumerate() {
-    //     let param_type = &signature.params[i];
-
-    //     // 1. `alloc`을 통해 로컬 변수 확보
-    //     let alloc_name = format!("%l{}:{}", i, param_name);
-    //     let alloc_reg = self.insert_alloc(Named::new(Some(alloc_name.clone()), param_type.clone()));
-
-    //     // 2. `phi` 노드 추가 (함수 시작 시 전달되는 값)
-    //     let phi_name = format!("%b{}:p{}:{}", bid_init.0, i, param_name);
-    //     let phi_value = ir::Operand::register(ir::RegisterId::arg(bid_init, i), param_type.clone());
-    //     self.phinodes_init.push(Named::new(Some(phi_name), param_type.clone()));
-
-    //     // 3. `store` 명령어 추가 (매개변수를 alloc한 메모리에 저장)
-    //     let store_instr = ir::Instruction::Store {
-    //         ptr: ir::Operand::register(alloc_reg, param_type.clone()),
-    //         value: phi_value.clone(),
-    //     };
-    //     let unused_result= context.insert_instruction(store_instr)?;
-
-    //     // 4. Context에 변수 추가 (이후 참조 가능하도록)
-    //     self.insert_symbol_table_entry(param_name.clone(), ir::Operand::register(alloc_reg, param_type.clone()))?;
-    // }
-    // Ok(())
+    // todo!()
 
     if signature.params.len() != name_of_params.len() {
         panic!("length of 'parameters' and 'name_of_params' must be same")
