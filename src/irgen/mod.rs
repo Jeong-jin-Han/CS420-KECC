@@ -473,7 +473,9 @@ impl Context {
         &mut self,
         instr: ir::Instruction,
     ) -> Result<ir::Operand, IrgenErrorMessage> {
-        println!("insert_instruction | \n{}\n", instr.clone());
+        // println!("insert_instruction | \n{} {:?}\n", instr.clone(), instr.clone());
+        println!("insert_instruction | \n{} \n", instr.clone());
+
         let dtype = instr.dtype();
         self.instrs.push(Named::new(None, instr));
 
@@ -1359,6 +1361,9 @@ impl IrgenFunc<'_> {
         initializer: &Initializer,
         context: &mut Context
     ) -> Result<ir::Operand, IrgenErrorMessage> {
+        /*
+        array5.c 에서 list에 대한 initializer가 필요함.
+        */
         match initializer {
             Initializer::Expression(expr) => self.translate_expr_rvalue(&expr.node, context),
             Initializer::List(_) => panic!("Initializer:;List is unsupported"),
@@ -1391,43 +1396,6 @@ impl IrgenFunc<'_> {
         )
     }
 
-    // fn convert_array_to_pointer( // ME
-    //     &mut self,
-    //     ptr: ir::Operand,
-    //     dtype: ir::Dtype,
-    //     context: &mut Context,
-    // ) -> Result<ir::Operand, IrgenErrorMessage> {
-    //     // ✅ 배열인지 확인 (배열이 아닐 경우 변환 수행 X)
-    //     if let ir::Dtype::Pointer { inner, .. } = &dtype {
-    //         // let tmp = *inner.clone();
-    //         if let ir::Dtype::Array { inner: array_inner, .. } = *inner.clone() {
-    //             let zero_index = ir::Operand::Constant(ir::Constant::Int {
-    //                 value: 0,
-    //                 width: 32, // 일반적으로 32비트 정수 인덱스 사용
-    //                 is_signed: true,
-    //             });
-
-    //             // ✅ GEP(GetElementPtr)로 변환 수행
-    //             let converted_ptr = context.insert_instruction(ir::Instruction::GetElementPtr {
-    //                 ptr,
-    //                 offset: zero_index,
-    //                 dtype: ir::Dtype::Pointer {
-    //                     inner: Box::new(*array_inner.clone()), // ✅ Array -> Pointer<Int>
-    //                     is_const: false,
-    //                 },
-    //             });
-
-    //             println!("convert_array_to_pointer: {:?}", converted_ptr);
-    //             return converted_ptr;
-    //         }
-    //     }
-
-    //     // 배열이 아니면 변환 없이 반환
-    //     println!("convert_array_to_pointer: {:?}", ptr);
-    //     Ok(ptr)
-    //     // todo!()
-    // }
-
     fn convert_array_to_pointer(
         &mut self,
         ptr: ir::Operand,
@@ -1454,7 +1422,7 @@ impl IrgenFunc<'_> {
         Ok(converted_ptr)
     }
     
-
+    
     fn translate_expr_rvalue(
         &mut self,
         expr: &Expression,
@@ -1477,6 +1445,14 @@ impl IrgenFunc<'_> {
                     return Ok(ptr);
                 }
 
+                /*
+                ptr_inner_type <- 더 이상 ptr이 없도록 while loop 돌리고 싶은데...
+                */
+                // let mut ptr_inner_type =ptr_inner_type.clone();
+                // while let Some(ptr_inner) = ptr_inner_type.get_pointer_inner() {
+                //     ptr_inner_type = ptr_inner.clone();
+                // }
+            
                 // let's say two declarations are 'int a' and 'int b[10], 'a' and 'b' represent
                 // int* and '[10 x i32]' respectively. When 'a' is used as an r-value, it's an 
                 // integer value from 'int*' by 'Load' instruction. On the other hand, when 'b' is 
@@ -1490,7 +1466,7 @@ impl IrgenFunc<'_> {
                 }
                 
                 // println!("translate_expr_rvalue | bid {} | ptr {}", context.bid, ptr.clone());
-                println!("translate_expr_rvalue");
+                println!("translate_expr_rvalue | ptr {} {:?}", ptr, ptr);
                 context.insert_instruction(ir::Instruction::Load { ptr })
             }
             Expression::Constant(constant) => {
@@ -1820,7 +1796,7 @@ impl IrgenFunc<'_> {
         let rhs = self.translate_typecast(rhs, dtype.clone(), context)?;
 
         let dtype = match &op {
-            &BinaryOperator::Equals => {
+            &BinaryOperator::Equals | &BinaryOperator::Less => {
                 ir::Dtype::BOOL              
             }
             _ => dtype.clone()
@@ -1858,17 +1834,93 @@ impl IrgenFunc<'_> {
         }
     }
 
-    fn translate_index_op(
+    // fn translate_index_op( // .... array.c
+    //     &mut self,
+    //     lhs: &Expression,
+    //     rhs: &Expression,
+    //     context: &mut Context,
+    // ) -> Result<ir::Operand, IrgenErrorMessage> {
+    //     println!("translate_index_op");
+    //     println!("array lhs | {:?} \n\narray rhs | {:?}\n", lhs, rhs);
+    
+    //     // ✅ LHS를 rvalue로 변환 (이미 배열이면 `int*`로 변환됨)
+    //     let lhs = self.translate_expr_rvalue(lhs, context)?;
+    //     let lhs_type = lhs.dtype();
+    //     println!("translate_index_op | lhs {} {:?}",lhs.clone(), lhs.clone());
+    
+    //     // ✅ RHS를 rvalue로 변환
+    //     let rhs = self.translate_expr_rvalue(rhs, context)?;
+    //     let rhs_type = rhs.dtype();
+    //     println!("rhs_type {} \n", rhs_type.clone());
+
+    //     // ✅ 인덱스 변환 (i32 → i64) - GEP 연산을 위해 확장 필요
+    //     let index_64 = context.insert_instruction(ir::Instruction::TypeCast {
+    //         value: rhs.clone(),
+    //         target_dtype: ir::Dtype::Int {
+    //             width: 64,
+    //             is_signed: true,
+    //             is_const: false,
+    //         },
+    //     })?;
+        
+    //     // /*
+    //     // lhs <- ptr
+    //     // lhs_type = lhs.dtype
+    //     // lhs_ptr_inner_type = lhs_type.get_pointer_inner()
+
+    //     // lhs_ptr_inner_type.get_array_inner() -> extract the size
+    //     // */
+    //     let mut size = 4;
+    //     // let lhs_ptr_inner_type = lhs_type.get_pointer_inner()
+    //     //     .ok_or_else(|| panic!("'Operand' from 'symbol_table' must be pointer type"))?;
+    //     // if let Some(array_inner) = lhs_ptr_inner_type.get_array_inner(){
+    //     //     let ir::Dtype::Array { inner, size } = array else {todo!()};
+    //     // }
+
+
+    //     // ✅ 오프셋 계산 (index * element_size)
+    //     let offset = context.insert_instruction(ir::Instruction::BinOp {
+    //         op: BinaryOperator::Multiply,
+    //         lhs: index_64,
+    //         rhs: ir::Operand::Constant(ir::Constant::Int {
+    //             value: size, // `int` 타입 크기 (기본 4바이트)
+    //             width: 64,
+    //             is_signed: true,
+    //         }),
+    //         dtype: ir::Dtype::Int {
+    //             width: 64,
+    //             is_signed: true,
+    //             is_const: false,
+    //         },
+    //     })?;
+    
+    //     // ✅ `lhs`는 이미 `int*`이므로, GEP 수행
+    //     let element_ptr = context.insert_instruction(ir::Instruction::GetElementPtr {
+    //         ptr: lhs, // 이미 `int*` 타입임
+    //         offset,
+    //         dtype: lhs_type, // `int*` 그대로 유지
+    //     })?;
+    
+    //     println!("translate_index_op | element_ptr {:?}", element_ptr);
+    
+    //     Ok(element_ptr) // Load 수행할 필요 없음 (필요한 곳에서 Load 추가)
+    // }
+
+
+
+    fn translate_index_op( // .... array.c
         &mut self,
         lhs: &Expression,
         rhs: &Expression,
         context: &mut Context,
     ) -> Result<ir::Operand, IrgenErrorMessage> {
         println!("translate_index_op");
+        println!("array lhs | {:?} \n\narray rhs | {:?}\n", lhs, rhs);
     
         // ✅ LHS를 rvalue로 변환 (이미 배열이면 `int*`로 변환됨)
         let lhs = self.translate_expr_rvalue(lhs, context)?;
         let lhs_type = lhs.dtype();
+        println!("translate_index_op | lhs {} {:?}",lhs.clone(), lhs.clone());
     
         // ✅ RHS를 rvalue로 변환
         let rhs = self.translate_expr_rvalue(rhs, context)?;
@@ -1884,14 +1936,36 @@ impl IrgenFunc<'_> {
                 is_const: false,
             },
         })?;
+        
+        // /*
+        // lhs <- ptr
+        // lhs_type = lhs.dtype
+        // lhs_ptr_inner_type = lhs_type.get_pointer_inner()
 
-    
+        // lhs_ptr_inner_type.get_array_inner() -> extract the size
+        // */
+        let mut elt_size = 4;
+        let lhs_ptr_inner_type = lhs_type.get_pointer_inner()
+            .ok_or_else(|| panic!("'Operand' from 'symbol_table' must be pointer type"))?;
+        // if let Some(array_inner) = lhs_ptr_inner_type.get_array_inner(){
+        //     println!("translate_index_op {}", array_inner);
+        // let ir::Dtype::Array { inner, size } = lhs_ptr_inner_type else {todo!()};
+
+        match lhs_ptr_inner_type {
+            ir::Dtype::Array { inner, size } => {
+                elt_size = (size.clone() * 4) as u128;
+            }
+            _ => {}
+        }
+        // }
+
+
         // ✅ 오프셋 계산 (index * element_size)
         let offset = context.insert_instruction(ir::Instruction::BinOp {
             op: BinaryOperator::Multiply,
             lhs: index_64,
             rhs: ir::Operand::Constant(ir::Constant::Int {
-                value: 4, // `int` 타입 크기 (기본 4바이트)
+                value: elt_size, // `int` 타입 크기 (기본 4바이트)
                 width: 64,
                 is_signed: true,
             }),
@@ -1913,6 +1987,8 @@ impl IrgenFunc<'_> {
     
         Ok(element_ptr) // Load 수행할 필요 없음 (필요한 곳에서 Load 추가)
     }
+
+
     
     fn translate_assign_op(
         &mut self,
