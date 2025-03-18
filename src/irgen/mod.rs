@@ -38,6 +38,7 @@ use core::cmp::Ordering;
 use core::convert::TryFrom;
 use core::{fmt, mem};
 use std::collections::{BTreeMap, HashMap};
+use std::num;
 use std::ops::Deref;
 
 use ir::JumpArg;
@@ -472,6 +473,7 @@ impl Context {
         &mut self,
         instr: ir::Instruction,
     ) -> Result<ir::Operand, IrgenErrorMessage> {
+        println!("insert_instruction | \n{}\n", instr.clone());
         let dtype = instr.dtype();
         self.instrs.push(Named::new(None, instr));
 
@@ -536,6 +538,7 @@ impl IrgenFunc<'_> {
     ///
     /// Panics if another block with the same bid as `context` already existed.
     fn insert_block(&mut self, context: Context, exit: ir::BlockExit) {
+        println!("inset_block | context_bid {}", context.bid);
         let block = ir::Block {
             phinodes: if context.bid == self.bid_init {
                 self.phinodes_init.clone()
@@ -596,6 +599,9 @@ impl IrgenFunc<'_> {
         bid_break: Option<ir::BlockId>,
     ) -> Result<(), IrgenError> {
         // todo!()
+        // println!("-----translate_stmt--------\ncontext bid {} | stmt{:?}\n", context.bid, stmt);
+        println!("-----translate_stmt--------\ncontext bid {}\n", context.bid);
+        
         match stmt {
             // {
             //     stmt1;
@@ -978,6 +984,7 @@ impl IrgenFunc<'_> {
         decl: &Declaration,
         context: &mut Context,
     ) -> Result<(), IrgenErrorMessage> {
+        println!("--------translate_decl-----\n {:?}\n", decl);
         let (base_dtype, is_typedef) = 
             ir::Dtype::try_from_ast_declaration_specifiers(&decl.specifiers)
             .map_err(|e| IrgenErrorMessage::InvalidDtype { dtype_error: e })?;
@@ -1015,6 +1022,7 @@ impl IrgenFunc<'_> {
                     };
 
                     let _unused = self.translate_alloc(name, dtype.clone(), value, context)?;
+                    // println!("translate_decl\ncontenxt bid {} | translate_alloc {}\n", context.bid, _unused);
                 }
                 ir::Dtype::Function {..} => todo!(),
                 ir::Dtype::Typedef {..} => panic!("typedef should be replaced by real dtype"),
@@ -1200,6 +1208,8 @@ impl IrgenFunc<'_> {
         initializer: &ForInitializer,
         context: &mut Context
     ) -> Result<(), IrgenErrorMessage> {
+        println!("-----translate_for_initializer--------\ncontext bid {}\n", context.bid);
+        
         match initializer {
             ForInitializer::Empty => (),
             ForInitializer::Expression(expr) => {
@@ -1232,125 +1242,116 @@ impl IrgenFunc<'_> {
         let pointer_type = ir::Dtype::pointer(dtype.clone());
         // let rid = ir::RegisterId::local(id); // ME
         let ptr = ir::Operand::register(id, pointer_type);
-        self.insert_symbol_table_entry(var, ptr.clone())?;
+        self.insert_symbol_table_entry(var.clone(), ptr.clone())?;
+        println!("------translate_alloc-----");
+        println!("inset_symbol_table_entry");
+        println!("var: {}, ptr: {}\n", var.clone(), ptr.clone());
 
         // Initialize allocated register if "value" is not 'None'
         if let Some(value) = value {
             // Implicit type cast
+            println!("translate_alloc | translate_typecast | {}", value.clone());
             let value = self.translate_typecast(value, dtype, context)?;
             return context.insert_instruction(ir::Instruction::Store { ptr, value})
         }
 
+        println!("translate_alloc | ptr {}", ptr.clone());
         // Return alloc register if there is no store instruction
         Ok(ptr)
     }
 
-    fn translate_typecast( // ME
+    fn translate_typecast(
         &mut self,
         value: ir::Operand,
         dtype: ir::Dtype,
         context: &mut Context,
     ) -> Result<ir::Operand, IrgenErrorMessage> {
         let value_dtype = value.dtype();
-
-        // 변환이 필요 없는 경우 그대로 반환
+    
+        // ✅ 변환이 필요 없는 경우 그대로 반환
         if value_dtype == dtype {
             return Ok(value);
         }
     
-
         match (&value_dtype, &dtype) {
-            // ✅ 정수 -> 정수 변환 (예: int -> char, short -> long)
+            // ✅ 정수 -> 정수 변환
             (&ir::Dtype::Int { .. }, &ir::Dtype::Int { .. }) => {
                 context.insert_instruction(ir::Instruction::TypeCast { value, target_dtype: dtype })
             }
     
-            // ✅ 정수 <-> 실수 변환 (예: int -> float, double -> int)
+            // ✅ 정수 <-> 실수 변환
             (&ir::Dtype::Int { .. }, &ir::Dtype::Float { .. }) |
             (&ir::Dtype::Float { .. }, &ir::Dtype::Int { .. }) => {
                 context.insert_instruction(ir::Instruction::TypeCast { value, target_dtype: dtype })
             }
     
-            // ✅ 포인터 <-> 정수 변환 (예: (int*) 0x1234, (int) ptr)
+            // ✅ 포인터 <-> 정수 변환
             (&ir::Dtype::Pointer { .. }, &ir::Dtype::Int { .. }) |
             (&ir::Dtype::Int { .. }, &ir::Dtype::Pointer { .. }) => {
                 context.insert_instruction(ir::Instruction::TypeCast { value, target_dtype: dtype })
             }
     
-            // ✅ 포인터 <-> 포인터 변환 (예: void* → int*)
+            // ✅ 포인터 <-> 포인터 변환
             (&ir::Dtype::Pointer { .. }, &ir::Dtype::Pointer { .. }) => {
                 context.insert_instruction(ir::Instruction::TypeCast { value, target_dtype: dtype })
             }
     
-            // ❌ 변환이 불가능한 경우 (예: struct → int)
+            // ✅ 배열 → 포인터 변환 (예: int a[5] → int*)
+            (ir::Dtype::Array { inner, .. }, &ir::Dtype::Pointer { .. }) => {
+                // println!("translate_typecast | Array to Pointer: {:?}", value_dtype);
+                self.convert_array_to_pointer(value, value_dtype, context)
+            }
+    
+            // ❌ 변환이 불가능한 경우
             _ => Err(IrgenErrorMessage::Misc {
                 message: format!("Invalid type cast from {:?} to {:?}", value_dtype, dtype),
             }),
         }
     }
-
+    
     fn translate_typecast_to_bool(
         &mut self, 
         condition: ir::Operand,
         context: &mut Context
     ) -> Result<ir::Operand, IrgenErrorMessage> {
         let dtype = condition.dtype(); // condition의 타입 가져오기
-
-        match dtype {
-            // 이미 bool 타입이면 변환 불필요
-            ir::Dtype::BOOL => Ok(condition),
-            
-            // 정수형이면 0인지 비교하여 bool 변환
-            ir::Dtype::Int { .. } => {
-                let zero = ir::Operand::Constant(ir::Constant::Int {
-                    value: 0,
-                    width: dtype.get_int_width().unwrap(),
-                    is_signed: dtype.is_int_signed(),
-                });
-                context.insert_instruction(ir::Instruction::BinOp {
-                    op: BinaryOperator::NotEquals, 
-                    lhs: condition, 
-                    rhs: zero, 
-                    dtype: ir::Dtype::BOOL, // 변환된 결과는 BOOL 타입
-                })
+    
+        match condition {
+            // 이미 BOOL 타입이면 변환할 필요 없음
+            ir::Operand::Register { rid, dtype: ir::Dtype::BOOL } => Ok(ir::Operand::Register { rid, dtype: ir::Dtype::BOOL }),
+    
+            // 정수형이나 포인터이면 dtype만 BOOL로 변경
+            ir::Operand::Register { rid, .. } => {
+                Ok(ir::Operand::Register { rid, dtype: ir::Dtype::BOOL })
             },
     
-            // 실수형이면 0.0인지 비교하여 bool 변환
-            ir::Dtype::Float { .. } => {
-                let zero = ir::Operand::Constant(ir::Constant::Float {
-                    value: ordered_float::OrderedFloat(0.0),
-                    width: dtype.get_float_width().unwrap(),
-                });
-                context.insert_instruction(ir::Instruction::BinOp {
-                    op: BinaryOperator::NotEquals, 
-                    lhs: condition, 
-                    rhs: zero, 
-                    dtype: ir::Dtype::BOOL,
-                })
-            },
-    
-            // 포인터이면 NULL (0)과 비교하여 bool 변환
-            ir::Dtype::Pointer { .. } => {
-                let null = ir::Operand::Constant(ir::Constant::Int {
-                    value: 0,
-                    width: ir::Dtype::SIZE_OF_POINTER * 8, // 포인터 크기에 맞게 설정
+            // Constant 값이면 즉시 변환 (0이면 false, 나머지는 true)
+            ir::Operand::Constant(ir::Constant::Int { value, .. }) => {
+                let bool_value = if value == 0 { 0 } else { 1 };
+                Ok(ir::Operand::Constant(ir::Constant::Int {
+                    value: bool_value,
+                    width: 1, // BOOL(u1)
                     is_signed: false,
-                });
-                context.insert_instruction(ir::Instruction::BinOp {
-                    op: BinaryOperator::NotEquals, 
-                    lhs: condition, 
-                    rhs: null, 
-                    dtype: ir::Dtype::BOOL,
-                })
+                }))
             },
     
-            // 변환 불가능한 타입
+            // Float 값이면 0.0인지 확인해서 변환
+            ir::Operand::Constant(ir::Constant::Float { value, .. }) => {
+                let bool_value = if value.0 == 0.0 { 0 } else { 1 };
+                Ok(ir::Operand::Constant(ir::Constant::Int {
+                    value: bool_value,
+                    width: 1,
+                    is_signed: false,
+                }))
+            },
+    
+            // 변환 불가능한 타입이면 에러 반환
             _ => Err(IrgenErrorMessage::Misc {
                 message: format!("Cannot convert {:?} to bool", dtype),
             }),
         }
-    
     }
+
 
     /// Translate Initializer to IR instruction
     fn translate_initializer(
@@ -1390,14 +1391,69 @@ impl IrgenFunc<'_> {
         )
     }
 
+    // fn convert_array_to_pointer( // ME
+    //     &mut self,
+    //     ptr: ir::Operand,
+    //     dtype: ir::Dtype,
+    //     context: &mut Context,
+    // ) -> Result<ir::Operand, IrgenErrorMessage> {
+    //     // ✅ 배열인지 확인 (배열이 아닐 경우 변환 수행 X)
+    //     if let ir::Dtype::Pointer { inner, .. } = &dtype {
+    //         // let tmp = *inner.clone();
+    //         if let ir::Dtype::Array { inner: array_inner, .. } = *inner.clone() {
+    //             let zero_index = ir::Operand::Constant(ir::Constant::Int {
+    //                 value: 0,
+    //                 width: 32, // 일반적으로 32비트 정수 인덱스 사용
+    //                 is_signed: true,
+    //             });
+
+    //             // ✅ GEP(GetElementPtr)로 변환 수행
+    //             let converted_ptr = context.insert_instruction(ir::Instruction::GetElementPtr {
+    //                 ptr,
+    //                 offset: zero_index,
+    //                 dtype: ir::Dtype::Pointer {
+    //                     inner: Box::new(*array_inner.clone()), // ✅ Array -> Pointer<Int>
+    //                     is_const: false,
+    //                 },
+    //             });
+
+    //             println!("convert_array_to_pointer: {:?}", converted_ptr);
+    //             return converted_ptr;
+    //         }
+    //     }
+
+    //     // 배열이 아니면 변환 없이 반환
+    //     println!("convert_array_to_pointer: {:?}", ptr);
+    //     Ok(ptr)
+    //     // todo!()
+    // }
+
     fn convert_array_to_pointer(
         &mut self,
         ptr: ir::Operand,
-        dtype: ir::Dtype,
+        element_type: ir::Dtype, // ✅ 배열 원소의 타입을 직접 받음
         context: &mut Context,
     ) -> Result<ir::Operand, IrgenErrorMessage> {
-        todo!()
+        let zero_index = ir::Operand::Constant(ir::Constant::Int {
+            value: 0,
+            width: 32, // ✅ 32비트 정수 인덱스 사용
+            is_signed: true,
+        });
+    
+        // ✅ `getelementptr`을 사용하여 배열의 첫 번째 요소 포인터 반환
+        let converted_ptr = context.insert_instruction(ir::Instruction::GetElementPtr {
+            ptr,
+            offset: zero_index,
+            dtype: ir::Dtype::Pointer {
+                inner: Box::new(element_type), // ✅ Array<T> → Pointer<T> 변환
+                is_const: false,
+            },
+        })?;
+    
+        println!("convert_array_to_pointer | converted: {:?}", converted_ptr);
+        Ok(converted_ptr)
     }
+    
 
     fn translate_expr_rvalue(
         &mut self,
@@ -1408,6 +1464,7 @@ impl IrgenFunc<'_> {
             Expression::Identifier(identifier) => {
                 // let tmp = &identifier.node.name;
                 let ptr = self.lookup_symbol_table(&identifier.node.name)?;
+                // println!("translate_expr_rvalue | lookup_symbol_table | bid {}| len {}\n{:#?}\n",context.bid, self.symbol_table.len(),self.symbol_table);
 
                 let dtype_of_ptr = ptr.dtype();
                 let ptr_inner_type = dtype_of_ptr
@@ -1425,10 +1482,15 @@ impl IrgenFunc<'_> {
                 // integer value from 'int*' by 'Load' instruction. On the other hand, when 'b' is 
                 // used as an r-value, it's interpreted as an integer pointer that will be indexed.
                 if let Some(array_inner) = ptr_inner_type.get_array_inner() {
+                    // println!("translate_expr_rvalue | bid {} | ptr {} | array_inner", context.bid, ptr.clone());
+                    
                     // We convert array into pointer if, e.g. 'b' is used as an r-value
+                    println!("translate_expr_rvalue | ptr {} {:?} | array_inner {}", ptr, ptr, array_inner.clone());
                     return self.convert_array_to_pointer(ptr, array_inner.clone(), context);
                 }
-
+                
+                // println!("translate_expr_rvalue | bid {} | ptr {}", context.bid, ptr.clone());
+                println!("translate_expr_rvalue");
                 context.insert_instruction(ir::Instruction::Load { ptr })
             }
             Expression::Constant(constant) => {
@@ -1519,6 +1581,26 @@ impl IrgenFunc<'_> {
         return ty1;
     }
 
+    // ✅ 배열이 포함된 경우 항상 포인터로 변환 후 처리
+    let ty1 = if let Some(inner) = ty1.get_array_inner() {
+        Pointer {
+            inner: Box::new(inner.clone()),
+            is_const: false,
+        }
+    } else {
+        ty1
+    };
+
+    let ty2 = if let Some(inner) = ty2.get_array_inner() {
+        Pointer {
+            inner: Box::new(inner.clone()),
+            is_const: false,
+        }
+    } else {
+        ty2
+    };
+
+
     match (&ty1, &ty2) {
         // 2. 정수와 실수 연산이면 실수로 변환
         (Int { .. }, Float { .. }) | (Float { .. }, Int { .. }) => Float {
@@ -1529,7 +1611,7 @@ impl IrgenFunc<'_> {
         // 3. 정수끼리 연산이면 더 큰 크기의 정수로 변환
         (Int { .. }, Int { .. }) => {
             let width = std::cmp::max(ty1.get_int_width().unwrap(), ty2.get_int_width().unwrap());
-            println!("merge_dtype | int int | {}", width);
+            // println!("merge_dtype | int int | {}", width);
             Int {
                 width,
                 is_signed: ty1.is_int_signed() || ty2.is_int_signed(),
@@ -1617,7 +1699,7 @@ impl IrgenFunc<'_> {
             }
         );
 
-
+        println!("translate_conditional");
         context.insert_instruction(ir::Instruction::Load {ptr})
     }
 
@@ -1679,6 +1761,7 @@ impl IrgenFunc<'_> {
         )
     }
 
+
     fn translate_binary_op( // ME
         &mut self,
         op: BinaryOperator,
@@ -1686,15 +1769,57 @@ impl IrgenFunc<'_> {
         rhs: &Expression,
         context: &mut Context,
     ) -> Result<ir::Operand, IrgenErrorMessage> {
+        // ✅ Index 연산이면 translate_index_op 호출!
+        match &op {
+            &BinaryOperator::Index => {
+                return self.translate_index_op(lhs, rhs, context);
+            },
+            &BinaryOperator::Assign => {
+                /*
+                lhs : *int
+                rhs : int
+
+                store int -> *int
+                */
+                return self.translate_assign_op(lhs, rhs, context);
+            },
+            &BinaryOperator::AssignPlus => {
+                // make a new expression?? <- bad idea
+                return self.translate_assignplus_op(lhs, rhs, context);
+            }
+            _ => {}
+        }
+
+        println!("translate_binary_op");
+        let debug = format!("op {:?} lhs {:?} rhs {:?} \n", op.clone(), lhs.clone(), rhs.clone());
+   
+
         let lhs = self.translate_expr_rvalue(lhs, context)?;
         let rhs = self.translate_expr_rvalue(rhs, context)?;
-        let dtype = self.merge_dtype(lhs.dtype(), rhs.dtype());
-        let lhs = self.translate_typecast(lhs, dtype.clone(), context)?; // typecast
-        let rhs = self.translate_typecast(rhs, dtype.clone(), context)?; // typecast
 
-        context.insert_instruction(
-            ir::Instruction::BinOp { op, lhs, rhs, dtype }
-        )
+        let dtype = self.merge_dtype(lhs.dtype(), rhs.dtype());
+
+        // // ✅ 타입이 다를 때만 typecast 수행
+        // let lhs = if lhs.dtype() != dtype.clone() {
+        //     // println!("translate_binary_op");
+        //     // println!("{}",debug);
+        //     self.translate_typecast(lhs, dtype.clone(), context)?
+        // } else {
+        //     lhs
+        // };
+
+        // let rhs = if rhs.dtype() != dtype.clone() {
+        //     println!("translate_binary_op");
+        //     println!("{}",debug);
+        //     println!("rhs_type {}, dtype {}", rhs.dtype().clone(), dtype.clone());
+        //     self.translate_typecast(rhs, dtype.clone(), context)?
+        // } else {
+        //     rhs
+        // };
+        let lhs = self.translate_typecast(lhs, dtype.clone(), context)?;
+        let rhs = self.translate_typecast(rhs, dtype.clone(), context)?;
+
+        context.insert_instruction(ir::Instruction::BinOp { op, lhs, rhs, dtype })
     }
 
     fn translate_unary_op( // ME
@@ -1702,28 +1827,180 @@ impl IrgenFunc<'_> {
         unary: &UnaryOperatorExpression,
         context: &mut Context
     ) -> Result<ir::Operand, IrgenErrorMessage> {
-        let op = unary.operator.node.clone();
-        let operand = self.translate_expr_rvalue(&unary.operand.node, context)?;
-        let dtype = operand.dtype();
 
-        context.insert_instruction(
-            ir::Instruction::UnaryOp { op, operand, dtype }
-        )
+        let op = unary.operator.node.clone();
+        match &op {
+            &UnaryOperator::PostIncrement => {
+                let operand_ptr = self.translate_expr_lvalue(&unary.operand.node, context)?;
+                let operand = context.insert_instruction(ir::Instruction::Load { ptr: operand_ptr.clone() })?;
+                // println!("translate_unary_op | {:?}\nopernad{} {:?}", unary.clone(), operand, operand);
+                
+                let dtype = operand.dtype();
+                let num_1 = ir::Operand::constant(ir::Constant::int(1,dtype.clone()));
+                let instr = ir::Instruction::BinOp { op: BinaryOperator::Plus, lhs: operand, rhs: num_1, dtype};
+                let result = context.insert_instruction(instr)?;
+
+                context.insert_instruction(ir::Instruction::Store { ptr: operand_ptr, value: result })
+            }
+            _ => {
+                // context.insert_instruction(
+                //     ir::Instruction::UnaryOp { op, operand, dtype }
+                // )
+                todo!()
+            }
+        }
     }
-    fn translate_index_op( // ME
+
+    fn translate_index_op(
         &mut self,
         lhs: &Expression,
         rhs: &Expression,
         context: &mut Context,
     ) -> Result<ir::Operand, IrgenErrorMessage> {
-        todo!()
+        println!("translate_index_op");
+    
+        // ✅ LHS를 rvalue로 변환 (이미 배열이면 `int*`로 변환됨)
+        let lhs = self.translate_expr_rvalue(lhs, context)?;
+        let lhs_type = lhs.dtype();
+    
+        // ✅ RHS를 rvalue로 변환
+        let rhs = self.translate_expr_rvalue(rhs, context)?;
+        let rhs_type = rhs.dtype();
+        println!("rhs_type {} \n", rhs_type.clone());
+
+        // ✅ 인덱스 변환 (i32 → i64) - GEP 연산을 위해 확장 필요
+        let index_64 = context.insert_instruction(ir::Instruction::TypeCast {
+            value: rhs.clone(),
+            target_dtype: ir::Dtype::Int {
+                width: 64,
+                is_signed: true,
+                is_const: false,
+            },
+        })?;
+
+    
+        // ✅ 오프셋 계산 (index * element_size)
+        let offset = context.insert_instruction(ir::Instruction::BinOp {
+            op: BinaryOperator::Multiply,
+            lhs: index_64,
+            rhs: ir::Operand::Constant(ir::Constant::Int {
+                value: 4, // `int` 타입 크기 (기본 4바이트)
+                width: 64,
+                is_signed: true,
+            }),
+            dtype: ir::Dtype::Int {
+                width: 64,
+                is_signed: true,
+                is_const: false,
+            },
+        })?;
+    
+        // ✅ `lhs`는 이미 `int*`이므로, GEP 수행
+        let element_ptr = context.insert_instruction(ir::Instruction::GetElementPtr {
+            ptr: lhs, // 이미 `int*` 타입임
+            offset,
+            dtype: lhs_type, // `int*` 그대로 유지
+        })?;
+    
+        println!("translate_index_op | element_ptr {:?}", element_ptr);
+    
+        Ok(element_ptr) // Load 수행할 필요 없음 (필요한 곳에서 Load 추가)
     }
+    
+    fn translate_assign_op(
+        &mut self,
+        lhs: &Expression, // 원래 LHS (pointer)
+        rhs: &Expression, // 원래 RHS (value)
+        context: &mut Context,
+    ) -> Result<ir::Operand, IrgenErrorMessage> {
+        
+        let lhs = self.translate_expr_rvalue(lhs, context)?;
+        let rhs = self.translate_expr_rvalue(rhs, context)?;
+
+
+    
+        // ✅ rhs는 반드시 포인터여야 함
+        let lhs_inner_type = match lhs.dtype() {
+            ir::Dtype::Pointer { inner, .. } => *inner.clone(),
+            _ => {
+                return Err(IrgenErrorMessage::Misc {
+                    message: format!(
+                        "translate_assign_op | Expected pointer type for lhs, but got {:?}",
+                        lhs.dtype()
+                    ),
+                })
+            }
+        };
+    
+        // ✅ lhs의 타입과 포인터가 가리키는 타입이 일치해야 함
+        if rhs.dtype() != lhs_inner_type {
+            return Err(IrgenErrorMessage::Misc {
+                message: format!(
+                    "translate_assign_op | Type mismatch: trying to store {:?} into {:?}",
+                    rhs.dtype(),
+                    lhs_inner_type
+                ),
+            });
+        }
+    
+        // ✅ STORE 연산 수행
+        let store_inst = ir::Instruction::Store { ptr: lhs, value: rhs };
+        context.insert_instruction(store_inst)
+    }
+    
+
+    fn translate_assignplus_op(
+        &mut self,
+        lhs: &Expression, // 원래 LHS (value)
+        rhs: &Expression, // 원래 RHS (value)
+        context: &mut Context,
+    ) -> Result<ir::Operand, IrgenErrorMessage> {
+    
+        // 1️⃣ LHS를 lvalue로 변환하여 메모리 주소 얻기
+        let lhs_ptr = self.translate_expr_lvalue(lhs, context)?;
+        let rhs = self.translate_expr_lvalue(rhs, context)?;
+        let lhs_ptr_dtype = lhs_ptr.dtype();
+        let lhs_ptr_dtype_inner = lhs_ptr_dtype.get_pointer_inner().unwrap().clone();
+
+        // println!("translate_assignplus_op | LHS ptr: {:?}", lhs_ptr);
+    
+        // // 2️⃣ RHS를 rvalue로 변환하여 값 얻기
+        // let rhs = self.translate_expr_rvalue(rhs, context)?;
+        let rhs_dtype = rhs.dtype();
+    
+        let rhs = match &rhs_dtype {
+            &ir::Dtype::Pointer { .. } => {
+                // println!("rhs dtype {}", rhs_dtype);
+                context.insert_instruction(ir::Instruction::Load { ptr: rhs })?
+            }
+            _ => {rhs}
+        };
+
+    
+        // 3️⃣ LHS 값을 Load하여 현재 값을 가져오기
+        let lhs_value = context.insert_instruction(ir::Instruction::Load { ptr: lhs_ptr.clone() })?;
+    
+        // 4️⃣ `lhs_value + rhs` 수행
+        let result = context.insert_instruction(ir::Instruction::BinOp {
+            op: BinaryOperator::Plus,
+            lhs: lhs_value,
+            rhs,
+            dtype: lhs_ptr_dtype_inner.clone(),
+        })?;
+    
+        // 5️⃣ 결과값을 LHS 위치에 Store
+        let store_inst = ir::Instruction::Store { ptr: lhs_ptr, value: result };
+        context.insert_instruction(store_inst)
+    }
+    
+
 
     fn translate_expr_lvalue(
         &mut self,
         expr: &Expression,
         context: &mut Context
     ) -> Result<ir::Operand, IrgenErrorMessage> {
+        println!("trnalsate_expr_lvalue | expr {:?}", expr);
         match expr {
             Expression::Identifier(identifier) => {
                 self.lookup_symbol_table(&identifier.node.name)
@@ -1894,14 +2171,26 @@ impl IrgenFunc<'_> {
     if signature.params.len() != name_of_params.len() {
         panic!("length of 'parameters' and 'name_of_params' must be same")
     }
+    
 
     for (i, (dtype, var)) in izip!(&signature.params, name_of_params).enumerate() {
         let value = Some(ir::Operand::register(
             ir::RegisterId::arg(bid_init, i), 
             dtype.clone()
         ));
-        let _unused = self.translate_alloc(var.clone(), dtype.clone(), value, context)?;
+        // let tmp = self.phinodes_init.clone();
+        // self.phinodes_init.push();
+        let new_elt = Named::new(Some(var.to_string()),dtype.clone());
+        self.phinodes_init.push(new_elt);
+        let _unused = self.translate_alloc(var.clone(), dtype.clone(), value.clone(), context)?;
+        // println!("translae_param\ncontext bid {} translate_alloc {}", context.bid, _unused);
+        println!(
+            "translate_parameter_decl | Allocated: value {}, dtype {}",
+            value.unwrap(), dtype
+        );
+    
     }
+
     Ok(())
     }
 }
