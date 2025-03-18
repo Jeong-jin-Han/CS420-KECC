@@ -1819,6 +1819,13 @@ impl IrgenFunc<'_> {
         let lhs = self.translate_typecast(lhs, dtype.clone(), context)?;
         let rhs = self.translate_typecast(rhs, dtype.clone(), context)?;
 
+        let dtype = match &op {
+            &BinaryOperator::Equals => {
+                ir::Dtype::BOOL              
+            }
+            _ => dtype.clone()
+        };
+
         context.insert_instruction(ir::Instruction::BinOp { op, lhs, rhs, dtype })
     }
 
@@ -1955,30 +1962,25 @@ impl IrgenFunc<'_> {
         rhs: &Expression, // 원래 RHS (value)
         context: &mut Context,
     ) -> Result<ir::Operand, IrgenErrorMessage> {
-    
-        // 1️⃣ LHS를 lvalue로 변환하여 메모리 주소 얻기
         let lhs_ptr = self.translate_expr_lvalue(lhs, context)?;
-        let rhs = self.translate_expr_lvalue(rhs, context)?;
         let lhs_ptr_dtype = lhs_ptr.dtype();
         let lhs_ptr_dtype_inner = lhs_ptr_dtype.get_pointer_inner().unwrap().clone();
-
-        // println!("translate_assignplus_op | LHS ptr: {:?}", lhs_ptr);
+    
+        // 3️⃣ LHS 값을 Load하여 현재 값을 가져오기
+        let lhs_value = context.insert_instruction(ir::Instruction::Load { ptr: lhs_ptr.clone() })?;
+    
+    
+        let rhs = self.translate_expr_lvalue(rhs, context)?;
     
         // // 2️⃣ RHS를 rvalue로 변환하여 값 얻기
-        // let rhs = self.translate_expr_rvalue(rhs, context)?;
         let rhs_dtype = rhs.dtype();
     
         let rhs = match &rhs_dtype {
             &ir::Dtype::Pointer { .. } => {
-                // println!("rhs dtype {}", rhs_dtype);
                 context.insert_instruction(ir::Instruction::Load { ptr: rhs })?
             }
             _ => {rhs}
         };
-
-    
-        // 3️⃣ LHS 값을 Load하여 현재 값을 가져오기
-        let lhs_value = context.insert_instruction(ir::Instruction::Load { ptr: lhs_ptr.clone() })?;
     
         // 4️⃣ `lhs_value + rhs` 수행
         let result = context.insert_instruction(ir::Instruction::BinOp {

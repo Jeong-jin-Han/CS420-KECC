@@ -158,13 +158,16 @@ pub fn test_irgen(path: &Path) {
         .translate(&path)
         .unwrap_or_else(|_| panic!("parse failed {}", path.display()));
 
+    println!("--------test_irgen | unit {:?}--------", unit);
     let mut ir = Irgen::default()
         .translate(&unit)
         .unwrap_or_else(|irgen_error| panic!("{}", irgen_error));
 
+
     let rand_num = rand::rng().random_range(1..100);
     let new_c = modify_c(path, rand_num);
     modify_ir(&mut ir, rand_num);
+
 
     // compile recolved c example
     let temp_dir = tempdir().expect("temp dir creation failed");
@@ -226,11 +229,30 @@ pub fn test_irgen(path: &Path) {
 
     let status = some_or_exit!(status.code(), SKIP_TEST);
 
+
+    // use std::io::stdout;
+    // use crate::write_base::WriteLine;
+    // let mut output = stdout();
+    // match ir.write_line(0, &mut output) {
+    //     Ok(_) => println!("---------test_irgen | IR (KECC format) ----------"),
+    //     Err(_) => println!("write_ir failed to write IR."),
+    // }
+    let ir_path = Path::new("/home/hanjeongjin/Workspace_ubuntu/cs420_ubuntu/kecc-private/examples/HW1_debug/hw2_debug.ir");
+    save_ir_to_file(&ir, ir_path);
+
+
     // Interpret resolved ir
     let args = Vec::new();
+
+    println!("---------test_irgen | ir ----------\n{:?}\n\n", ir); // ME
+    // println!("---------test_irgen | ir ----------\n{:#?}\n\n", ir); // ME
     let result = ir::interp(&ir, args).unwrap_or_else(|interp_error| panic!("{interp_error}"));
+    println!("---------test_irgen | result ------\n{:?}\n\n", result); // ME
+    
     // We only allow a main function whose return type is `int`
     let (value, width, is_signed) = result.get_int().expect("non-integer value occurs");
+    // println!("test_irgen | result | value {}", value); // ME
+    
     assert_eq!(width, 32);
     assert!(is_signed);
 
@@ -592,4 +614,24 @@ pub fn test_end_to_end(path: &Path) {
         clang_status as u8, qemu_status as u8
     );
     assert_eq!(clang_status as u8, qemu_status as u8);
+}
+
+
+pub fn save_ir_to_file(ir: &ir::TranslationUnit, file_path: &Path) {
+    use std::fs::OpenOptions;
+    use crate::write_base::WriteLine;
+    
+    // 🔹 기존 파일을 열고 덮어쓰기 모드로 설정
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create(true) // 파일이 없으면 생성
+        .truncate(true) // 기존 내용 삭제 후 덮어쓰기
+        .open(file_path)
+        .expect("Failed to open IR file for writing");
+
+    // 🔹 IR 내용을 파일에 저장
+    ir.write_line(0, &mut file)
+        .expect("Failed to write IR to file");
+
+    println!("IR file successfully saved at: {}", file_path.display());
 }

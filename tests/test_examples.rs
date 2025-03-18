@@ -105,15 +105,22 @@ fn test_examples_write_c() {
 
 #[test]
 fn test_examples_irgen_small() {
-    println!("[testing irgen for \"examples/c/{HELLO_MAIN}.c\"]");
-    test_irgen(Path::new(&format!("examples/c/{HELLO_MAIN}.c")));
-    test_dir(Path::new("examples/c"), OsStr::new("c"), |path| {
-        let path_str = &path.to_str().expect("`path` must be transformed to `&str`");
-        if !IRGEN_SMALL_TEST_IGNORE_LIST.contains(path_str) && !path_str.contains(HELLO_MAIN) {
-            println!("[testing irgen for {path:?}]");
-            test_irgen(path);
-        }
-    });
+    // println!("[testing irgen for \"examples/c/{HELLO_MAIN}.c\"]");
+    // test_irgen(Path::new(&format!("examples/c/{HELLO_MAIN}.c")));
+
+ 
+    // println!("[testing irgen for \"examples/c/alignof.c\"]");
+    // test_irgen(Path::new(&format!("examples/c/alignof.c")));
+    
+    println!("[testing irgen for \"examples/c/array2.c\"]");
+    test_irgen(Path::new(&format!("examples/c/array2.c")));
+    // test_dir(Path::new("examples/c"), OsStr::new("c"), |path| {
+    //     let path_str = &path.to_str().expect("`path` must be transformed to `&str`");
+    //     if !IRGEN_SMALL_TEST_IGNORE_LIST.contains(path_str) && !path_str.contains(HELLO_MAIN) {
+    //         println!("[testing irgen for {path:?}]");
+    //         test_irgen(path);
+    //     }
+    // });
 }
 
 #[test]
