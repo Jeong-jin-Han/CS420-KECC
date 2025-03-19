@@ -2081,25 +2081,25 @@ impl IrgenFunc<'_> {
         }
 
     
-        // ✅ 추가적인 배열 포인터 접근이 필요한지 검사
-        if let Some(inner) = lhs_type.get_pointer_inner() {
-            if let ir::Dtype::Array { inner, size } = inner {
-                println!("translate_index_op | Additional array indexing needed!");
-                let final_element_ptr = context.insert_instruction(ir::Instruction::GetElementPtr {
-                    ptr: element_ptr,
-                    offset: ir::Operand::Constant(ir::Constant::Int {
-                        value: 0, // 두 번째 `GetElementPtr`에서 offset 0을 적용
-                        width: 64,
-                        is_signed: true,
-                    }),
-                    dtype: ir::Dtype::Pointer {
-                        inner: Box::new(*inner.clone()),
-                        is_const: false,
-                    },
-                })?;
-                return Ok(final_element_ptr);
-            }
-        }
+        // // ✅ 추가적인 배열 포인터 접근이 필요한지 검사
+        // if let Some(inner) = lhs_type.get_pointer_inner() {
+        //     if let ir::Dtype::Array { inner, size } = inner {
+        //         println!("translate_index_op | Additional array indexing needed!");
+        //         let final_element_ptr = context.insert_instruction(ir::Instruction::GetElementPtr {
+        //             ptr: element_ptr,
+        //             offset: ir::Operand::Constant(ir::Constant::Int {
+        //                 value: 0, // 두 번째 `GetElementPtr`에서 offset 0을 적용
+        //                 width: 64,
+        //                 is_signed: true,
+        //             }),
+        //             dtype: ir::Dtype::Pointer {
+        //                 inner: Box::new(*inner.clone()),
+        //                 is_const: false,
+        //             },
+        //         })?;
+        //         return Ok(final_element_ptr);
+        //     }
+        // }
     
         println!("translate_index_op | element_ptr {}", element_ptr);
         Ok(element_ptr)
