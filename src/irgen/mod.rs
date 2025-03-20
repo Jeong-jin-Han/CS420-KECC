@@ -41,7 +41,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::num;
 use std::ops::Deref;
 
-use ir::JumpArg;
+use ir::{JumpArg, Operand};
 use itertools::izip;
 use lang_c::ast::*;
 use lang_c::driver::Parse;
@@ -292,6 +292,7 @@ impl Irgen {
         let name = name_of_declarator(declarator);
         let name_of_params = name_of_params_from_function_declarator(declarator)
             .expect("declarator is not from function definition");
+        println!("add_function_definition | {:?}", name_of_params.clone());
 
         let (base_dtype, is_typedef) = ir::Dtype::try_from_ast_declaration_specifiers(specifiers)
             .map_err(|e| {
@@ -332,6 +333,7 @@ impl Irgen {
         // Adds new declaration if nothing has been declared before
         let decl = ir::Declaration::try_from(dtype).unwrap();
         self.add_decl(&name, decl)?;
+        println!("add_function_definition | decl {:#?}", self.decls.clone());
 
         // Prepare scope for global variable
         let global_scope: HashMap<_, _> = self
@@ -344,6 +346,7 @@ impl Irgen {
                 (name.clone(), operand)
             })
             .collect();
+        println!("\nadd_function_definition {:?}\n", global_scope);
 
         // Prepares for irgen pass.
         let mut irgen = IrgenFunc {
@@ -360,6 +363,7 @@ impl Irgen {
             symbol_table: vec![global_scope],
         };
         let mut context = Context::new(irgen.bid_init);
+        println!("\nadd_function_definition | context bid {}\n", context.bid);
 
         // Enter variable scope for alloc registers matched with function parameters
         irgen.enter_scope();
@@ -397,10 +401,12 @@ impl Irgen {
         irgen.exit_scope();
 
         let func_def = ir::FunctionDefinition {
-            allocations: irgen.allocations,
+            allocations: irgen.allocations.clone(),
             blocks: irgen.blocks,
             bid_init: irgen.bid_init,
         };
+
+        println!("add_function_definition | alloations {:?}", irgen.allocations.clone());
 
         let decl = self
             .decls
@@ -1008,17 +1014,18 @@ impl IrgenFunc<'_> {
                 .map_err(|e| IrgenErrorMessage::InvalidDtype { dtype_error: e })?;
 
             let name = name_of_declarator(declarator);
+            
+            println!("translate_decl | name {}", name.clone());
 
             match &dtype {
                 ir::Dtype::Unit { .. } => todo!(),
                 // TODO: when applying initiallizer, type checking is necessary
                 ir::Dtype::Int { .. }
                 | ir::Dtype::Float {..}
-                | ir::Dtype::Pointer {..}
-                | ir::Dtype::Array {..} => {
+                | ir::Dtype::Pointer {..} => {
                     // Check whether Initializer is exist
                     let value = if let Some(initializer) = &init_decl.node.initializer {
-                        Some(self.translate_initializer(&initializer.node, context)?)
+                        Some(self.translate_initializer(&initializer.node, None, context)?)
                     } else {
                         None
                     };
@@ -1026,6 +1033,12 @@ impl IrgenFunc<'_> {
                     let _unused = self.translate_alloc(name, dtype.clone(), value, context)?;
                     // println!("translate_decl\ncontenxt bid {} | translate_alloc {}\n", context.bid, _unused);
                 }
+                ir::Dtype::Array { inner, size } => {
+                    let ptr = self.translate_alloc(name, dtype.clone(), None, context)?;
+                    if let Some(initializer) = &init_decl.node.initializer {
+                       let mut value = self.translate_initializer(&initializer.node,Some(ptr), context)?;
+                    };
+                },
                 ir::Dtype::Function {..} => todo!(),
                 ir::Dtype::Typedef {..} => panic!("typedef should be replaced by real dtype"),
                 _ => todo!()
@@ -1359,15 +1372,106 @@ impl IrgenFunc<'_> {
     fn translate_initializer(
         &mut self,
         initializer: &Initializer,
+        ptr: Option<ir::Operand>,
         context: &mut Context
     ) -> Result<ir::Operand, IrgenErrorMessage> {
         /*
         array5.c 에서 list에 대한 initializer가 필요함.
         */
+        
         match initializer {
-            Initializer::Expression(expr) => self.translate_expr_rvalue(&expr.node, context),
-            Initializer::List(_) => panic!("Initializer:;List is unsupported"),
+            Initializer::Expression(expr) => {
+                if let Some(pointer) = ptr{
+
+    
+                    let index_64 = ir::Operand::Constant(ir::Constant::Int {
+                        value: 1, // 배열 크기 적용
+                        width: 64,
+                        is_signed: true,
+                    });
+                    let mut pointer_type = pointer.dtype();
+
+                    // ✅ 배열 크기 가져오기
+                    let mut elt_size = 4; // 기본 int 크기 (4바이트)
+                    let ptr_inner_type = pointer_type.get_pointer_inner()
+                        .ok_or_else(|| panic!("'Operand' from 'symbol_table' must be pointer type"))?;
+                    // let element_type = ptr_inner_type.get_array_inner()
+                    //     .ok_or_else(|| panic!("'Operand' from 'symbol_table' must be pointer type"))?;
+                    
+                    // let array_pointer = self.convert_array_to_pointer(pointer.clone(), element_type.clone(), context)?;
+                    // println!("translate_initializer | pointer {}", array_pointer);
+                    // pointer_type = pointer.dtype();
+                    // // ✅ 배열의 크기를 가져와 곱하기 (i32의 크기는 4)
+                    // if let ir::Dtype::Array { inner, size } = ptr_inner_type {
+                    //     elt_size = (size * 4) as u128;
+                    // }
+                
+                    // ✅ 오프셋 계산 (index * element_size)
+                    let offset = context.insert_instruction(ir::Instruction::BinOp {
+                        op: BinaryOperator::Multiply,
+                        lhs: index_64,
+                        rhs: ir::Operand::Constant(ir::Constant::Int {
+                            value: elt_size, // 배열 크기 적용
+                            width: 64,
+                            is_signed: true,
+                        }),
+                        dtype: ir::Dtype::Int {
+                            width: 64,
+                            is_signed: true,
+                            is_const: false,
+                        },
+                    })?;
+
+
+                    let gep_instr = ir::Instruction::GetElementPtr { ptr: pointer.clone(), offset, dtype: pointer_type};
+                    let store_ptr = context.insert_instruction(gep_instr)?;
+                    // let store_ptr = array_pointer;
+                    println!("translate_initializer | pointer {}", pointer);
+                    let value = self.translate_expr_rvalue(&expr.node, context)?;
+                    let store_instr = ir::Instruction::Store { ptr: store_ptr, value};
+                    context.insert_instruction(store_instr)
+                } else {
+                    self.translate_expr_rvalue(&expr.node, context)
+                }
+            }
+            Initializer::List(listitems) => {
+                // TODO 
+                // let mut result=Err(
+                //     IrgenErrorMessage::Misc { message: "operand should be initialized".to_string() }
+                // );
+                // let pointer = (ptr.clone()).unwrap();
+
+                println!("translate_initializer | symbol_table {:?}", self.symbol_table.clone());
+                let ptr = ptr.unwrap();
+                let ptr_type = ptr.dtype();
+                let ptr_inner_type = ptr_type.get_pointer_inner()
+                    .ok_or_else(|| panic!("'Operand' from 'symbol_table' must be pointer type"))?;
+                
+                let element_type = ptr_inner_type.get_array_inner()
+                    .ok_or_else(|| panic!("'Operand' from 'symbol_table' must be pointer type"))?;
+
+                let pointer = self.convert_array_to_pointer(ptr, element_type.clone(), context)?;
+                
+                let mut result = ir::Operand::constant(ir::Constant::int(1, ir::Dtype::BOOL)); // for debug 
+                for list in listitems {
+                    result = self.translate_list_initializer(list, Some(pointer.clone()), context)?;
+                    println!("translate_initializer {} {:?}", result, result);
+                }
+                Ok(result)
+            },
         }
+    }
+
+    fn translate_list_initializer(
+        &mut self,
+        list: &Node<InitializerListItem>,
+        ptr: Option<ir::Operand>,
+        context: &mut Context
+    ) -> Result<ir::Operand, IrgenErrorMessage> {
+        let tmp1 = &list.node.designation;
+        let tmp2 = &list.node.initializer.node;
+        self.translate_initializer(tmp2, ptr, context)
+        // todo!()
     }
 
     fn lookup_symbol_table(
@@ -1860,6 +1964,11 @@ impl IrgenFunc<'_> {
                 let _unused = context.insert_instruction(ir::Instruction::Store { ptr: operand_ptr.clone(), value: result })?;
                 // Ok(operand_ptr)
                 Ok(operand)
+            }
+            &UnaryOperator::Minus => {
+                let operand = self.translate_expr_rvalue(&unary.operand.node, context)?;
+                let instr = ir::Instruction::UnaryOp { op: (&unary.operator.node).clone(), operand: operand.clone(), dtype: operand.dtype()};
+                context.insert_instruction(instr)
             }
             &UnaryOperator::Address => {todo!()}
             &UnaryOperator::Indirection => {
@@ -2468,7 +2577,7 @@ impl IrgenFunc<'_> {
         context: &mut Context,
     ) -> Result<(), IrgenErrorMessage> {
     // todo!()
-
+    println!("translate_parameter_decl | context_bid {}", context.bid);
     if signature.params.len() != name_of_params.len() {
         panic!("length of 'parameters' and 'name_of_params' must be same")
     }

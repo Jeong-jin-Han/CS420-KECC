@@ -108,12 +108,28 @@ fn test_examples_irgen_small() {
     // println!("[testing irgen for \"examples/c/{HELLO_MAIN}.c\"]");
     // test_irgen(Path::new(&format!("examples/c/{HELLO_MAIN}.c")));
 
- 
-    // println!("[testing irgen for \"examples/c/alignof.c\"]");
-    // test_irgen(Path::new(&format!("examples/c/alignof.c")));
-    
-    println!("[testing irgen for \"examples/c/array2.c\"]");
-    test_irgen(Path::new(&format!("examples/c/array2.c")));
+    let test_files = vec![
+        "hello_main.c",
+        "alignof.c",
+        "array.c",
+        "array2.c",
+        "array3.c",
+        "array4.c",
+        // "array5.c", // fail
+        // "bar.c",
+        // "bitwise.c", // fail
+        // "cmp.c", // fail
+        // "comma.c", // fail
+        // "complement.c", // fail
+        // "cond.c", // fail
+    ];
+
+    // let test_files = vec!["array5.c"];
+
+    for file in test_files {
+        println!("[testing irgen for \"examples/c/{file}\"]");
+        test_irgen(Path::new(&format!("examples/c/{file}")));
+    }
     // test_dir(Path::new("examples/c"), OsStr::new("c"), |path| {
     //     let path_str = &path.to_str().expect("`path` must be transformed to `&str`");
     //     if !IRGEN_SMALL_TEST_IGNORE_LIST.contains(path_str) && !path_str.contains(HELLO_MAIN) {
