@@ -46,6 +46,7 @@ use itertools::izip;
 use lang_c::ast::*;
 use lang_c::driver::Parse;
 use lang_c::span::Node;
+use rand::seq::index;
 use thiserror::Error;
 
 use crate::ir::{DtypeError, HasDtype, Named};
@@ -1381,58 +1382,59 @@ impl IrgenFunc<'_> {
         
         match initializer {
             Initializer::Expression(expr) => {
-                if let Some(pointer) = ptr{
+                // if let Some(pointer) = ptr{
 
     
-                    let index_64 = ir::Operand::Constant(ir::Constant::Int {
-                        value: 1, // 배열 크기 적용
-                        width: 64,
-                        is_signed: true,
-                    });
-                    let mut pointer_type = pointer.dtype();
+                //     let index_64 = ir::Operand::Constant(ir::Constant::Int {
+                //         value: 1, // 배열 크기 적용
+                //         width: 64,
+                //         is_signed: true,
+                //     });
+                //     let mut pointer_type = pointer.dtype();
 
-                    // ✅ 배열 크기 가져오기
-                    let mut elt_size = 4; // 기본 int 크기 (4바이트)
-                    let ptr_inner_type = pointer_type.get_pointer_inner()
-                        .ok_or_else(|| panic!("'Operand' from 'symbol_table' must be pointer type"))?;
-                    // let element_type = ptr_inner_type.get_array_inner()
-                    //     .ok_or_else(|| panic!("'Operand' from 'symbol_table' must be pointer type"))?;
+                //     // ✅ 배열 크기 가져오기
+                //     let mut elt_size = 4; // 기본 int 크기 (4바이트)
+                //     let ptr_inner_type = pointer_type.get_pointer_inner()
+                //         .ok_or_else(|| panic!("'Operand' from 'symbol_table' must be pointer type"))?;
+                //     // let element_type = ptr_inner_type.get_array_inner()
+                //     //     .ok_or_else(|| panic!("'Operand' from 'symbol_table' must be pointer type"))?;
                     
-                    // let array_pointer = self.convert_array_to_pointer(pointer.clone(), element_type.clone(), context)?;
-                    // println!("translate_initializer | pointer {}", array_pointer);
-                    // pointer_type = pointer.dtype();
-                    // // ✅ 배열의 크기를 가져와 곱하기 (i32의 크기는 4)
-                    // if let ir::Dtype::Array { inner, size } = ptr_inner_type {
-                    //     elt_size = (size * 4) as u128;
-                    // }
+                //     // let array_pointer = self.convert_array_to_pointer(pointer.clone(), element_type.clone(), context)?;
+                //     // println!("translate_initializer | pointer {}", array_pointer);
+                //     // pointer_type = pointer.dtype();
+                //     // // ✅ 배열의 크기를 가져와 곱하기 (i32의 크기는 4)
+                //     // if let ir::Dtype::Array { inner, size } = ptr_inner_type {
+                //     //     elt_size = (size * 4) as u128;
+                //     // }
                 
-                    // ✅ 오프셋 계산 (index * element_size)
-                    let offset = context.insert_instruction(ir::Instruction::BinOp {
-                        op: BinaryOperator::Multiply,
-                        lhs: index_64,
-                        rhs: ir::Operand::Constant(ir::Constant::Int {
-                            value: elt_size, // 배열 크기 적용
-                            width: 64,
-                            is_signed: true,
-                        }),
-                        dtype: ir::Dtype::Int {
-                            width: 64,
-                            is_signed: true,
-                            is_const: false,
-                        },
-                    })?;
+                //     // ✅ 오프셋 계산 (index * element_size)
+                //     let offset = context.insert_instruction(ir::Instruction::BinOp {
+                //         op: BinaryOperator::Multiply,
+                //         lhs: index_64,
+                //         rhs: ir::Operand::Constant(ir::Constant::Int {
+                //             value: elt_size, // 배열 크기 적용
+                //             width: 64,
+                //             is_signed: true,
+                //         }),
+                //         dtype: ir::Dtype::Int {
+                //             width: 64,
+                //             is_signed: true,
+                //             is_const: false,
+                //         },
+                //     })?;
 
 
-                    let gep_instr = ir::Instruction::GetElementPtr { ptr: pointer.clone(), offset, dtype: pointer_type};
-                    let store_ptr = context.insert_instruction(gep_instr)?;
-                    // let store_ptr = array_pointer;
-                    println!("translate_initializer | pointer {}", pointer);
-                    let value = self.translate_expr_rvalue(&expr.node, context)?;
-                    let store_instr = ir::Instruction::Store { ptr: store_ptr, value};
-                    context.insert_instruction(store_instr)
-                } else {
-                    self.translate_expr_rvalue(&expr.node, context)
-                }
+                //     let gep_instr = ir::Instruction::GetElementPtr { ptr: pointer.clone(), offset, dtype: pointer_type};
+                //     let store_ptr = context.insert_instruction(gep_instr)?;
+                //     // let store_ptr = array_pointer;
+                //     println!("translate_initializer | pointer {}", pointer);
+                //     let value = self.translate_expr_rvalue(&expr.node, context)?;
+                //     let store_instr = ir::Instruction::Store { ptr: store_ptr, value};
+                //     context.insert_instruction(store_instr)
+                // } else {
+                //     self.translate_expr_rvalue(&expr.node, context)
+                // }
+                self.translate_expr_rvalue(&expr.node, context)
             }
             Initializer::List(listitems) => {
                 // TODO 
@@ -1453,8 +1455,13 @@ impl IrgenFunc<'_> {
                 let pointer = self.convert_array_to_pointer(ptr, element_type.clone(), context)?;
                 
                 let mut result = ir::Operand::constant(ir::Constant::int(1, ir::Dtype::BOOL)); // for debug 
-                for list in listitems {
-                    result = self.translate_list_initializer(list, Some(pointer.clone()), context)?;
+                for (i, list) in listitems.iter().enumerate() {
+                    let index_64 = ir::Operand::Constant(ir::Constant::Int {
+                        value: i as u128, // 배열 크기 적용
+                        width: 64,
+                        is_signed: true,
+                    });
+                    result = self.translate_list_initializer(list, Some(pointer.clone()), index_64, context)?;
                     println!("translate_initializer {} {:?}", result, result);
                 }
                 Ok(result)
@@ -1466,11 +1473,42 @@ impl IrgenFunc<'_> {
         &mut self,
         list: &Node<InitializerListItem>,
         ptr: Option<ir::Operand>,
+        index_64: ir::Operand,
         context: &mut Context
     ) -> Result<ir::Operand, IrgenErrorMessage> {
         let tmp1 = &list.node.designation;
         let tmp2 = &list.node.initializer.node;
-        self.translate_initializer(tmp2, ptr, context)
+        let pointer = ptr.unwrap();
+
+
+        let mut pointer_type = pointer.dtype();
+
+        // ✅ 배열 크기 가져오기
+        // let mut elt_size = 4; // 기본 int 크기 (4바이트)
+        let ptr_inner_type = pointer_type.get_pointer_inner()
+            .ok_or_else(|| panic!("'Operand' from 'symbol_table' must be pointer type"))?;
+        let elt_size = (ptr_inner_type.get_int_width().unwrap() / 8) as u128;
+
+        let offset = context.insert_instruction(ir::Instruction::BinOp {
+            op: BinaryOperator::Multiply,
+            lhs: index_64,
+            rhs: ir::Operand::Constant(ir::Constant::Int {
+                value: elt_size, // 배열 크기 적용
+                width: 64,
+                is_signed: true,
+            }),
+            dtype: ir::Dtype::Int {
+                width: 64,
+                is_signed: true,
+                is_const: false,
+            },
+        })?;
+
+        let gep_instr = ir::Instruction::GetElementPtr { ptr: pointer.clone(), offset, dtype: pointer_type};
+        let store_ptr = context.insert_instruction(gep_instr)?;
+        let value = self.translate_initializer(tmp2, Some(store_ptr.clone()), context)?;
+        let store_instr = ir::Instruction::Store { ptr: store_ptr, value};
+        context.insert_instruction(store_instr)
         // todo!()
     }
 
