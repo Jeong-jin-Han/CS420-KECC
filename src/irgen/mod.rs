@@ -293,7 +293,7 @@ impl Irgen {
         let name = name_of_declarator(declarator);
         let name_of_params = name_of_params_from_function_declarator(declarator)
             .expect("declarator is not from function definition");
-        println!("add_function_definition | {:?}", name_of_params.clone());
+        // println!("add_function_definition | {:?}", name_of_params.clone());
 
         let (base_dtype, is_typedef) = ir::Dtype::try_from_ast_declaration_specifiers(specifiers)
             .map_err(|e| {
@@ -334,7 +334,7 @@ impl Irgen {
         // Adds new declaration if nothing has been declared before
         let decl = ir::Declaration::try_from(dtype).unwrap();
         self.add_decl(&name, decl)?;
-        println!("add_function_definition | decl {:#?}", self.decls.clone());
+        // println!("add_function_definition | decl {:#?}", self.decls.clone());
 
         // Prepare scope for global variable
         let global_scope: HashMap<_, _> = self
@@ -347,7 +347,7 @@ impl Irgen {
                 (name.clone(), operand)
             })
             .collect();
-        println!("\nadd_function_definition {:?}\n", global_scope);
+        // println!("\nadd_function_definition {:?}\n", global_scope);
 
         // Prepares for irgen pass.
         let mut irgen = IrgenFunc {
@@ -364,7 +364,7 @@ impl Irgen {
             symbol_table: vec![global_scope],
         };
         let mut context = Context::new(irgen.bid_init);
-        println!("\nadd_function_definition | context bid {}\n", context.bid);
+        // println!("\nadd_function_definition | context bid {}\n", context.bid);
 
         // Enter variable scope for alloc registers matched with function parameters
         irgen.enter_scope();
@@ -407,7 +407,7 @@ impl Irgen {
             bid_init: irgen.bid_init,
         };
 
-        println!("add_function_definition | alloations {:?}", irgen.allocations.clone());
+        // println!("add_function_definition | alloations {:?}", irgen.allocations.clone());
 
         let decl = self
             .decls
@@ -1016,7 +1016,7 @@ impl IrgenFunc<'_> {
 
             let name = name_of_declarator(declarator);
             
-            println!("translate_decl | name {}", name.clone());
+            // println!("translate_decl | name {}", name.clone());
 
             match &dtype {
                 ir::Dtype::Unit { .. } => todo!(),
@@ -1302,11 +1302,14 @@ impl IrgenFunc<'_> {
             }
     
             // ✅ 포인터 <-> 정수 변환
-            (&ir::Dtype::Pointer { .. }, &ir::Dtype::Int { .. }) |
+            (&ir::Dtype::Pointer { .. }, &ir::Dtype::Int { .. }) => {
+                let value = context.insert_instruction(ir::Instruction::Load { ptr: value.clone() })?;
+                context.insert_instruction(ir::Instruction::TypeCast { value, target_dtype: dtype })
+            }
             (&ir::Dtype::Int { .. }, &ir::Dtype::Pointer { .. }) => {
                 context.insert_instruction(ir::Instruction::TypeCast { value, target_dtype: dtype })
             }
-    
+
             // ✅ 포인터 <-> 포인터 변환
             (&ir::Dtype::Pointer { .. }, &ir::Dtype::Pointer { .. }) => {
                 context.insert_instruction(ir::Instruction::TypeCast { value, target_dtype: dtype })
@@ -1382,68 +1385,12 @@ impl IrgenFunc<'_> {
         
         match initializer {
             Initializer::Expression(expr) => {
-                // if let Some(pointer) = ptr{
-
-    
-                //     let index_64 = ir::Operand::Constant(ir::Constant::Int {
-                //         value: 1, // 배열 크기 적용
-                //         width: 64,
-                //         is_signed: true,
-                //     });
-                //     let mut pointer_type = pointer.dtype();
-
-                //     // ✅ 배열 크기 가져오기
-                //     let mut elt_size = 4; // 기본 int 크기 (4바이트)
-                //     let ptr_inner_type = pointer_type.get_pointer_inner()
-                //         .ok_or_else(|| panic!("'Operand' from 'symbol_table' must be pointer type"))?;
-                //     // let element_type = ptr_inner_type.get_array_inner()
-                //     //     .ok_or_else(|| panic!("'Operand' from 'symbol_table' must be pointer type"))?;
-                    
-                //     // let array_pointer = self.convert_array_to_pointer(pointer.clone(), element_type.clone(), context)?;
-                //     // println!("translate_initializer | pointer {}", array_pointer);
-                //     // pointer_type = pointer.dtype();
-                //     // // ✅ 배열의 크기를 가져와 곱하기 (i32의 크기는 4)
-                //     // if let ir::Dtype::Array { inner, size } = ptr_inner_type {
-                //     //     elt_size = (size * 4) as u128;
-                //     // }
-                
-                //     // ✅ 오프셋 계산 (index * element_size)
-                //     let offset = context.insert_instruction(ir::Instruction::BinOp {
-                //         op: BinaryOperator::Multiply,
-                //         lhs: index_64,
-                //         rhs: ir::Operand::Constant(ir::Constant::Int {
-                //             value: elt_size, // 배열 크기 적용
-                //             width: 64,
-                //             is_signed: true,
-                //         }),
-                //         dtype: ir::Dtype::Int {
-                //             width: 64,
-                //             is_signed: true,
-                //             is_const: false,
-                //         },
-                //     })?;
-
-
-                //     let gep_instr = ir::Instruction::GetElementPtr { ptr: pointer.clone(), offset, dtype: pointer_type};
-                //     let store_ptr = context.insert_instruction(gep_instr)?;
-                //     // let store_ptr = array_pointer;
-                //     println!("translate_initializer | pointer {}", pointer);
-                //     let value = self.translate_expr_rvalue(&expr.node, context)?;
-                //     let store_instr = ir::Instruction::Store { ptr: store_ptr, value};
-                //     context.insert_instruction(store_instr)
-                // } else {
-                //     self.translate_expr_rvalue(&expr.node, context)
-                // }
                 self.translate_expr_rvalue(&expr.node, context)
             }
             Initializer::List(listitems) => {
                 // TODO 
-                // let mut result=Err(
-                //     IrgenErrorMessage::Misc { message: "operand should be initialized".to_string() }
-                // );
-                // let pointer = (ptr.clone()).unwrap();
 
-                println!("translate_initializer | symbol_table {:?}", self.symbol_table.clone());
+                // println!("translate_initializer | symbol_table {:?}", self.symbol_table.clone());
                 let ptr = ptr.unwrap();
                 let ptr_type = ptr.dtype();
                 let ptr_inner_type = ptr_type.get_pointer_inner()
@@ -1879,6 +1826,100 @@ impl IrgenFunc<'_> {
         )
     }
 
+    fn translate_logical_op(
+        &mut self,
+        op: BinaryOperator,
+        lhs: &Expression,
+        rhs: &Expression,
+        context: &mut Context,
+    ) -> Result<ir::Operand, IrgenErrorMessage> {
+        let dtype = ir::Dtype::BOOL;
+        // let var = format!("t{}", self.tempid_counter);
+        // self.tempid_counter += 1;
+        // let _unused = self.translate_alloc(var, dtype, None, context)?;
+        // let mut lhs = self.translate_expr_rvalue(lhs, context)?;
+
+        let bid_then = self.alloc_bid();
+        let bid_else = self.alloc_bid();
+        let bid_end = self.alloc_bid();
+        println!("translate_logical_op | translate_condition | lhs {:?}",lhs);
+        self.translate_condition(lhs, mem::replace(context, Context::new(bid_end)), bid_then, bid_else);
+
+
+        // Translate the then branch.
+        let mut context_then = Context::new(bid_then);
+        let val_then = 
+            self.translate_expr_rvalue(rhs, &mut context_then)?;
+        
+
+
+        // Translate the else branch.
+        let mut context_else = Context::new(bid_else);
+
+        let merged_dtype = val_then.dtype();
+
+
+        // Allocates at the satck.
+        let var = self.alloc_tempid();
+        // let ptr = self.translate_alloc(var, merged_dtype)?; // ME 
+        let ptr = self.translate_alloc(var, merged_dtype.clone(), None, context)?; // ME 
+        let val_else = ptr.clone();
+    
+
+        let val_then = 
+            self.translate_typecast(val_then, merged_dtype.clone(), &mut context_then)?;
+        println!("translate_logical_op | val_then {}", val_then.dtype());
+        
+
+        let val_else = self.translate_typecast(val_else, merged_dtype.clone(), &mut context_else)?;
+        println!("translate_logical_op | val_else {}", val_else.dtype());
+        
+        
+        // Finishes the then branch
+        let _unused = context_then.insert_instruction(
+        ir::Instruction::Store {
+            ptr: ptr.clone(),
+            value: val_then.clone(),
+        }
+        );
+        self.insert_block(
+            context_then,
+            ir::BlockExit::Jump {
+                arg: ir::JumpArg::new(bid_end, Vec::new())
+            }
+        );
+        
+        // Finishes the else branch
+        let _unused = context_else.insert_instruction(
+            ir::Instruction::Store {
+                ptr: ptr.clone(),
+                value: val_else
+            }
+        )?;
+        self.insert_block(
+            context_else, 
+            ir::BlockExit::Jump {
+                arg: ir::JumpArg::new(bid_end, Vec::new())
+            }
+        );
+    
+        
+        // // let mut rhs = self.translate_expr_rvalue(rhs, context)?;
+        // // println!("translate_logical_op | lhs {} rhs {}", lhs, rhs);
+        // let dtype = self.merge_dtype(lhs.dtype(), rhs.dtype());
+        // // let mut dtype = ir::Dtype::Int {
+        // //     width: 32,
+        // //     is_signed: true,
+        // //     is_const: false,
+        // // };
+        // let lhs = self.translate_typecast(lhs, dtype.clone(), context)?;
+        // let rhs = self.translate_typecast(rhs, dtype.clone(), context)?;
+
+        // context.insert_instruction(ir::Instruction::BinOp { op, lhs, rhs, dtype })
+        // Ok(val_then.clone())
+        Ok(ptr.clone())
+
+    }
 
     fn translate_binary_op( // ME
         &mut self,
@@ -1905,12 +1946,15 @@ impl IrgenFunc<'_> {
                 // make a new expression?? <- bad idea
                 return self.translate_assignplus_op(lhs, rhs, context);
             }
+            &BinaryOperator::LogicalAnd | &BinaryOperator::LogicalOr => {
+                return self.translate_logical_op(op, lhs, rhs, context);
+            }
             _ => {}
         }
 
         println!("translate_binary_op");
         let debug = format!("op {:?} lhs {:?} rhs {:?} \n", op.clone(), lhs.clone(), rhs.clone());
-   
+        
 
         let mut lhs = self.translate_expr_rvalue(lhs, context)?;
         let mut rhs = self.translate_expr_rvalue(rhs, context)?;
@@ -1944,6 +1988,17 @@ impl IrgenFunc<'_> {
         // } else {
         //     rhs
         // };
+        let dtype = match &op {
+            &BinaryOperator::BitwiseOr | &BinaryOperator::BitwiseAnd => {
+                ir::Dtype::Int {
+                    width: 32,
+                    is_signed: true,
+                    is_const: false,
+                }
+            }
+            _ => dtype.clone()
+        };
+
         let lhs = self.translate_typecast(lhs, dtype.clone(), context)?;
         let rhs = self.translate_typecast(rhs, dtype.clone(), context)?;
 
@@ -2522,8 +2577,17 @@ impl IrgenFunc<'_> {
         bid_then: ir::BlockId,
         bid_else: ir::BlockId,
     ) -> Result<(), IrgenErrorMessage> {
-        let condition = self.translate_expr_rvalue(condition, &mut context)?;
-        
+        let mut condition = self.translate_expr_rvalue(condition, &mut context)?;
+    
+        let condition_dtype = condition.dtype();
+        match &condition_dtype {
+            &ir::Dtype::Pointer { .. } => {
+                let instr = ir::Instruction::Load { ptr: condition.clone() };
+                condition = context.insert_instruction(instr)?;
+            }
+            _ => {}
+        }
+
         // Implicit type casting
         let condition = self.translate_typecast_to_bool(condition, &mut context)?;
 

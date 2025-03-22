@@ -115,16 +115,16 @@ fn test_examples_irgen_small() {
         "array2.c",
         "array3.c",
         "array4.c",
-        // "array5.c", // fail
-        // "bar.c",
-        // "bitwise.c", // fail
+        "array5.c", 
+        "bar.c",
+        "bitwise.c", // fail
         // "cmp.c", // fail
         // "comma.c", // fail
         // "complement.c", // fail
         // "cond.c", // fail
     ];
 
-    // let test_files = vec!["array5.c"];
+    // let test_files = vec!["bitwise.c"];
 
     for file in test_files {
         println!("[testing irgen for \"examples/c/{file}\"]");
