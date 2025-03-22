@@ -1864,6 +1864,7 @@ impl IrgenFunc<'_> {
         // let ptr = self.translate_alloc(var, merged_dtype)?; // ME 
         let ptr = self.translate_alloc(var, merged_dtype.clone(), None, context)?; // ME 
         let val_else = ptr.clone();
+        let val_else = ir::Operand::constant(ir::Constant::int(0, ir::Dtype::BOOL));
     
 
         let val_then = 
