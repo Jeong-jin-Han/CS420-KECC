@@ -41,7 +41,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::num;
 use std::ops::Deref;
 
-use ir::{JumpArg, Operand};
+use ir::{Dtype, JumpArg, Operand};
 use itertools::izip;
 use lang_c::ast::*;
 use lang_c::driver::Parse;
@@ -1283,7 +1283,7 @@ impl IrgenFunc<'_> {
         context: &mut Context,
     ) -> Result<ir::Operand, IrgenErrorMessage> {
         let value_dtype = value.dtype();
-    
+        println!("translate_typecast | value {} dtype {}", value_dtype, dtype);
         // ✅ 변환이 필요 없는 경우 그대로 반환
         if value_dtype == dtype {
             return Ok(value);
@@ -1292,6 +1292,7 @@ impl IrgenFunc<'_> {
         match (&value_dtype, &dtype) {
             // ✅ 정수 -> 정수 변환
             (&ir::Dtype::Int { .. }, &ir::Dtype::Int { .. }) => {
+                println!("int int case");
                 context.insert_instruction(ir::Instruction::TypeCast { value, target_dtype: dtype })
             }
     
@@ -1635,68 +1636,145 @@ impl IrgenFunc<'_> {
         }
     }
 
-    fn merge_dtype(
-        &mut self,
-        ty1: ir::Dtype,
-        ty2: ir::Dtype,
-    ) -> ir::Dtype {
-    use ir::Dtype::*;
-    // 1. 같은 타입이면 그대로 반환
-    if ty1 == ty2 {
-        return ty1;
-    }
 
-    // ✅ 배열이 포함된 경우 항상 포인터로 변환 후 처리
-    let ty1 = if let Some(inner) = ty1.get_array_inner() {
-        Pointer {
-            inner: Box::new(inner.clone()),
-            is_const: false,
+    fn merge_dtype(&mut self, mut ty1: ir::Dtype, mut ty2: ir::Dtype) -> ir::Dtype {
+        // 1. 배열은 포인터로 변환
+        if let Some(inner) = ty1.get_array_inner() {
+            ty1 = ir::Dtype::Pointer {
+                inner: Box::new(inner.clone()),
+                is_const: false,
+            };
         }
-    } else {
-        ty1
-    };
-
-    let ty2 = if let Some(inner) = ty2.get_array_inner() {
-        Pointer {
-            inner: Box::new(inner.clone()),
-            is_const: false,
+        if let Some(inner) = ty2.get_array_inner() {
+            ty2 = ir::Dtype::Pointer {
+                inner: Box::new(inner.clone()),
+                is_const: false,
+            };
         }
-    } else {
-        ty2
-    };
-
-
-    match (&ty1, &ty2) {
-        // 2. 정수와 실수 연산이면 실수로 변환
-        (Int { .. }, Float { .. }) | (Float { .. }, Int { .. }) => Float {
-            width: std::cmp::max(ty1.get_float_width().unwrap_or(32), ty2.get_float_width().unwrap_or(32)),
-            is_const: ty1.is_const() || ty2.is_const(),
-        },
-
-        // 3. 정수끼리 연산이면 더 큰 크기의 정수로 변환
-        (Int { .. }, Int { .. }) => {
-            let width = std::cmp::max(ty1.get_int_width().unwrap(), ty2.get_int_width().unwrap());
-            // println!("merge_dtype | int int | {}", width);
-            Int {
-                width,
-                is_signed: ty1.is_int_signed() || ty2.is_int_signed(),
-                is_const: ty1.is_const() || ty2.is_const(),
+    
+        // 2. 같은 타입이면 그대로 반환
+        if ty1 == ty2 {
+            return ty1;
+        }
+    
+        match (&ty1, &ty2) {
+            // 3. 정수 + 정수
+            (ir::Dtype::Int { .. }, ir::Dtype::Int { .. }) => {
+                promote_int_int(&ty1, &ty2)
             }
-        },
-
-        // 4. 포인터 + 정수 연산이면 포인터 유지
-        (Pointer { .. }, Int { .. }) | (Int { .. }, Pointer { .. }) => {
-            let pointer = if ty1.get_pointer_inner().is_some() { ty1 } else { ty2 };
-            pointer.clone()
-        },
-
-        // 5. 포인터끼리 연산은 허용되지 않음
-        (Pointer { .. }, Pointer { .. }) => panic!("Cannot perform arithmetic on two pointers"),
-
-        // 6. 지원되지 않는 타입 조합
-        _ => panic!("Invalid type merge: {:?} and {:?}", ty1, ty2),
+    
+            // 4. 정수 + 실수
+            (ir::Dtype::Int { .. }, ir::Dtype::Float { .. })
+            | (ir::Dtype::Float { .. }, ir::Dtype::Int { .. }) => {
+                let width = std::cmp::max(
+                    ty1.get_float_width().unwrap_or(32),
+                    ty2.get_float_width().unwrap_or(32),
+                );
+                ir::Dtype::Float {
+                    width,
+                    is_const: ty1.is_const() || ty2.is_const(),
+                }
+            }
+    
+            // 5. 실수 + 실수
+            (ir::Dtype::Float { .. }, ir::Dtype::Float { .. }) => {
+                let width = std::cmp::max(
+                    ty1.get_float_width().unwrap(),
+                    ty2.get_float_width().unwrap(),
+                );
+                ir::Dtype::Float {
+                    width,
+                    is_const: ty1.is_const() || ty2.is_const(),
+                }
+            }
+    
+            // 6. 포인터 + 정수
+            (ir::Dtype::Pointer { .. }, ir::Dtype::Int { .. })
+            | (ir::Dtype::Int { .. }, ir::Dtype::Pointer { .. }) => {
+                if ty1.get_pointer_inner().is_some() {
+                    ty1.clone()
+                } else {
+                    ty2.clone()
+                }
+            }
+    
+            // 7. 포인터 + 포인터 → 에러
+            (ir::Dtype::Pointer { .. }, ir::Dtype::Pointer { .. }) => {
+                panic!("Cannot merge two pointer types: {} and {}", ty1, ty2);
+            }
+    
+            // 8. 구조체, 함수 등 불가능한 조합
+            _ => {
+                panic!("Cannot merge types: {} and {}", ty1, ty2);
+            }
+        }
     }
-    }
+    
+ 
+    // fn merge_dtype(
+    //     &mut self,
+    //     ty1: ir::Dtype,
+    //     ty2: ir::Dtype,
+    // ) -> ir::Dtype {
+    // println!("merge_dtype | ty1 {} ty2 {}", ty1, ty2);
+
+    // use ir::Dtype::*;
+    // // 1. 같은 타입이면 그대로 반환
+    // if ty1 == ty2 {
+    //     return ty1;
+    // }
+
+    // // ✅ 배열이 포함된 경우 항상 포인터로 변환 후 처리
+    // let ty1 = if let Some(inner) = ty1.get_array_inner() {
+    //     Pointer {
+    //         inner: Box::new(inner.clone()),
+    //         is_const: false,
+    //     }
+    // } else {
+    //     ty1
+    // };
+
+    // let ty2 = if let Some(inner) = ty2.get_array_inner() {
+    //     Pointer {
+    //         inner: Box::new(inner.clone()),
+    //         is_const: false,
+    //     }
+    // } else {
+    //     ty2
+    // };
+
+
+    // match (&ty1, &ty2) {
+    //     // 2. 정수와 실수 연산이면 실수로 변환
+    //     (Int { .. }, Float { .. }) | (Float { .. }, Int { .. }) => Float {
+    //         width: std::cmp::max(ty1.get_float_width().unwrap_or(32), ty2.get_float_width().unwrap_or(32)),
+    //         is_const: ty1.is_const() || ty2.is_const(),
+    //     },
+
+    //     // 3. 정수끼리 연산이면 더 큰 크기의 정수로 변환
+    //     (Int { .. }, Int { .. }) => {
+    //         let width = std::cmp::max(ty1.get_int_width().unwrap(), ty2.get_int_width().unwrap());
+    //         // println!("merge_dtype | int int | {}", width);
+    //         Int {
+    //             width,
+    //             is_signed: ty1.is_int_signed() || ty2.is_int_signed(),
+    //             is_const: ty1.is_const() || ty2.is_const(),
+    //         }
+    //     },
+
+    //     // 4. 포인터 + 정수 연산이면 포인터 유지
+    //     (Pointer { .. }, Int { .. }) | (Int { .. }, Pointer { .. }) => {
+    //         let pointer = if ty1.get_pointer_inner().is_some() { ty1 } else { ty2 };
+    //         pointer.clone()
+    //     },
+
+    //     // 5. 포인터끼리 연산은 허용되지 않음
+    //     (Pointer { .. }, Pointer { .. }) => panic!("Cannot perform arithmetic on two pointers"),
+
+    //     // 6. 지원되지 않는 타입 조합
+    //     _ => panic!("Invalid type merge: {:?} and {:?}", ty1, ty2),
+    // }
+    // }
 
     fn translate_conditional(
         &mut self,
@@ -2004,9 +2082,12 @@ impl IrgenFunc<'_> {
         let rhs = self.translate_typecast(rhs, dtype.clone(), context)?;
 
         let dtype = match &op {
-            &BinaryOperator::Equals | &BinaryOperator::Less => {
+            &BinaryOperator::Equals | &BinaryOperator::Less | &BinaryOperator::Greater=> {
                 ir::Dtype::BOOL              
             }
+            // &BinaryOperator::Equals => {
+            //     ir::Dtype::BOOL              
+            // }
             _ => dtype.clone()
         };
 
@@ -2065,6 +2146,16 @@ impl IrgenFunc<'_> {
                 context.insert_instruction(instr)
             }
             &UnaryOperator::Address => {todo!()}
+            &UnaryOperator::Complement => {
+                let operand = self.translate_expr_rvalue(&unary.operand.node, context)?;
+                let dtype = operand.dtype();
+                // let rhs = ir::Operand::Constant(ir::Dtype::int())
+                let width = dtype.get_int_width().unwrap(); // 예: 32
+                let const_val = signed_to_u128(-1, width);
+                let rhs = ir::Operand::constant(ir::Constant::int(const_val, dtype.clone()));
+                let instr = ir::Instruction::BinOp { op: BinaryOperator::BitwiseXor, lhs: operand, rhs, dtype };
+                context.insert_instruction(instr)
+            }
             &UnaryOperator::Indirection => {
                 todo!() // !!! unreachible
             }
@@ -2531,6 +2622,11 @@ impl IrgenFunc<'_> {
                     })
                 }
             }
+            Expression::Constant(constant) => {
+                let constant = ir::Constant::try_from(&constant.node)
+                    .expect("'constant' must be interpreted to 'ir::Constant' value");
+                Ok(ir::Operand::constant(constant))
+            }
             Expression::StringLiteral(_string_llt) => todo!(),
             Expression::Member(_member) => todo!(),
             Expression::Conditional(_)
@@ -2822,4 +2918,80 @@ fn is_invalid_structure(dtype: &ir::Dtype, structs: &HashMap<String, Option<ir::
     } else {
         false
     }
+}
+
+
+// merge_dtype helper ftn
+fn promote_int_int(ty1: &ir::Dtype, ty2: &ir::Dtype) -> ir::Dtype {
+    println!("-------| promote_int_int | ty1 {}, ty2 {}", ty1, ty2);
+    let (mut w1, mut s1) = (ty1.get_int_width().unwrap(), ty1.is_int_signed());
+    let (mut w2, mut s2) = (ty2.get_int_width().unwrap(), ty2.is_int_signed());
+
+    if w1 == 32 && w2 == 32 && ((s1 && !s2) || (!s1 && s2)) {
+        let result = ir::Dtype::Int {
+            width: 32,
+            is_signed: false, // u32 선택
+            is_const: ty1.is_const() || ty2.is_const(),
+        };
+        println!("-------| promote_int_int | result {}", result);
+        return result;
+    }
+
+
+    // 먼저 정수 승격 (i8, u8 등 → int or unsigned int)
+    if w1 < 32 {
+        w1 = 32;
+    }
+    if w2 < 32 {
+        w2 = 32;
+    }
+
+    // ⚠️ 특별 케이스: signed와 unsigned 둘 다 32비트인 경우 → C 규칙상 int 유지
+    if w1 == 32 && w2 == 32 && ((s1 && !s2) || (!s1 && s2)) {
+        let result = ir::Dtype::Int {
+            width: 32,
+            is_signed: true, // i32 선택
+            is_const: ty1.is_const() || ty2.is_const(),
+        };
+        println!("-------| promote_int_int | result {}", result);
+        return result;
+    }
+
+    // 기본 승격 로직
+    let result = match (s1, s2) {
+        (true, true) | (false, false) => ir::Dtype::Int {
+            width: std::cmp::max(w1, w2),
+            is_signed: s1,
+            is_const: ty1.is_const() || ty2.is_const(),
+        },
+        (true, false) | (false, true) => {
+            if w1 > w2 {
+                ir::Dtype::Int {
+                    width: w1,
+                    is_signed: s1,
+                    is_const: ty1.is_const() || ty2.is_const(),
+                }
+            } else {
+                ir::Dtype::Int {
+                    width: w2,
+                    is_signed: s2,
+                    is_const: ty1.is_const() || ty2.is_const(),
+                }
+            }
+        }
+    };
+    println!("-------| promote_int_int | result {}", result);
+    result
+}
+
+fn signed_to_u128(value: i128, width: usize) -> u128 {
+    let mask = match width {
+        8 => u8::MAX as u128,
+        16 => u16::MAX as u128,
+        32 => u32::MAX as u128,
+        64 => u64::MAX as u128,
+        128 => u128::MAX,
+        _ => panic!("unsupported width for signed to unsigned conversion: {}", width),
+    };
+    (value as u128) & mask
 }
