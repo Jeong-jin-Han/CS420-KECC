@@ -1606,7 +1606,7 @@ impl IrgenFunc<'_> {
                 }
 
                 let size = sizeofval_manual(&dtype);
-                
+                println!("translate_expr_rvalue | sizeofval {}", size);
                 let dtype = ir::Dtype::Int {
                     width: 64,
                     is_signed: false,
@@ -1682,10 +1682,10 @@ impl IrgenFunc<'_> {
             };
         }
     
-        // 2. 같은 타입이면 그대로 반환
-        if ty1 == ty2 {
-            return ty1;
-        }
+        // // 2. 같은 타입이면 그대로 반환 // i8, i8 - i32
+        // if ty1 == ty2 {
+        //     return ty1;
+        // }
     
         match (&ty1, &ty2) {
             // 3. 정수 + 정수
@@ -2902,8 +2902,9 @@ impl IrgenFunc<'_> {
                             rhs = context.insert_instruction(ir::Instruction::Load { ptr: rhs })?;
                         }
                 
-                        println!("translate_binary_op | opernad | lhs {} rhs {}", lhs, rhs);
                         let dtype = self.merge_dtype(lhs.dtype(), rhs.dtype());
+                        println!("translate_expr_lvalue | binary_op | lhs {} rhs {} merge {}", lhs, rhs, dtype);
+
                         let lhs = self.translate_typecast(lhs, dtype.clone(), context)?;
                         let rhs = self.translate_typecast(rhs, dtype.clone(), context)?;
                 

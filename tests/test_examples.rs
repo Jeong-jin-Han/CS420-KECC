@@ -117,19 +117,60 @@ fn test_examples_irgen_small() {
         "array4.c",
         "array5.c", 
         "bar.c",
-        "bitwise.c", // fail
-        // "cmp.c", // fail
-        // "comma.c", // fail
-        // "complement.c", // fail
-        // "cond.c", // fail
+        "bitwise.c", 
+        "cmp.c", 
+        "comma.c",
+        "complement.c",
+        "cond.c", 
     ];
-
-    // let test_files = vec!["bitwise.c"];
-
+    // let test_files = vec![
+    //     // "complete_cond.c", // fail
+    //     // "cond_and_loop.c", // fail
+    //     // "cond.c",
+    //     // "fib2.c",
+    //     // "fib3.c", // fail
+    //     // "fib4.c", // fail
+    //     // "fib5.c" // fail
+    //     // "fibonacci.c",
+    //     // "float.c", // fail
+    // ];
     for file in test_files {
         println!("[testing irgen for \"examples/c/{file}\"]");
         test_irgen(Path::new(&format!("examples/c/{file}")));
     }
+    // let test_files = vec!["complete_cond.c"];
+
+    // let test_files = vec![
+    // "examples/c/array.c",
+    // "examples/c/array2.c",
+    // "examples/c/array3.c",
+    // "examples/c/array4.c",
+    // "examples/c/array5.c",
+    // "examples/c/float.c", 
+    // "examples/c/sizeof2.c",
+    // "examples/c/struct.c",
+    // "examples/c/struct2.c",
+    // "examples/c/struct3.c",
+    // "examples/c/struct4.c",
+    // "examples/c/temp2.c",
+    // ];
+
+    let test_files = vec![
+        "examples/c/sizeof2.c",
+    ];
+
+    for file in test_files {
+        println!("[testing irgen for \"{file}\"]");
+        test_irgen(Path::new(&format!("{file}")));
+    }
+
+    // let test_files = vec!["logical.c"];
+
+    // for file in test_files {
+    //     println!("[testing irgen for \"examples/HW2_fuzz_c/{file}\"]");
+    //     test_irgen(Path::new(&format!("examples/HW2_fuzz_c/{file}")));
+    // }
+
     // test_dir(Path::new("examples/c"), OsStr::new("c"), |path| {
     //     let path_str = &path.to_str().expect("`path` must be transformed to `&str`");
     //     if !IRGEN_SMALL_TEST_IGNORE_LIST.contains(path_str) && !path_str.contains(HELLO_MAIN) {
@@ -138,6 +179,7 @@ fn test_examples_irgen_small() {
     //     }
     // });
 }
+
 
 #[test]
 fn test_examples_irgen_large() {
