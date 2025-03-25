@@ -38,6 +38,7 @@ use core::cmp::Ordering;
 use core::convert::TryFrom;
 use core::{fmt, mem};
 use std::collections::{BTreeMap, HashMap};
+use std::iter::zip;
 use std::num;
 use std::ops::Deref;
 
@@ -1051,6 +1052,10 @@ impl IrgenFunc<'_> {
                     println!("translate_decl | struct | name {} type {}", name.clone(), dtype.clone());
                     // let _unsed = self.structs.insert(name.clone(), Some(dtype.clone()));
                     let ptr = self.translate_alloc(name, dtype.clone(), None, context)?;
+                    if let Some(initializer) = &init_decl.node.initializer {
+                        println!("translate_decl | intializer {:?}", initializer.node);
+                        let mut value = self.translate_initializer(&initializer.node,Some(ptr), context)?;
+                     };
 
                     // let mut new_structs = self.structs.clone();
 
@@ -1412,38 +1417,240 @@ impl IrgenFunc<'_> {
         array5.c 에서 list에 대한 initializer가 필요함.
         */
         
+        let initializer = flatten_initializer_list(initializer);
+
         match initializer {
             Initializer::Expression(expr) => {
                 self.translate_expr_rvalue(&expr.node, context)
             }
             Initializer::List(listitems) => {
                 // TODO 
-
+                // println!("translate_initializer | List | {:#?}", listitems);
                 // println!("translate_initializer | symbol_table {:?}", self.symbol_table.clone());
                 let ptr = ptr.unwrap();
                 let ptr_type = ptr.dtype();
                 let ptr_inner_type = ptr_type.get_pointer_inner()
                     .ok_or_else(|| panic!("'Operand' from 'symbol_table' must be pointer type"))?;
                 
-                let element_type = ptr_inner_type.get_array_inner()
-                    .ok_or_else(|| panic!("'Operand' from 'symbol_table' must be pointer type"))?;
+                // listitems two kinds -> array or struct
+                match &ptr_inner_type {
+                    &ir::Dtype::Array { .. } => {
+                        println!("translate_initializer | array");
 
-                let pointer = self.convert_array_to_pointer(ptr, element_type.clone(), context)?;
-                
-                let mut result = ir::Operand::constant(ir::Constant::int(1, ir::Dtype::BOOL)); // for debug 
-                for (i, list) in listitems.iter().enumerate() {
-                    let index_64 = ir::Operand::Constant(ir::Constant::Int {
-                        value: i as u128, // 배열 크기 적용
-                        width: 64,
-                        is_signed: true,
-                    });
-                    result = self.translate_list_initializer(list, Some(pointer.clone()), index_64, context)?;
-                    println!("translate_initializer {} {:?}", result, result);
+                        let element_type = ptr_inner_type.get_array_inner()
+                        .ok_or_else(|| panic!("'Operand' from 'symbol_table' must be pointer type"))?;
+        
+                        let pointer = self.convert_array_to_pointer(ptr, element_type.clone(), context)?; 
+                        
+                        let mut result = ir::Operand::constant(ir::Constant::int(1, ir::Dtype::BOOL)); // for debug 
+                        for (i, list) in listitems.iter().enumerate() {
+                            let index_64 = ir::Operand::Constant(ir::Constant::Int {
+                                value: i as u128, // 배열 크기 적용
+                                width: 64,
+                                is_signed: true,
+                            });
+                            result = self.translate_list_initializer(list, Some(pointer.clone()), index_64, context)?;
+                            println!("translate_initializer | array | {} {:?}", result, result);
+                        }
+                        Ok(result)
+                    }
+                    &ir::Dtype::Struct { name, fields, is_const, size_align_offsets } => {
+                        println!("translate_initialize | struct | ptr operand | {:?}", ptr.clone());
+                        println!("translate_initialize | struct | fields | {:?}", fields);
+                        println!("translate_initialize | struct | {:?}", self.structs);
+                        let struct_name = name.clone().unwrap();
+                        let struct_type = self.structs.get(&struct_name.clone()).unwrap().clone().unwrap();
+
+                        let default = struct_type.get_struct_fields().unwrap().clone().unwrap();
+                        println!("translate_initialize | struct | default {:?}", default.clone());
+
+                        // let field_names: Vec<(String, ir::Dtype)> = default.clone()
+                        //     .iter()
+                        //     .flat_map(|f| {
+                        //         if let Some(name) = f.name(){
+                        //             vec![(name.clone(), struct_type.clone())]
+                        //         } else {
+                        //             let dtype_f = f.clone().into_inner();
+                        //             let inner_struct_name = dtype_f.get_struct_name().unwrap().clone().unwrap();
+                        //             // println!("translate_initialize | struct | default | struct |\n dtype_f {:?}\n default_f {:?}", dtype_f.clone(), default_f.clone());
+                        //             let struct_type = self.structs.get(&inner_struct_name.clone()).unwrap().clone().unwrap();
+                        //             let inner_struct_ptr = self.translate_alloc(inner_struct_name.clone(), struct_type.clone(), None, context)
+                        //                 .map_err(|e| IrgenErrorMessage::Misc { message: format!("{}",e) })?;
+
+                        //             let default = struct_type.get_struct_fields().unwrap().clone().unwrap();
+                        //             println!("translate_initialize | inner struct | default {:?}", default.clone());
+                        //             let result: Vec<(String, ir::Dtype)> = default
+                        //                 .iter()
+                        //                 .map(|e| (e.name().unwrap().clone(), struct_type.clone()))
+                        //                 .collect();
+                        //             result
+                        //         }
+                        //     })  // panic 가능성 있음
+                        //     .collect();
+
+                        let mut field_names: Vec<(String, String)> = Vec::new();
+
+                        for f in default.iter() {
+                            if let Some(name) = f.name() {
+                                field_names.push((name.clone(), struct_name.clone()));
+                            } else {
+                                let dtype_f = f.clone().into_inner();
+                                let inner_struct_name = dtype_f
+                                    .get_struct_name()
+                                    .ok_or_else(|| IrgenErrorMessage::Misc {
+                                        message: "Unnamed field has no struct name".to_string(),
+                                    })?
+                                    .clone()
+                                    .ok_or_else(|| IrgenErrorMessage::Misc {
+                                        message: "Struct name is None".to_string(),
+                                    })?;
+                                
+                                println!("translate_initializer | inner_struct_name {}", inner_struct_name.clone());
+                                    
+                                let struct_type = self.structs
+                                    .get(&inner_struct_name)
+                                    .ok_or_else(|| IrgenErrorMessage::Misc {
+                                        message: format!("Struct '{}' not found", inner_struct_name),
+                                    })?
+                                    .clone()
+                                    .ok_or_else(|| IrgenErrorMessage::Misc {
+                                        message: "Struct is None".to_string(),
+                                    })?;
+                        
+                                // // allocate struct instance (even if unused, keeps your logic)
+                                // let inner_struct_ptr = self.translate_alloc(
+                                //     inner_struct_name.clone(),
+                                //     struct_type.clone(),
+                                //     None,
+                                //     context,
+                                // )?;
+                        
+                                let inner_fields = struct_type
+                                    .get_struct_fields()
+                                    .ok_or_else(|| IrgenErrorMessage::Misc {
+                                        message: format!("No fields for struct '{}'", inner_struct_name),
+                                    })?
+                                    .clone()
+                                    .ok_or_else(|| IrgenErrorMessage::Misc {
+                                        message: format!("Struct fields are None for '{}'", inner_struct_name),
+                                    })?;
+                        
+                                println!("translate_initialize | inner struct | default {:?}", inner_fields);
+                        
+                                for e in inner_fields.iter() {
+                                    let field_name = e.name().ok_or_else(|| IrgenErrorMessage::Misc {
+                                        message: "Inner field has no name".to_string(),
+                                    })?;
+                                    field_names.push((field_name.clone(), inner_struct_name.clone()));
+                                }
+                            }
+                        }
+                        
+
+
+                        let mut result = ir::Operand::constant(ir::Constant::int(1, ir::Dtype::BOOL)); // for debug 
+                        let mut pointer = ptr.clone();
+                        // for ((s, struct_type), list) in zip(field_names, listitems) {
+                        //     let (index, dtype) = ptr_inner_type.get_offset_struct_field(&s, self.structs).unwrap();
+                        //         let index = ir::Operand::Constant(ir::Constant::Int {
+                        //             value: index as u128, // 배열 크기 적용
+                        //             width: 32,
+                        //             is_signed: true,
+                        //         });
+                        //     println!("translate_initializer | sturct | listitem | dtype {}", dtype.clone());
+                        //     result = self.translate_list_initializer_struct(list, Some(pointer.clone()), dtype.clone(), index, context)?;                           
+
+                        //     println!("translate_initializer | struct |  {} {:?}", result, result);
+                        // }
+                        // let mut current_struct_type = ptr_inner_type.clone(); // 초기 struct 기준
+                        let mut current_struct_name = struct_name.clone();
+
+                        for ((field_name, field_struct_name), list) in zip(field_names, listitems) {
+                            // 타입이 바뀌었는지 확인
+                            // println!("translate_initializer | current_struct_type {} field_struct_type {}", current_struct_type, field_struct_type);
+                            if current_struct_name != field_struct_name {
+                                // 새로운 기준 struct로 GEP
+                                let (offset, dtype) = ptr_inner_type.get_offset_struct_field(&field_name, &self.structs).unwrap();
+                                let index = ir::Operand::Constant(ir::Constant::Int {
+                                    value: offset as u128,
+                                    width: 32,
+                                    is_signed: true,
+                                });
+
+                                pointer = context.insert_instruction(ir::Instruction::GetElementPtr {
+                                    ptr: pointer.clone(),
+                                    offset: index.clone(),
+                                    dtype: Dtype::Pointer {
+                                        inner: Box::new(dtype.clone()),
+                                        is_const: false,
+                                    },
+                                })?;
+                                current_struct_name = field_struct_name.clone(); // 기준 struct 갱신
+
+                                // continue; // 다시 offset은 새 기준에서 계산되어야 하므로 다음 루프부터 적용
+                            }
+                            let current_struct_type = self.structs
+                                .get(&current_struct_name)
+                                .ok_or_else(|| IrgenErrorMessage::Misc {
+                                    message: format!("Struct '{}' not found", current_struct_name),
+                                })?
+                                .clone()
+                                .ok_or_else(|| IrgenErrorMessage::Misc {
+                                    message: "Struct is None".to_string(),
+                                })?;
+
+                            // 이제 현재 기준 struct에 대해 offset 계산
+                            let (offset, dtype) = current_struct_type
+                                .get_offset_struct_field(&field_name, &self.structs)
+                                .ok_or_else(|| IrgenErrorMessage::Misc {
+                                    message: format!("Field '{}' not found in struct '{}'", field_name, current_struct_name),
+                                })?;
+                        
+
+                            let index = ir::Operand::Constant(ir::Constant::Int {
+                                value: offset as u128,
+                                width: 32,
+                                is_signed: true,
+                            });
+
+                            println!("translate_initializer | struct | listitem | dtype {}", dtype.clone());
+                            result = self.translate_list_initializer_struct(
+                                list,
+                                Some(pointer.clone()),
+                                dtype.clone(),
+                                index,
+                                context,
+                            )?;
+
+                            println!("translate_initializer | struct |  {} {:?}", result, result);
+                        }
+                        Ok(result)
+                        // todo!()
+
+                    }
+                    _ => {
+                        todo!()
+                        // println!("translate_initializer | todo! {}", ptr_inner_type.clone());
+                        // let inner = &listitems[0].node.initializer.node; // 중첩된 표현을 해결하기 위해서
+                        // match inner {
+                        //     Initializer::Expression(_) => {
+                        //         // 단일 Expression -> primitive 초기화로 처리
+                        //         todo!()
+                        //         // return self.translate_initializer(&listitems[0].node.initializer.node, Some(ptr), context);
+                        //     }
+                        //     Initializer::List(inner_list) => {
+                        //         // primitive인데 중첩 리스트 -> 다시 initializer 재귀적으로 호출
+                        //         todo!()
+                        //         // return self.translate_initializer(&listitems[0].node.initializer.node, Some(ptr), context);
+                        //     }
+                        // }
+                    }
                 }
-                Ok(result)
+
             },
         }
     }
+
 
     fn translate_list_initializer(
         &mut self,
@@ -1480,9 +1687,53 @@ impl IrgenFunc<'_> {
             },
         })?;
 
-        let gep_instr = ir::Instruction::GetElementPtr { ptr: pointer.clone(), offset, dtype: pointer_type};
+        let gep_instr = ir::Instruction::GetElementPtr { ptr: pointer.clone(), offset, dtype: pointer_type.clone()};
         let store_ptr = context.insert_instruction(gep_instr)?;
-        let value = self.translate_initializer(tmp2, Some(store_ptr.clone()), context)?;
+        let mut value = self.translate_initializer(tmp2, Some(store_ptr.clone()), context)?;
+        // // 여기서 value type cast 하기
+
+        // value = self.translate_typecast(value, ptr_inner_type.clone(), context)?;
+        
+        let store_instr = ir::Instruction::Store { ptr: store_ptr, value};
+        context.insert_instruction(store_instr)
+        // todo!()
+    }
+
+
+    fn translate_list_initializer_struct(
+        &mut self,
+        list: &Node<InitializerListItem>,
+        ptr: Option<ir::Operand>, // 정확한 pointer를 주어야 한다.
+        dtype: ir::Dtype,
+        index: ir::Operand,
+        context: &mut Context
+    ) -> Result<ir::Operand, IrgenErrorMessage> {
+        let tmp1 = &list.node.designation;
+        let tmp2 = &list.node.initializer.node;
+        println!("translate_list_initializer_struct | -> | translate_initializer | initializer {:?}", tmp2);
+        let pointer = ptr.unwrap();
+
+        let mut pointer_type = pointer.dtype();
+
+        let ptr_inner_type = pointer_type.get_pointer_inner()
+            .ok_or_else(|| panic!("'Operand' from 'symbol_table' must be pointer type"))?;
+
+        let ptr_inner_type = ptr_inner_type.clone();
+        pointer_type = ir::Dtype::Pointer { inner: Box::new(dtype.clone()), is_const: false }; 
+
+        // wrong pointer 를 준다.
+        let gep_instr = ir::Instruction::GetElementPtr { ptr: pointer.clone(), offset: index, dtype: pointer_type.clone()};
+        println!("translate_list_initialzier_struct | pointer {} dtype {}", pointer.clone(), dtype.clone());
+        let store_ptr = context.insert_instruction(gep_instr)?;
+        println!("translate_list_initializer_struct | ");
+        let mut value = self.translate_initializer(tmp2, Some(store_ptr.clone()), context)?;
+        // 여기서 value type cast 하기
+        match &dtype {
+            &ir::Dtype::Int{..} | &ir::Dtype::Float{..} => {
+                value = self.translate_typecast(value, dtype.clone(), context)?;
+            },
+            _ => {}
+        }
         let store_instr = ir::Instruction::Store { ptr: store_ptr, value};
         context.insert_instruction(store_instr)
         // todo!()
@@ -1597,45 +1848,46 @@ impl IrgenFunc<'_> {
                 let tmp = &member.node.operator.node;
                 let tmp1 = &member.node.expression.node;
                 let tmp2 = &member.node.identifier.node.name;
+                self.translate_expr_rvalue_member(tmp1, tmp2, context)
 
-                let mut operand1 = self.translate_expr_lvalue(tmp1, context)?;
+                // let mut operand1 = self.translate_expr_lvalue(tmp1, context)?;
 
-                println!("translate_expr_lvalue | Member |\n op: {:?}\n expr: {:?}\n ident: {:?}", tmp, tmp1,tmp2);
-                println!("translate_expr_lvalue | Member |\n operand1: {}", operand1);
+                // println!("translate_expr_lvalue | Member |\n op: {:?}\n expr: {:?}\n ident: {:?}", tmp, tmp1,tmp2);
+                // println!("translate_expr_lvalue | Member |\n operand1: {}", operand1);
 
 
-                // let operand2 = self.lookup_symbol_table(tmp2)?;
-                let operand1_type = operand1.dtype();
-                let dtype = operand1_type.get_pointer_inner().unwrap();
-                let (offset2, dtype2) = dtype.get_offset_struct_field(tmp2, self.structs).unwrap();
-                println!("translate_expr_lvalue | dtype2 {}", dtype2);
-                let mut offset_operand = ir::Operand::constant(ir::Constant::int(offset2 as u128, ir::Dtype::INT));
+                // // let operand2 = self.lookup_symbol_table(tmp2)?;
+                // let operand1_type = operand1.dtype();
+                // let dtype = operand1_type.get_pointer_inner().unwrap();
+                // let (offset2, dtype2) = dtype.get_offset_struct_field(tmp2, self.structs).unwrap();
+                // println!("translate_expr_lvalue | dtype2 {}", dtype2);
+                // let mut offset_operand = ir::Operand::constant(ir::Constant::int(offset2 as u128, ir::Dtype::INT));
                 
-                // println!("translate_expr_lvalue | Member |", dtype2.clone());
-                let mut dtype2 = dtype2.clone();
+                // // println!("translate_expr_lvalue | Member |", dtype2.clone());
+                // let mut dtype2 = dtype2.clone();
 
-                let mut instrs = Vec::new();
+                // let mut instrs = Vec::new();
 
-                match &dtype2 {
-                    ir::Dtype::Array { inner, size} => {
-                        let pointer_dtype2 = ir::Dtype::Pointer { inner: inner.clone(), is_const: false };
-                        let offset_operand2 = ir::Operand::constant(ir::Constant::int(0, ir::Dtype::INT));
-                        let gep_instr = ir::Instruction::GetElementPtr { ptr: operand1.clone(), offset: offset_operand2, dtype: pointer_dtype2};
-                        // operand1 = context.insert_instruction(gep_instr)?;
-                        instrs.push(gep_instr.clone());
-                        offset_operand = ir::Operand::constant(ir::Constant::int(offset2 as u128, ir::Dtype::LONG));
-                    },
-                    _ => {}
-                }
+                // match &dtype2 {
+                //     ir::Dtype::Array { inner, size} => {
+                //         let pointer_dtype2 = ir::Dtype::Pointer { inner: inner.clone(), is_const: false };
+                //         let offset_operand2 = ir::Operand::constant(ir::Constant::int(0, ir::Dtype::INT));
+                //         let gep_instr = ir::Instruction::GetElementPtr { ptr: operand1.clone(), offset: offset_operand2, dtype: pointer_dtype2};
+                //         // operand1 = context.insert_instruction(gep_instr)?;
+                //         instrs.push(gep_instr.clone());
+                //         offset_operand = ir::Operand::constant(ir::Constant::int(offset2 as u128, ir::Dtype::LONG));
+                //     },
+                //     _ => {}
+                // }
 
-                let mut pointer_dtype2 = ir::Dtype::Pointer { inner: Box::new(dtype2.clone()), is_const: false };
+                // let mut pointer_dtype2 = ir::Dtype::Pointer { inner: Box::new(dtype2.clone()), is_const: false };
 
-                let gep_instr = ir::Instruction::GetElementPtr { ptr: operand1.clone(), offset: offset_operand, dtype: pointer_dtype2};
-                let mut result = context.insert_instruction(gep_instr)?;
-                if instrs.len() > 0 {
-                    result = context.insert_instruction(instrs.pop().expect("REASON"))?;
-                }
-                Ok(result)
+                // let gep_instr = ir::Instruction::GetElementPtr { ptr: operand1.clone(), offset: offset_operand, dtype: pointer_dtype2};
+                // let mut result = context.insert_instruction(gep_instr)?;
+                // if instrs.len() > 0 {
+                //     result = context.insert_instruction(instrs.pop().expect("REASON"))?;
+                // }
+                // Ok(result)
             }
             Expression::Call(call) => {
                 self.translate_func_call(&call.node, context)
@@ -1728,6 +1980,56 @@ impl IrgenFunc<'_> {
         }
     }
 
+    fn translate_expr_rvalue_member(
+        &mut self,
+        tmp1: &Expression,
+        tmp2: &String,
+        context: &mut Context
+    ) -> Result<ir::Operand, IrgenErrorMessage> {
+        // Expression::Member(member) => {
+        //     let tmp = &member.node.operator.node;
+        //     let tmp1 = &member.node.expression.node;
+        //     let tmp2 = &member.node.identifier.node.name;
+
+        let mut operand1 = self.translate_expr_lvalue(tmp1, context)?;
+
+        // println!("translate_expr_lvalue | Member |\n op: {:?}\n expr: {:?}\n ident: {:?}", tmp, tmp1,tmp2);
+        // println!("translate_expr_lvalue | Member |\n operand1: {}", operand1);
+
+
+        // let operand2 = self.lookup_symbol_table(tmp2)?;
+        let operand1_type = operand1.dtype();
+        let dtype = operand1_type.get_pointer_inner().unwrap();
+        let (offset2, dtype2) = dtype.get_offset_struct_field(tmp2, self.structs).unwrap();
+        println!("translate_expr_lvalue | dtype2 {}", dtype2);
+        let mut offset_operand = ir::Operand::constant(ir::Constant::int(offset2 as u128, ir::Dtype::INT));
+        
+        // println!("translate_expr_lvalue | Member |", dtype2.clone());
+        let mut dtype2 = dtype2.clone();
+
+        let mut instrs = Vec::new();
+
+        match &dtype2 {
+            ir::Dtype::Array { inner, size} => {
+                let pointer_dtype2 = ir::Dtype::Pointer { inner: inner.clone(), is_const: false };
+                let offset_operand2 = ir::Operand::constant(ir::Constant::int(0, ir::Dtype::INT));
+                let gep_instr = ir::Instruction::GetElementPtr { ptr: operand1.clone(), offset: offset_operand2, dtype: pointer_dtype2};
+                // operand1 = context.insert_instruction(gep_instr)?;
+                instrs.push(gep_instr.clone());
+                offset_operand = ir::Operand::constant(ir::Constant::int(offset2 as u128, ir::Dtype::LONG));
+            },
+            _ => {}
+        }
+
+        let mut pointer_dtype2 = ir::Dtype::Pointer { inner: Box::new(dtype2.clone()), is_const: false };
+
+        let gep_instr = ir::Instruction::GetElementPtr { ptr: operand1.clone(), offset: offset_operand, dtype: pointer_dtype2};
+        let mut result = context.insert_instruction(gep_instr)?;
+        if instrs.len() > 0 {
+            result = context.insert_instruction(instrs.pop().expect("REASON"))?;
+        }
+        Ok(result)
+    }
 
     fn merge_dtype(&mut self, mut ty1: ir::Dtype, mut ty2: ir::Dtype) -> ir::Dtype {
         // 1. 배열은 포인터로 변환
@@ -3377,5 +3679,19 @@ fn sizeofval_manual(dtype: &ir::Dtype) -> u128 {
         }
         ir::Dtype::Function { .. } => 0,
         ir::Dtype::Typedef { .. } => panic!("typedef should be resolved before sizeof"),
+    }
+}
+
+    
+fn flatten_initializer_list(init: &Initializer) -> &Initializer {
+    match init {
+        Initializer::List(items) if items.len() == 1 => {
+            let inner = &items[0].node.initializer.node;
+            match inner {
+                Initializer::List(_) => flatten_initializer_list(inner), // 재귀적으로 풀어냄
+                _ => init, // 더 이상 중첩이 아니면 그대로 반환
+            }
+        }
+        _ => init,
     }
 }
