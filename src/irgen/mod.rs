@@ -360,6 +360,8 @@ impl Irgen {
             tempid_counter: Irgen::TEMPID_COUNTER_INIT,
             typedefs: &self.typedefs,
             structs: &self.structs,
+            // structs: &mut self.structs, // ME
+
             // Initial symbol table has scope for global variable already
             symbol_table: vec![global_scope],
         };
@@ -516,6 +518,8 @@ struct IrgenFunc<'i> {
     /// Usable structs
     // TODO: Add examples on how to use properly use this field.
     structs: &'i HashMap<String, Option<ir::Dtype>>,
+    // structs: &'i mut HashMap<String, Option<ir::Dtype>>, // ME
+
     /// Current symbol table. The initial symbol table has the global variables.
     symbol_table: Vec<HashMap<String, ir::Operand>>,
 }
@@ -1043,6 +1047,21 @@ impl IrgenFunc<'_> {
                 },
                 ir::Dtype::Function {..} => todo!(),
                 ir::Dtype::Typedef {..} => panic!("typedef should be replaced by real dtype"),
+                ir::Dtype::Struct { ..} => {
+                    println!("translate_decl | struct | name {} type {}", name.clone(), dtype.clone());
+                    // let _unsed = self.structs.insert(name.clone(), Some(dtype.clone()));
+                    let ptr = self.translate_alloc(name, dtype.clone(), None, context)?;
+
+                    // let mut new_structs = self.structs.clone();
+
+                    // let _unused = new_structs.insert(name, Some(dtype));
+                    // // mem::replace(self.structs,  (new_structs.clone()));
+                    // self.structs = & new_structs.clone();
+                    // todo!()
+                }
+                ir::Dtype::Struct { name, fields, is_const, size_align_offsets } => {
+                    todo!()
+                }
                 _ => todo!()
             }
         }
@@ -1574,7 +1593,50 @@ impl IrgenFunc<'_> {
                 Ok(ir::Operand::constant(constant))
             }
             Expression::StringLiteral(_string_llt) => todo!(),
-            Expression::Member(_member) => todo!(),
+            Expression::Member(member) => {
+                let tmp = &member.node.operator.node;
+                let tmp1 = &member.node.expression.node;
+                let tmp2 = &member.node.identifier.node.name;
+
+                let mut operand1 = self.translate_expr_lvalue(tmp1, context)?;
+
+                println!("translate_expr_lvalue | Member |\n op: {:?}\n expr: {:?}\n ident: {:?}", tmp, tmp1,tmp2);
+                println!("translate_expr_lvalue | Member |\n operand1: {}", operand1);
+
+
+                // let operand2 = self.lookup_symbol_table(tmp2)?;
+                let operand1_type = operand1.dtype();
+                let dtype = operand1_type.get_pointer_inner().unwrap();
+                let (offset2, dtype2) = dtype.get_offset_struct_field(tmp2, self.structs).unwrap();
+                println!("translate_expr_lvalue | dtype2 {}", dtype2);
+                let mut offset_operand = ir::Operand::constant(ir::Constant::int(offset2 as u128, ir::Dtype::INT));
+                
+                // println!("translate_expr_lvalue | Member |", dtype2.clone());
+                let mut dtype2 = dtype2.clone();
+
+                let mut instrs = Vec::new();
+
+                match &dtype2 {
+                    ir::Dtype::Array { inner, size} => {
+                        let pointer_dtype2 = ir::Dtype::Pointer { inner: inner.clone(), is_const: false };
+                        let offset_operand2 = ir::Operand::constant(ir::Constant::int(0, ir::Dtype::INT));
+                        let gep_instr = ir::Instruction::GetElementPtr { ptr: operand1.clone(), offset: offset_operand2, dtype: pointer_dtype2};
+                        // operand1 = context.insert_instruction(gep_instr)?;
+                        instrs.push(gep_instr.clone());
+                        offset_operand = ir::Operand::constant(ir::Constant::int(offset2 as u128, ir::Dtype::LONG));
+                    },
+                    _ => {}
+                }
+
+                let mut pointer_dtype2 = ir::Dtype::Pointer { inner: Box::new(dtype2.clone()), is_const: false };
+
+                let gep_instr = ir::Instruction::GetElementPtr { ptr: operand1.clone(), offset: offset_operand, dtype: pointer_dtype2};
+                let mut result = context.insert_instruction(gep_instr)?;
+                if instrs.len() > 0 {
+                    result = context.insert_instruction(instrs.pop().expect("REASON"))?;
+                }
+                Ok(result)
+            }
             Expression::Call(call) => {
                 self.translate_func_call(&call.node, context)
             }
@@ -1748,71 +1810,7 @@ impl IrgenFunc<'_> {
         }
     }
     
- 
-    // fn merge_dtype(
-    //     &mut self,
-    //     ty1: ir::Dtype,
-    //     ty2: ir::Dtype,
-    // ) -> ir::Dtype {
-    // println!("merge_dtype | ty1 {} ty2 {}", ty1, ty2);
 
-    // use ir::Dtype::*;
-    // // 1. 같은 타입이면 그대로 반환
-    // if ty1 == ty2 {
-    //     return ty1;
-    // }
-
-    // // ✅ 배열이 포함된 경우 항상 포인터로 변환 후 처리
-    // let ty1 = if let Some(inner) = ty1.get_array_inner() {
-    //     Pointer {
-    //         inner: Box::new(inner.clone()),
-    //         is_const: false,
-    //     }
-    // } else {
-    //     ty1
-    // };
-
-    // let ty2 = if let Some(inner) = ty2.get_array_inner() {
-    //     Pointer {
-    //         inner: Box::new(inner.clone()),
-    //         is_const: false,
-    //     }
-    // } else {
-    //     ty2
-    // };
-
-
-    // match (&ty1, &ty2) {
-    //     // 2. 정수와 실수 연산이면 실수로 변환
-    //     (Int { .. }, Float { .. }) | (Float { .. }, Int { .. }) => Float {
-    //         width: std::cmp::max(ty1.get_float_width().unwrap_or(32), ty2.get_float_width().unwrap_or(32)),
-    //         is_const: ty1.is_const() || ty2.is_const(),
-    //     },
-
-    //     // 3. 정수끼리 연산이면 더 큰 크기의 정수로 변환
-    //     (Int { .. }, Int { .. }) => {
-    //         let width = std::cmp::max(ty1.get_int_width().unwrap(), ty2.get_int_width().unwrap());
-    //         // println!("merge_dtype | int int | {}", width);
-    //         Int {
-    //             width,
-    //             is_signed: ty1.is_int_signed() || ty2.is_int_signed(),
-    //             is_const: ty1.is_const() || ty2.is_const(),
-    //         }
-    //     },
-
-    //     // 4. 포인터 + 정수 연산이면 포인터 유지
-    //     (Pointer { .. }, Int { .. }) | (Int { .. }, Pointer { .. }) => {
-    //         let pointer = if ty1.get_pointer_inner().is_some() { ty1 } else { ty2 };
-    //         pointer.clone()
-    //     },
-
-    //     // 5. 포인터끼리 연산은 허용되지 않음
-    //     (Pointer { .. }, Pointer { .. }) => panic!("Cannot perform arithmetic on two pointers"),
-
-    //     // 6. 지원되지 않는 타입 조합
-    //     _ => panic!("Invalid type merge: {:?} and {:?}", ty1, ty2),
-    // }
-    // }
 
     fn translate_conditional(
         &mut self,
@@ -1822,13 +1820,6 @@ impl IrgenFunc<'_> {
         let bid_then = self.alloc_bid();
         let bid_else = self.alloc_bid();
         let bid_end = self.alloc_bid();
-
-        // self.translate_condition(
-        //     &conditional_expr.condition.node,
-        //     mem::replace(context, Context::new(bid_end)),
-        //     bid_then,
-        //     bid_else,
-        // )?;
 
         self.translate_condition(
             &conditional_expr.condition.node,
@@ -2785,11 +2776,11 @@ impl IrgenFunc<'_> {
     ) -> Result<ir::Operand, IrgenErrorMessage> {
         
         let lhs = self.translate_expr_lvalue(lhs, context)?; // rvalue -> lvalue
-        let rhs = self.translate_expr_rvalue(rhs, context)?;
+        let mut rhs = self.translate_expr_rvalue(rhs, context)?;
 
 
     
-        // ✅ rhs는 반드시 포인터여야 함
+        // ✅ lhs는 반드시 포인터여야 함
         let lhs_inner_type = match lhs.dtype() {
             ir::Dtype::Pointer { inner, .. } => *inner.clone(),
             _ => {
@@ -2801,8 +2792,9 @@ impl IrgenFunc<'_> {
                 })
             }
         };
-    
-        // ✅ lhs의 타입과 포인터가 가리키는 타입이 일치해야 함
+
+        rhs = self.translate_typecast(rhs, lhs_inner_type.clone(), context)?;
+
         if rhs.dtype() != lhs_inner_type {
             return Err(IrgenErrorMessage::Misc {
                 message: format!(
@@ -2925,9 +2917,28 @@ impl IrgenFunc<'_> {
                     .expect("'constant' must be interpreted to 'ir::Constant' value");
                 Ok(ir::Operand::constant(constant))
             }
-            // Expression::Conditional(conditional) => {
-            //     self.translate_conditional(&conditional.node, context)
-            // }
+            Expression::Member(member) => {
+                let tmp = &member.node.operator.node;
+                let tmp1 = &member.node.expression.node;
+                let tmp2 = &member.node.identifier.node.name;
+
+                let operand1 = self.translate_expr_lvalue(tmp1, context)?;
+
+                println!("translate_expr_lvalue | Member |\n op: {:?}\n expr: {:?}\n ident: {:?}", tmp, tmp1,tmp2);
+                println!("translate_expr_lvalue | Member |\n operand1: {}", operand1);
+
+
+                // let operand2 = self.lookup_symbol_table(tmp2)?;
+                let operand1_type = operand1.dtype();
+                let dtype = operand1_type.get_pointer_inner().unwrap();
+                let (offset2, dtype2) = dtype.get_offset_struct_field(tmp2, self.structs).unwrap();
+                println!("translate_expr_lvalue | dtype2 {}", dtype2);
+                let offset_operand = ir::Operand::constant(ir::Constant::int(offset2 as u128, ir::Dtype::INT));
+                let pointer_dtype2 = ir::Dtype::Pointer { inner: Box::new(dtype2.clone()), is_const: false };
+
+                let gep_instr = ir::Instruction::GetElementPtr { ptr: operand1, offset: offset_operand, dtype: pointer_dtype2};
+                context.insert_instruction(gep_instr)
+            },
             Expression::StringLiteral(_string_llt) => todo!(),
             Expression::Member(_member) => todo!(),
             Expression::Conditional(_)
