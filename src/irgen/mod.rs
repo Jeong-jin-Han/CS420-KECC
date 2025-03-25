@@ -1053,11 +1053,19 @@ impl IrgenFunc<'_> {
                     println!("translate_decl | struct | name {} type {}", name.clone(), dtype.clone());
                     // let _unsed = self.structs.insert(name.clone(), Some(dtype.clone()));
                     let ptr = self.translate_alloc(name, dtype.clone(), None, context)?;
+                    let mut  value = ir::Operand::constant(ir::Constant::int(0, ir::Dtype::BOOL));
                     if let Some(initializer) = &init_decl.node.initializer {
                         println!("translate_decl | intializer {:?}", initializer.node);
-                        let mut value = self.translate_initializer(&initializer.node,Some(ptr), context)?;
-                     };
-
+                        value = self.translate_initializer(&initializer.node,Some(ptr.clone()), context)?;
+                    };
+                    println!("translate_decl | value {} dtype {}", value, value.dtype());
+                    match &value.dtype() {
+                        &ir::Dtype::Struct {..} => {
+                            let store_instr = ir::Instruction::Store { ptr: ptr.clone(), value: value.clone() };
+                            context.insert_instruction(store_instr);
+                        }
+                        _ => {}
+                    }
                     // let mut new_structs = self.structs.clone();
 
                     // let _unused = new_structs.insert(name, Some(dtype));
@@ -2024,10 +2032,6 @@ impl IrgenFunc<'_> {
                 temp_operands.push((offset_operand2.clone(), pointer_dtype2.clone()));
                 offset_operand = ir::Operand::constant(ir::Constant::int(offset2 as u128, ir::Dtype::LONG));
             },
-            ir::Dtype::Struct { name, fields, is_const, size_align_offsets } => {
-                println!("translate_expr_rvalue_member | struct type")
-
-            }
             _ => {
                 println!("translate_expr_rvalue_member | type {}", dtype2.clone());
             }
@@ -2044,9 +2048,7 @@ impl IrgenFunc<'_> {
 
         let gep_instr = ir::Instruction::GetElementPtr { ptr: operand1.clone(), offset: offset_operand, dtype: pointer_dtype2};
         let mut result = context.insert_instruction(gep_instr)?;
-        // if instrs.len() > 0 {
-        //     result = context.insert_instruction(instrs.pop().expect("REASON"))?;
-        // }
+
         if temp_operands.len() > 0 {
             let (offset_operand2 , pointer_dtype2)=temp_operands.pop().unwrap();
             let gep_instr = ir::Instruction::GetElementPtr { ptr: result.clone(), offset: offset_operand2.clone(), dtype: pointer_dtype2};
@@ -3255,7 +3257,12 @@ impl IrgenFunc<'_> {
 
                 // let gep_instr = ir::Instruction::GetElementPtr { ptr: operand1, offset: offset_operand, dtype: pointer_dtype2};
                 // context.insert_instruction(gep_instr)
-                todo!()
+                // todo!()
+
+                let tmp = &member.node.operator.node;
+                let tmp1 = &member.node.expression.node;
+                let tmp2 = &member.node.identifier.node.name;
+                self.translate_expr_rvalue_member(tmp1, tmp2, context)
             },
             Expression::StringLiteral(_string_llt) => todo!(),
             Expression::Member(_member) => todo!(),
