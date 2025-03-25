@@ -3264,6 +3264,63 @@ impl IrgenFunc<'_> {
                 let tmp2 = &member.node.identifier.node.name;
                 self.translate_expr_rvalue_member(tmp1, tmp2, context)
             },
+            Expression::Call(call) => {
+                println!("translate_expr_lvalue | call {:?}", call);
+                // self.translate_func_call(&call.node, context) // fix here
+                let callee = self.translate_expr_rvalue(&call.node.callee.node, context)?;
+                let function_pointer_type = callee.dtype();
+                let function = function_pointer_type.get_pointer_inner().ok_or_else(|| {
+                    IrgenErrorMessage::NeedFunctionOrFunctionPointer { callee: callee.clone() }
+                })?;
+                let (return_type, parameters) = function.get_function_inner().ok_or_else(|| {
+                    IrgenErrorMessage::NeedFunctionOrFunctionPointer { callee: callee.clone() }
+                })?;
+        
+                let args = call
+                    .node
+                    .arguments
+                    .iter()
+                    .map(|a| self.translate_expr_rvalue(&a.node, context))
+                    .collect::<Result<Vec<_>, _>>()?;
+        
+                // Implicit type casting
+                if args.len() != parameters.len() {
+                    return Err(
+                        IrgenErrorMessage::Misc { message: 
+                            format!("too few arguments to function '{}'", call.node.callee.write_string()) // ME
+                        }
+                    );
+                }
+        
+                let args = izip!(args, parameters)
+                    .map(|(a,p)| self.translate_typecast(a, p.clone(), context))
+                    .collect::<Result<Vec<_>,_>>()?;
+        
+                let return_type = return_type.clone().set_const(false);
+                let result = context.insert_instruction(
+                    ir::Instruction::Call {
+                        callee: callee.clone(), 
+                        args,
+                        return_type
+                    }
+                )?;
+
+                let result_type = result.dtype();
+                let struct_name = result_type.get_struct_name().unwrap().clone().unwrap();
+                let ptr = self.translate_alloc(struct_name.clone(), result_type.clone(), None, context)?;
+
+                let store_instr = ir::Instruction::Store { ptr: ptr.clone(), value: result.clone() };
+                context.insert_instruction(store_instr);
+
+                // let struct_type = self.structs.get(struct_name.clone()).unwrap().clone().unwrap();
+                // let (offset, dtype) = struct_type.get_offset_struct_field(field_name, structs)
+                // let gep_instr = ir::Instruction::GetElementPtr { ptr: ptr.clone(), offset, dtype: () }
+
+                println!("translate_expr_lvalue | callee {} | result {}", callee.clone(), result.clone());
+
+                Ok(ptr)
+                // todo!()
+            }
             Expression::StringLiteral(_string_llt) => todo!(),
             Expression::Member(_member) => todo!(),
             Expression::Conditional(_)
