@@ -926,8 +926,12 @@ impl IrgenFunc<'_> {
                     .map_err(|e| IrgenError::new(switch_stmt.node.expression.write_string(), e))?;
 
                 let bid_end = self.alloc_bid();
-                let (cases, bid_default) =
-                    self.translate_switch_body(&switch_stmt.node.statement.node, bid_end, bid_continue, bid_break)?;
+                let (cases, bid_default) = self.translate_switch_body(
+                    &switch_stmt.node.statement.node,
+                    bid_end,
+                    bid_continue,
+                    bid_break,
+                )?;
 
                 self.insert_block(
                     mem::replace(context, Context::new(bid_end)),
@@ -995,7 +999,7 @@ impl IrgenFunc<'_> {
         decl: &Declaration,
         context: &mut Context,
     ) -> Result<(), IrgenErrorMessage> {
-        // println!("--------translate_decl-----\n {:?}\n", decl);
+        println!("--------translate_decl-----\n {:?}\n", decl);
         let (base_dtype, is_typedef) = Dtype::try_from_ast_declaration_specifiers(&decl.specifiers)
             .map_err(|e| IrgenErrorMessage::InvalidDtype { dtype_error: e })?;
 
@@ -1082,14 +1086,6 @@ impl IrgenFunc<'_> {
                     // self.structs = & new_structs.clone();
                     // todo!()
                 }
-                Dtype::Struct {
-                    name,
-                    fields,
-                    is_const,
-                    size_align_offsets,
-                } => {
-                    todo!()
-                }
                 _ => todo!(),
             }
         }
@@ -1103,7 +1099,7 @@ impl IrgenFunc<'_> {
         bid_end: ir::BlockId,
 
         bid_continue: Option<ir::BlockId>, // ME
-        bid_break: Option<ir::BlockId>, // ME
+        bid_break: Option<ir::BlockId>,    // ME
     ) -> Result<(Vec<(ir::Constant, ir::JumpArg)>, ir::BlockId), IrgenError> {
         let mut cases = Vec::new();
         let mut default = None;
@@ -1120,9 +1116,14 @@ impl IrgenFunc<'_> {
         for item in items {
             // Extract Statement from Block Item
             match &item.node {
-                BlockItem::Statement(stmt) => {
-                    self.translate_switch_body_inner(&stmt.node, &mut cases, &mut default, bid_end, bid_continue, bid_break)?
-                }
+                BlockItem::Statement(stmt) => self.translate_switch_body_inner(
+                    &stmt.node,
+                    &mut cases,
+                    &mut default,
+                    bid_end,
+                    bid_continue,
+                    bid_break,
+                )?,
                 _ => panic!("is unsupported"),
             }
         }
@@ -1142,7 +1143,7 @@ impl IrgenFunc<'_> {
         bid_end: ir::BlockId,
 
         bid_continue: Option<ir::BlockId>, // ME
-        bid_break: Option<ir::BlockId>, // ME
+        bid_break: Option<ir::BlockId>,    // ME
     ) -> Result<(), IrgenError> {
         // stmt = case 1; {A1; break}
         let label_stmt = if let Statement::Labeled(label_stmt) = stmt {
@@ -1155,7 +1156,13 @@ impl IrgenFunc<'_> {
         };
 
         let bid = self.alloc_bid();
-        let case = self.translate_switch_body_label_statement(label_stmt, bid, bid_end, bid_continue, bid_break)?;
+        let case = self.translate_switch_body_label_statement(
+            label_stmt,
+            bid,
+            bid_end,
+            bid_continue,
+            bid_break,
+        )?;
 
         if let Some(case) = case {
             if !case.is_integer_constant() {
@@ -1195,7 +1202,7 @@ impl IrgenFunc<'_> {
         bid_end: ir::BlockId,
 
         bid_continue: Option<ir::BlockId>, // ME
-        bid_break: Option<ir::BlockId>, // ME
+        bid_break: Option<ir::BlockId>,    // ME
     ) -> Result<Option<ir::Constant>, IrgenError> {
         // Get case value from constant expression
         let case = match &label_stmt.label.node {
@@ -1246,7 +1253,6 @@ impl IrgenFunc<'_> {
                         _ => {
                             // self.translate_stmt(&stmt.node, &mut context, None, None)?;
                             self.translate_stmt(&stmt.node, &mut context, bid_continue, bid_break)?; //ME
-
                         }
                     }
                 }
@@ -1337,7 +1343,7 @@ impl IrgenFunc<'_> {
         // Initialize allocated register if "value" is not 'None'
         if let Some(value) = value {
             // Implicit type cast
-            // println!("translate_alloc | translate_typecast | {}", value.clone());
+            println!("translate_alloc | translate_typecast | {}", value.clone());
             let value = self.translate_typecast(value, dtype, context)?;
             return context.insert_instruction(ir::Instruction::Store { ptr, value });
         }
@@ -1405,7 +1411,15 @@ impl IrgenFunc<'_> {
             // ✅ 포인터 <-> 포인터 변환
             (&Dtype::Pointer { .. }, &Dtype::Pointer { .. }) => {
                 if let Some(ptr_inner) = value_dtype.get_pointer_inner() {
-                    context.insert_instruction(ir::Instruction::Load { ptr: value })
+                    println!("translate_typecast | Load here");
+                    let mut result =
+                        context.insert_instruction(ir::Instruction::Load { ptr: value.clone() })?;
+                    if let Some(ptr_inner2) = dtype.get_pointer_inner() {
+                        if (ptr_inner == ptr_inner2) {
+                            return Ok(value.clone());
+                        }
+                    }
+                    Ok(result)
                 } else {
                     context.insert_instruction(ir::Instruction::TypeCast {
                         value,
@@ -1487,7 +1501,7 @@ impl IrgenFunc<'_> {
         /*
         array5.c 에서 list에 대한 initializer가 필요함.
         */
-
+        println!("translate_initializer");
         let initializer = flatten_initializer_list(initializer);
 
         match initializer {
@@ -1946,6 +1960,7 @@ impl IrgenFunc<'_> {
         expr: &Expression,
         context: &mut Context,
     ) -> Result<ir::Operand, IrgenErrorMessage> {
+        println!("translate_expr_rvalue");
         match expr {
             Expression::Identifier(identifier) => {
                 // let tmp = &identifier.node.name;
@@ -2702,16 +2717,31 @@ impl IrgenFunc<'_> {
                 */
                 return self.translate_assign_op(lhs, rhs, context);
             }
-            &BinaryOperator::AssignPlus => {
-                // make a new expression?? <- bad idea
-                return self.translate_assignplus_op(lhs, rhs, context);
-            }
             &BinaryOperator::LogicalAnd | &BinaryOperator::LogicalOr => {
                 return self.translate_logical_op(op, lhs, rhs, context);
             }
-            &BinaryOperator::AssignMinus => {
-                return self.translate_assignminus_op(lhs, rhs, context);
+            &BinaryOperator::AssignPlus
+            | &BinaryOperator::AssignMinus
+            | &BinaryOperator::AssignShiftLeft
+            | &BinaryOperator::AssignShiftRight
+            | &BinaryOperator::AssignBitwiseAnd
+            | &BinaryOperator::AssignBitwiseOr
+            | &BinaryOperator::AssignBitwiseXor
+            | &BinaryOperator::AssignDivide
+            | &BinaryOperator::AssignModulo
+            | &BinaryOperator::AssignMultiply => {
+                // make a new expression?? <- bad idea
+                return self.translate_assign_binary_op(op, lhs, rhs, context);
             }
+            // &BinaryOperator::AssignMinus => {
+            //     return self.translate_assignminus_op(lhs, rhs, context);
+            // }
+            // &BinaryOperator::AssignShiftRight => {
+            //     return self.translate_assignshiftright_op(lh,rhs,context);
+            // }
+            // &BinaryOperator::AssignShiftLeft => {
+            //     return self.translate_assignshiftleft_op(lh,rhs,context);
+            // }
             _ => {}
         }
 
@@ -2842,7 +2872,7 @@ impl IrgenFunc<'_> {
                 // Ok(operand_ptr)
                 Ok(operand) // not yet incremented
             }
-            UnaryOperator::Minus => {
+            UnaryOperator::Minus | UnaryOperator::Plus => {
                 let operand = self.translate_expr_rvalue(&unary.operand.node, context)?;
                 let instr = ir::Instruction::UnaryOp {
                     op: (unary.operator.node).clone(),
@@ -2961,6 +2991,122 @@ impl IrgenFunc<'_> {
                 println!("translate_unary_op | Indirection | operand {}", operand);
                 Ok(operand)
                 // todo!() // !!! unreachible
+            }
+            UnaryOperator::PreDecrement => {
+                let operand_ptr = self.translate_expr_lvalue(&unary.operand.node, context)?;
+                let operand = context.insert_instruction(ir::Instruction::Load {
+                    ptr: operand_ptr.clone(),
+                })?;
+                // println!("translate_unary_op | {:?}\nopernad{} {:?}", unary.clone(), operand, operand);
+                let operand_type = operand.dtype();
+                let mut dtype = Dtype::Int {
+                    width: 64,
+                    is_signed: true,
+                    is_const: false,
+                };
+                let mut const_num = ir::Operand::constant(ir::Constant::int(1, dtype.clone()));
+                let mut result = ir::Operand::constant(ir::Constant::int(1, dtype.clone()));
+                if let Some(inner) = operand_type.get_pointer_inner() {
+                    if let Some(size) = inner.get_int_width() {
+                        let size = size / 8; // 8bit = 1 byte
+                        let mut size_num =
+                            ir::Operand::constant(ir::Constant::int(size as u128, dtype.clone()));
+                        const_num = ir::Operand::constant(ir::Constant::int(1, dtype.clone()));
+                        let instr = ir::Instruction::BinOp {
+                            op: BinaryOperator::Multiply,
+                            lhs: const_num.clone(),
+                            rhs: size_num,
+                            dtype: dtype.clone(),
+                        };
+                        const_num = context.insert_instruction(instr)?;
+                        let instr = ir::Instruction::GetElementPtr {
+                            ptr: operand.clone(),
+                            offset: const_num.clone(),
+                            dtype: operand_type.clone(),
+                        };
+                        result = context.insert_instruction(instr)?;
+                    }
+                } else {
+                    // println!("pass");
+
+                    dtype = operand_type;
+                    const_num = ir::Operand::constant(ir::Constant::int(1, dtype.clone()));
+                    let instr = ir::Instruction::BinOp {
+                        op: BinaryOperator::Minus,
+                        lhs: operand.clone(),
+                        rhs: const_num,
+                        dtype: dtype.clone(),
+                    };
+                    result = context.insert_instruction(instr)?;
+                }
+
+                // let num_1 = ir::Operand::constant(ir::Constant::int(1,dtype.clone()));
+
+                let _unused = context.insert_instruction(ir::Instruction::Store {
+                    ptr: operand_ptr.clone(),
+                    value: result.clone(),
+                })?;
+                // Ok(operand_ptr)
+                Ok(result) // decremented
+            }
+            UnaryOperator::PostDecrement => {
+                let operand_ptr = self.translate_expr_lvalue(&unary.operand.node, context)?;
+                let operand = context.insert_instruction(ir::Instruction::Load {
+                    ptr: operand_ptr.clone(),
+                })?;
+                // println!("translate_unary_op | {:?}\nopernad{} {:?}", unary.clone(), operand, operand);
+                let operand_type = operand.dtype();
+                let mut dtype = Dtype::Int {
+                    width: 64,
+                    is_signed: true,
+                    is_const: false,
+                };
+                let mut const_num = ir::Operand::constant(ir::Constant::int(1, dtype.clone()));
+                let mut result = ir::Operand::constant(ir::Constant::int(1, dtype.clone()));
+                if let Some(inner) = operand_type.get_pointer_inner() {
+                    if let Some(size) = inner.get_int_width() {
+                        let size = size / 8; // 8bit = 1 byte
+                        let mut size_num =
+                            ir::Operand::constant(ir::Constant::int(size as u128, dtype.clone()));
+                        const_num = ir::Operand::constant(ir::Constant::int(1, dtype.clone()));
+                        let instr = ir::Instruction::BinOp {
+                            op: BinaryOperator::Multiply,
+                            lhs: const_num.clone(),
+                            rhs: size_num,
+                            dtype: dtype.clone(),
+                        };
+                        const_num = context.insert_instruction(instr)?;
+                        let instr = ir::Instruction::GetElementPtr {
+                            ptr: operand.clone(),
+                            offset: const_num.clone(),
+                            dtype: operand_type.clone(),
+                        };
+                        result = context.insert_instruction(instr)?;
+                    }
+                } else {
+                    // println!("pass");
+                    println!("translate_unary_op | operand_type {}", operand_type.clone());
+                    dtype = operand_type;
+                    const_num = ir::Operand::constant(ir::Constant::int(1, dtype.clone()));
+                    let instr = ir::Instruction::BinOp {
+                        op: BinaryOperator::Minus,
+                        lhs: operand.clone(),
+                        rhs: const_num,
+                        dtype: dtype.clone(),
+                    };
+                    result = context.insert_instruction(instr)?;
+                }
+
+                // let num_1 = ir::Operand::constant(ir::Constant::int(1,dtype.clone()));
+
+                let _unused = context.insert_instruction(ir::Instruction::Store {
+                    ptr: operand_ptr.clone(),
+                    value: result,
+                })?;
+                // Ok(operand_ptr)
+                Ok(operand) // not yet incremented
+
+                // todo!()
             }
             _ => {
                 // context.insert_instruction(
@@ -3093,8 +3239,9 @@ impl IrgenFunc<'_> {
         Ok(rhs) // fix here
     }
 
-    fn translate_assignplus_op(
+    fn translate_assign_binary_op(
         &mut self,
+        op: BinaryOperator,
         lhs: &Expression, // 원래 LHS (value)
         rhs: &Expression, // 원래 RHS (value)
         context: &mut Context,
@@ -3128,7 +3275,7 @@ impl IrgenFunc<'_> {
         let merge_dtype = self.merge_dtype(lhs_ptr_dtype_inner.clone(), rhs_dtype.clone());
 
         println!(
-            "translate_assignplus_op | merge_dtype {}, lhs_ptr_dtype_inner {}, rhs_dtype {}",
+            "translate_assign_binary_op | merge_dtype {}, lhs_ptr_dtype_inner {}, rhs_dtype {}",
             merge_dtype.clone(),
             lhs_ptr_dtype_inner.clone(),
             rhs_dtype.clone()
@@ -3140,11 +3287,24 @@ impl IrgenFunc<'_> {
             lhs_value = self.translate_typecast(lhs_value, rhs_dtype, context)?;
         }
 
-        // lhs type or rhs type??
+        // lhs type or rhs type?
+        let operator = match op {
+            BinaryOperator::AssignPlus => BinaryOperator::Plus,
+            BinaryOperator::AssignMinus => BinaryOperator::Minus,
+            BinaryOperator::AssignShiftLeft => BinaryOperator::ShiftLeft,
+            BinaryOperator::AssignShiftRight => BinaryOperator::ShiftRight,
+            BinaryOperator::AssignBitwiseAnd => BinaryOperator::BitwiseAnd,
+            BinaryOperator::AssignBitwiseOr => BinaryOperator::BitwiseOr,
+            BinaryOperator::AssignBitwiseXor => BinaryOperator::BitwiseXor,
+            BinaryOperator::AssignDivide => BinaryOperator::Divide,
+            BinaryOperator::AssignModulo => BinaryOperator::Modulo,
+            BinaryOperator::AssignMultiply => BinaryOperator::Multiply,
+            _ => todo!(),
+        };
 
         // 4️⃣ `lhs_value + rhs` 수행
         let mut result = context.insert_instruction(ir::Instruction::BinOp {
-            op: BinaryOperator::Plus,
+            op: operator,
             lhs: lhs_value.clone(),
             rhs,
             dtype: lhs_value.dtype().clone(),
@@ -3161,73 +3321,73 @@ impl IrgenFunc<'_> {
         Ok(result) // fix here
     }
 
-    fn translate_assignminus_op(
-        &mut self,
-        lhs: &Expression, // 원래 LHS (value)
-        rhs: &Expression, // 원래 RHS (value)
-        context: &mut Context,
-    ) -> Result<ir::Operand, IrgenErrorMessage> {
-        let lhs_ptr = self.translate_expr_lvalue(lhs, context)?;
-        let lhs_ptr_dtype = lhs_ptr.dtype();
-        let lhs_ptr_dtype_inner = lhs_ptr_dtype.get_pointer_inner().unwrap().clone();
+    // fn translate_assignminus_op(
+    //     &mut self,
+    //     lhs: &Expression, // 원래 LHS (value)
+    //     rhs: &Expression, // 원래 RHS (value)
+    //     context: &mut Context,
+    // ) -> Result<ir::Operand, IrgenErrorMessage> {
+    //     let lhs_ptr = self.translate_expr_lvalue(lhs, context)?;
+    //     let lhs_ptr_dtype = lhs_ptr.dtype();
+    //     let lhs_ptr_dtype_inner = lhs_ptr_dtype.get_pointer_inner().unwrap().clone();
 
-        // 3️⃣ LHS 값을 Load하여 현재 값을 가져오기
-        let mut lhs_value = context.insert_instruction(ir::Instruction::Load {
-            ptr: lhs_ptr.clone(),
-        })?;
-        // println!("translate_assignplus_op | lhs_value {}", lhs_value);
+    //     // 3️⃣ LHS 값을 Load하여 현재 값을 가져오기
+    //     let mut lhs_value = context.insert_instruction(ir::Instruction::Load {
+    //         ptr: lhs_ptr.clone(),
+    //     })?;
+    //     // println!("translate_assignplus_op | lhs_value {}", lhs_value);
 
-        let rhs = self.translate_expr_lvalue(rhs, context)?;
+    //     let rhs = self.translate_expr_lvalue(rhs, context)?;
 
-        // // 2️⃣ RHS를 rvalue로 변환하여 값 얻기
-        let rhs_dtype = rhs.dtype();
-        let mut rhs = rhs.clone();
-        match &rhs_dtype {
-            /* important!! */
-            &Dtype::Pointer { .. } => {
-                // println!("translate_assignplus_op | rhs {}", rhs);
-                rhs = context.insert_instruction(ir::Instruction::Load { ptr: rhs.clone() })?;
-            }
-            _ => {}
-        }
-        let rhs_dtype = rhs.dtype();
-        // println!("translate_assignplus_op | rhs_dtype {}", rhs_dtype);
+    //     // // 2️⃣ RHS를 rvalue로 변환하여 값 얻기
+    //     let rhs_dtype = rhs.dtype();
+    //     let mut rhs = rhs.clone();
+    //     match &rhs_dtype {
+    //         /* important!! */
+    //         &Dtype::Pointer { .. } => {
+    //             // println!("translate_assignplus_op | rhs {}", rhs);
+    //             rhs = context.insert_instruction(ir::Instruction::Load { ptr: rhs.clone() })?;
+    //         }
+    //         _ => {}
+    //     }
+    //     let rhs_dtype = rhs.dtype();
+    //     // println!("translate_assignplus_op | rhs_dtype {}", rhs_dtype);
 
-        let merge_dtype = self.merge_dtype(lhs_ptr_dtype_inner.clone(), rhs_dtype.clone());
+    //     let merge_dtype = self.merge_dtype(lhs_ptr_dtype_inner.clone(), rhs_dtype.clone());
 
-        println!(
-            "translate_assignminus_op | merge_dtype {}, lhs_ptr_dtype_inner {}, rhs_dtype {}",
-            merge_dtype.clone(),
-            lhs_ptr_dtype_inner.clone(),
-            rhs_dtype.clone()
-        );
-        if merge_dtype == lhs_ptr_dtype_inner {
-            // println!("merge_dtype == lhs_ptr_dtype_inner");
-            rhs = self.translate_typecast(rhs, lhs_ptr_dtype_inner.clone(), context)?;
-        } else {
-            lhs_value = self.translate_typecast(lhs_value, rhs_dtype, context)?;
-        }
+    //     println!(
+    //         "translate_assignminus_op | merge_dtype {}, lhs_ptr_dtype_inner {}, rhs_dtype {}",
+    //         merge_dtype.clone(),
+    //         lhs_ptr_dtype_inner.clone(),
+    //         rhs_dtype.clone()
+    //     );
+    //     if merge_dtype == lhs_ptr_dtype_inner {
+    //         // println!("merge_dtype == lhs_ptr_dtype_inner");
+    //         rhs = self.translate_typecast(rhs, lhs_ptr_dtype_inner.clone(), context)?;
+    //     } else {
+    //         lhs_value = self.translate_typecast(lhs_value, rhs_dtype, context)?;
+    //     }
 
-        // lhs type or rhs type??
+    //     // lhs type or rhs type??
 
-        // 4️⃣ `lhs_value + rhs` 수행
-        let mut result = context.insert_instruction(ir::Instruction::BinOp {
-            op: BinaryOperator::Minus,
-            lhs: lhs_value.clone(),
-            rhs,
-            dtype: lhs_value.dtype().clone(),
-        })?;
+    //     // 4️⃣ `lhs_value + rhs` 수행
+    //     let mut result = context.insert_instruction(ir::Instruction::BinOp {
+    //         op: BinaryOperator::Minus,
+    //         lhs: lhs_value.clone(),
+    //         rhs,
+    //         dtype: lhs_value.dtype().clone(),
+    //     })?;
 
-        result = self.translate_typecast(result, lhs_ptr_dtype_inner.clone(), context)?;
+    //     result = self.translate_typecast(result, lhs_ptr_dtype_inner.clone(), context)?;
 
-        // 5️⃣ 결과값을 LHS 위치에 Store
-        let store_inst = ir::Instruction::Store {
-            ptr: lhs_ptr,
-            value: result.clone(),
-        };
-        context.insert_instruction(store_inst);
-        Ok(result)
-    }
+    //     // 5️⃣ 결과값을 LHS 위치에 Store
+    //     let store_inst = ir::Instruction::Store {
+    //         ptr: lhs_ptr,
+    //         value: result.clone(),
+    //     };
+    //     context.insert_instruction(store_inst);
+    //     Ok(result)
+    // }
 
     fn translate_expr_lvalue(
         &mut self,
@@ -3623,9 +3783,13 @@ impl IrgenFunc<'_> {
     ) -> Result<(), IrgenErrorMessage> {
         // todo!()
         // println!("translate_parameter_decl | context_bid {}", context.bid);
-        if signature.params.len() != name_of_params.len() {
-            panic!("length of 'parameters' and 'name_of_params' must be same")
-        }
+        println!(
+            "translate_parameter_decl | signature {:?} params {:?}",
+            signature.params, name_of_params
+        );
+        // if signature.params.len() != name_of_params.len() {
+        //     panic!("length of 'parameters' and 'name_of_params' must be same")
+        // }
 
         for (i, (dtype, var)) in izip!(&signature.params, name_of_params).enumerate() {
             let value = Some(ir::Operand::register(
