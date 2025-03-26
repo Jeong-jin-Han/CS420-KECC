@@ -1898,6 +1898,38 @@ impl IrgenFunc<'_> {
         Ok(converted_ptr)
     }
 
+    fn type_of_expr(&mut self, expr: &Expression) -> Result<Dtype, IrgenErrorMessage> {
+        /*
+        self.symbol table
+        */
+        match expr {
+            Expression::UnaryOperator(unary) => self.type_of_expr(&unary.node.operand.node),
+            Expression::Identifier(identifier) => {
+                let operand = self.lookup_symbol_table(&identifier.node.name)?;
+                let mut dtype = operand.dtype();
+                if let Some(inner_dtype) = dtype.get_pointer_inner() {
+                    dtype = inner_dtype.clone();
+                }
+
+                Ok(dtype)
+                // todo!()
+            }
+            Expression::BinaryOperator(binary) => {
+                let tmp1 = &binary.node.operator.node;
+                let tmp2 = &binary.node.lhs.node;
+                let tmp3 = &binary.node.rhs.node;
+                let lhs_type = self.type_of_expr(tmp2)?;
+                let rhs_type = self.type_of_expr(tmp3)?;
+                let merge_dtype = self.merge_dtype(lhs_type, rhs_type);
+                Ok(merge_dtype)
+                // todo!()
+            }
+            _ => {
+                todo!()
+            }
+        }
+        // todo!()
+    }
     fn translate_expr_rvalue(
         &mut self,
         expr: &Expression,
@@ -1986,13 +2018,15 @@ impl IrgenFunc<'_> {
                 )))
             }
             Expression::SizeOfVal(sizeval) => {
+                /* sizeofval : should not evaluate the expr */
                 // Err(IrgenErrorMessage::Misc {
                 //     message: "Unsupported expression type: sizeval".to_string(),
                 // })
                 let expr = &sizeval.node.0.node;
-                let operand = self.translate_expr_lvalue(expr, context)?; // lvalue에서 type 얻기 // 여기서 block이 제대로 생성되지 않는 문제가 발생함.
-                // let operand = self.translate_expr_rvalue(expr, context)?;
-                let mut dtype = operand.dtype();
+                // let operand = self.translate_expr_lvalue(expr, context)?; // lvalue에서 type 얻기 // 여기서 block이 제대로 생성되지 않는 문제가 발생함.
+
+                let mut dtype = self.type_of_expr(expr)?;
+                // fn type_of_expr(expr:&Expression) -> Dtype {}
 
                 if let Some(inner_dtype) = dtype.get_pointer_inner() {
                     dtype = inner_dtype.clone();
@@ -3199,6 +3233,7 @@ impl IrgenFunc<'_> {
                     println!("translate_expr_lvalue | Indirection | operand {}", operand);
                     Ok(operand)
                 }
+                // _ => self.translate_unary_op(&unary.node, context), // fix here
                 _ => Err(IrgenErrorMessage::Misc {
                     message: "This error occurred at 'IrgenFunc::translate_expr_lvalue".to_string(),
                 }),
