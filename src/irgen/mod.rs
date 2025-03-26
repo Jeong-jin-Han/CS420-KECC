@@ -1343,7 +1343,7 @@ impl IrgenFunc<'_> {
         context: &mut Context,
     ) -> Result<ir::Operand, IrgenErrorMessage> {
         let value_dtype = value.dtype();
-        // println!("translate_typecast | value {} dtype {}", value_dtype, dtype);
+        println!("translate_typecast | value {} dtype {}", value_dtype, dtype);
         // ✅ 변환이 필요 없는 경우 그대로 반환
         if value_dtype == dtype {
             return Ok(value);
@@ -1393,10 +1393,14 @@ impl IrgenFunc<'_> {
 
             // ✅ 포인터 <-> 포인터 변환
             (&Dtype::Pointer { .. }, &Dtype::Pointer { .. }) => {
-                context.insert_instruction(ir::Instruction::TypeCast {
-                    value,
-                    target_dtype: dtype,
-                })
+                if let Some(ptr_inner) = value_dtype.get_pointer_inner() {
+                    context.insert_instruction(ir::Instruction::Load { ptr: value })
+                } else {
+                    context.insert_instruction(ir::Instruction::TypeCast {
+                        value,
+                        target_dtype: dtype,
+                    })
+                }
             }
 
             // ✅ 배열 → 포인터 변환 (예: int a[5] → int*)
@@ -1957,7 +1961,10 @@ impl IrgenFunc<'_> {
                 let tmp2 = &member.node.identifier.node.name;
                 self.translate_expr_rvalue_member(tmp, tmp1, tmp2, context)
             }
-            Expression::Call(call) => self.translate_func_call(&call.node, context),
+            Expression::Call(call) => {
+                println!("translate_expr_rvalue | call {:?}", call);
+                self.translate_func_call(&call.node, context)
+            }
             Expression::SizeOfTy(type_name) => {
                 // let tmp = &type_name.node.0.node; // TypeName
                 let dtype = Dtype::try_from(&type_name.node.0.node)
@@ -2022,7 +2029,10 @@ impl IrgenFunc<'_> {
                     },
                 )))
             }
-            Expression::UnaryOperator(unary) => self.translate_unary_op(&unary.node, context),
+            Expression::UnaryOperator(unary) => {
+                println!("translate_expr_rvalue | unary op ");
+                self.translate_unary_op(&unary.node, context)
+            }
             Expression::Cast(cast) => {
                 let target_dtype = Dtype::try_from(&cast.node.type_name.node)
                     .map_err(|e| IrgenErrorMessage::InvalidDtype { dtype_error: e })?;
@@ -2418,6 +2428,7 @@ impl IrgenFunc<'_> {
             });
         }
 
+        println!("translate_func_call | typecast");
         let args = izip!(args, parameters)
             .map(|(a, p)| self.translate_typecast(a, p.clone(), context))
             .collect::<Result<Vec<_>, _>>()?;
@@ -3184,6 +3195,7 @@ impl IrgenFunc<'_> {
             Expression::UnaryOperator(unary) => match &unary.node.operator.node {
                 UnaryOperator::Indirection => {
                     let operand = self.translate_expr_rvalue(&unary.node.operand.node, context)?;
+
                     println!("translate_expr_lvalue | Indirection | operand {}", operand);
                     Ok(operand)
                 }
@@ -3253,7 +3265,7 @@ impl IrgenFunc<'_> {
                 self.translate_expr_rvalue_member(tmp, tmp1, tmp2, context)
             }
             Expression::Call(call) => {
-                // println!("translate_expr_lvalue | call {:?}", call);
+                println!("translate_expr_lvalue | call {:?}", call);
                 // self.translate_func_call(&call.node, context) // fix here
                 let callee = self.translate_expr_rvalue(&call.node.callee.node, context)?;
                 let function_pointer_type = callee.dtype();
