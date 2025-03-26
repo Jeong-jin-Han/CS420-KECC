@@ -289,13 +289,14 @@ impl Irgen {
     /// Add a function definition.
     fn add_function_definition(&mut self, source: &FunctionDefinition) -> Result<(), IrgenError> {
         // Creates name and signature.
+        // println!("add_function_definition {:#?}\n",source);
         let specifiers = &source.specifiers;
         let declarator = &source.declarator.node;
 
         let name = name_of_declarator(declarator);
         let name_of_params = name_of_params_from_function_declarator(declarator)
             .expect("declarator is not from function definition");
-        // println!("add_function_definition | {:?}", name_of_params.clone());
+        println!("add_function_definition | {:?}", name_of_params.clone());
 
         let (base_dtype, is_typedef) = Dtype::try_from_ast_declaration_specifiers(specifiers)
             .map_err(|e| {
@@ -3321,74 +3322,6 @@ impl IrgenFunc<'_> {
         Ok(result) // fix here
     }
 
-    // fn translate_assignminus_op(
-    //     &mut self,
-    //     lhs: &Expression, // 원래 LHS (value)
-    //     rhs: &Expression, // 원래 RHS (value)
-    //     context: &mut Context,
-    // ) -> Result<ir::Operand, IrgenErrorMessage> {
-    //     let lhs_ptr = self.translate_expr_lvalue(lhs, context)?;
-    //     let lhs_ptr_dtype = lhs_ptr.dtype();
-    //     let lhs_ptr_dtype_inner = lhs_ptr_dtype.get_pointer_inner().unwrap().clone();
-
-    //     // 3️⃣ LHS 값을 Load하여 현재 값을 가져오기
-    //     let mut lhs_value = context.insert_instruction(ir::Instruction::Load {
-    //         ptr: lhs_ptr.clone(),
-    //     })?;
-    //     // println!("translate_assignplus_op | lhs_value {}", lhs_value);
-
-    //     let rhs = self.translate_expr_lvalue(rhs, context)?;
-
-    //     // // 2️⃣ RHS를 rvalue로 변환하여 값 얻기
-    //     let rhs_dtype = rhs.dtype();
-    //     let mut rhs = rhs.clone();
-    //     match &rhs_dtype {
-    //         /* important!! */
-    //         &Dtype::Pointer { .. } => {
-    //             // println!("translate_assignplus_op | rhs {}", rhs);
-    //             rhs = context.insert_instruction(ir::Instruction::Load { ptr: rhs.clone() })?;
-    //         }
-    //         _ => {}
-    //     }
-    //     let rhs_dtype = rhs.dtype();
-    //     // println!("translate_assignplus_op | rhs_dtype {}", rhs_dtype);
-
-    //     let merge_dtype = self.merge_dtype(lhs_ptr_dtype_inner.clone(), rhs_dtype.clone());
-
-    //     println!(
-    //         "translate_assignminus_op | merge_dtype {}, lhs_ptr_dtype_inner {}, rhs_dtype {}",
-    //         merge_dtype.clone(),
-    //         lhs_ptr_dtype_inner.clone(),
-    //         rhs_dtype.clone()
-    //     );
-    //     if merge_dtype == lhs_ptr_dtype_inner {
-    //         // println!("merge_dtype == lhs_ptr_dtype_inner");
-    //         rhs = self.translate_typecast(rhs, lhs_ptr_dtype_inner.clone(), context)?;
-    //     } else {
-    //         lhs_value = self.translate_typecast(lhs_value, rhs_dtype, context)?;
-    //     }
-
-    //     // lhs type or rhs type??
-
-    //     // 4️⃣ `lhs_value + rhs` 수행
-    //     let mut result = context.insert_instruction(ir::Instruction::BinOp {
-    //         op: BinaryOperator::Minus,
-    //         lhs: lhs_value.clone(),
-    //         rhs,
-    //         dtype: lhs_value.dtype().clone(),
-    //     })?;
-
-    //     result = self.translate_typecast(result, lhs_ptr_dtype_inner.clone(), context)?;
-
-    //     // 5️⃣ 결과값을 LHS 위치에 Store
-    //     let store_inst = ir::Instruction::Store {
-    //         ptr: lhs_ptr,
-    //         value: result.clone(),
-    //     };
-    //     context.insert_instruction(store_inst);
-    //     Ok(result)
-    // }
-
     fn translate_expr_lvalue(
         &mut self,
         expr: &Expression,
@@ -3404,9 +3337,13 @@ impl IrgenFunc<'_> {
                     println!("translate_expr_lvalue | Indirection | operand {}", operand);
                     Ok(operand)
                 }
+                _ => self.translate_unary_op(&unary.node, context),
                 // _ => self.translate_unary_op(&unary.node, context), // fix here
                 _ => Err(IrgenErrorMessage::Misc {
-                    message: "This error occurred at 'IrgenFunc::translate_expr_lvalue".to_string(),
+                    message: format!(
+                        "This error occurred at 'IrgenFunc::translate_expr_lvalue' {:?}",
+                        expr
+                    ),
                 }),
             },
             Expression::BinaryOperator(binary) => {
@@ -3580,7 +3517,10 @@ impl IrgenFunc<'_> {
             | Expression::SizeOfVal(_)
             | Expression::AlignOf(_)
             | Expression::Cast(_) => Err(IrgenErrorMessage::Misc {
-                message: "This error occurred at 'IrgenFunc::translate_expr_lvalue'".to_string(),
+                message: format!(
+                    "This error occurred at 'IrgenFunc::translate_expr_lvalue' {:?}",
+                    expr
+                ),
             }),
             _ => todo!(),
         }
@@ -3838,6 +3778,33 @@ fn name_of_params_from_function_declarator(declarator: &Declarator) -> Option<Ve
     }
 }
 
+// #[inline]
+// fn name_of_params_from_derived_declarators(
+//     derived_decls: &[Node<DerivedDeclarator>],
+// ) -> Option<Vec<String>> {
+//     for derived_decl in derived_decls {
+//         match &derived_decl.node {
+//             DerivedDeclarator::Function(func_decl) => {
+//                 let name_of_params = func_decl
+//                     .node
+//                     .parameters
+//                     .iter()
+//                     .map(|p| name_of_parameter_declaration(&p.node))
+//                     .collect::<Option<Vec<_>>>()
+//                     .unwrap_or_default();
+//                 return Some(name_of_params);
+//             }
+//             DerivedDeclarator::KRFunction(_kr_func_decl) => {
+//                 // K&R function is allowed only when it has no parameter
+//                 return Some(Vec::new());
+//             }
+//             _ => (),
+//         };
+//     }
+
+//     None
+// }
+
 #[inline]
 fn name_of_params_from_derived_declarators(
     derived_decls: &[Node<DerivedDeclarator>],
@@ -3849,13 +3816,12 @@ fn name_of_params_from_derived_declarators(
                     .node
                     .parameters
                     .iter()
-                    .map(|p| name_of_parameter_declaration(&p.node))
-                    .collect::<Option<Vec<_>>>()
-                    .unwrap_or_default();
+                    .enumerate()
+                    .map(|(i, p)| name_of_parameter_declaration(&p.node, i))
+                    .collect::<Vec<_>>();
                 return Some(name_of_params);
             }
             DerivedDeclarator::KRFunction(_kr_func_decl) => {
-                // K&R function is allowed only when it has no parameter
                 return Some(Vec::new());
             }
             _ => (),
@@ -3865,10 +3831,19 @@ fn name_of_params_from_derived_declarators(
     None
 }
 
+// #[inline]
+// fn name_of_parameter_declaration(parameter_declaration: &ParameterDeclaration) -> Option<String> {
+//     let declarator = parameter_declaration.declarator.as_ref()?;
+//     Some(name_of_declarator(&declarator.node))
+// }
+
 #[inline]
-fn name_of_parameter_declaration(parameter_declaration: &ParameterDeclaration) -> Option<String> {
-    let declarator = parameter_declaration.declarator.as_ref()?;
-    Some(name_of_declarator(&declarator.node))
+fn name_of_parameter_declaration(param_decl: &ParameterDeclaration, idx: usize) -> String {
+    if let Some(decl) = &param_decl.declarator {
+        name_of_declarator(&decl.node)
+    } else {
+        format!("_anon{}", idx)
+    }
 }
 
 #[inline]
@@ -3992,6 +3967,7 @@ fn promote_int_int(ty1: &Dtype, ty2: &Dtype) -> Dtype {
 
 fn signed_to_u128(value: i128, width: usize) -> u128 {
     let mask = match width {
+        1 => 1,
         8 => u8::MAX as u128,
         16 => u16::MAX as u128,
         32 => u32::MAX as u128,
