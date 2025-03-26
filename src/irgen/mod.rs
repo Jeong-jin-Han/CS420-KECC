@@ -927,7 +927,7 @@ impl IrgenFunc<'_> {
 
                 let bid_end = self.alloc_bid();
                 let (cases, bid_default) =
-                    self.translate_switch_body(&switch_stmt.node.statement.node, bid_end)?;
+                    self.translate_switch_body(&switch_stmt.node.statement.node, bid_end, bid_continue, bid_break)?;
 
                 self.insert_block(
                     mem::replace(context, Context::new(bid_end)),
@@ -1101,6 +1101,9 @@ impl IrgenFunc<'_> {
         &mut self,
         stmt: &Statement,
         bid_end: ir::BlockId,
+
+        bid_continue: Option<ir::BlockId>, // ME
+        bid_break: Option<ir::BlockId>, // ME
     ) -> Result<(Vec<(ir::Constant, ir::JumpArg)>, ir::BlockId), IrgenError> {
         let mut cases = Vec::new();
         let mut default = None;
@@ -1118,7 +1121,7 @@ impl IrgenFunc<'_> {
             // Extract Statement from Block Item
             match &item.node {
                 BlockItem::Statement(stmt) => {
-                    self.translate_switch_body_inner(&stmt.node, &mut cases, &mut default, bid_end)?
+                    self.translate_switch_body_inner(&stmt.node, &mut cases, &mut default, bid_end, bid_continue, bid_break)?
                 }
                 _ => panic!("is unsupported"),
             }
@@ -1137,6 +1140,9 @@ impl IrgenFunc<'_> {
         cases: &mut Vec<(ir::Constant, ir::JumpArg)>,
         default: &mut Option<ir::BlockId>,
         bid_end: ir::BlockId,
+
+        bid_continue: Option<ir::BlockId>, // ME
+        bid_break: Option<ir::BlockId>, // ME
     ) -> Result<(), IrgenError> {
         // stmt = case 1; {A1; break}
         let label_stmt = if let Statement::Labeled(label_stmt) = stmt {
@@ -1149,7 +1155,7 @@ impl IrgenFunc<'_> {
         };
 
         let bid = self.alloc_bid();
-        let case = self.translate_switch_body_label_statement(label_stmt, bid, bid_end)?;
+        let case = self.translate_switch_body_label_statement(label_stmt, bid, bid_end, bid_continue, bid_break)?;
 
         if let Some(case) = case {
             if !case.is_integer_constant() {
@@ -1187,6 +1193,9 @@ impl IrgenFunc<'_> {
         label_stmt: &LabeledStatement,
         bid: ir::BlockId,
         bid_end: ir::BlockId,
+
+        bid_continue: Option<ir::BlockId>, // ME
+        bid_break: Option<ir::BlockId>, // ME
     ) -> Result<Option<ir::Constant>, IrgenError> {
         // Get case value from constant expression
         let case = match &label_stmt.label.node {
@@ -1235,7 +1244,9 @@ impl IrgenFunc<'_> {
                     match &stmt.node {
                         Statement::Break => {}
                         _ => {
-                            self.translate_stmt(&stmt.node, &mut context, None, None)?;
+                            // self.translate_stmt(&stmt.node, &mut context, None, None)?;
+                            self.translate_stmt(&stmt.node, &mut context, bid_continue, bid_break)?; //ME
+
                         }
                     }
                 }
