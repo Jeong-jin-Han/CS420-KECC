@@ -1418,7 +1418,15 @@ impl IrgenFunc<'_> {
             // ✅ 포인터 <-> 포인터 변환
             (&Dtype::Pointer { .. }, &Dtype::Pointer { .. }) => {
                 if let Some(ptr_inner) = value_dtype.get_pointer_inner() {
-                    println!("translate_typecast | Load here");
+                    println!("translate_typecast | Load here {}", ptr_inner);
+
+                    if let Dtype::Struct { .. } = ptr_inner {
+                        return context.insert_instruction(ir::Instruction::TypeCast {
+                            value,
+                            target_dtype: dtype,
+                        });
+                    }
+
                     let mut result =
                         context.insert_instruction(ir::Instruction::Load { ptr: value.clone() })?;
                     if let Some(ptr_inner2) = dtype.get_pointer_inner() {
@@ -2896,7 +2904,11 @@ impl IrgenFunc<'_> {
             UnaryOperator::Address => {
                 // need to fix
                 let operand = self.translate_expr_lvalue(&unary.operand.node, context)?;
-                println!("translate_unary_op | Address | operand {}", operand);
+                println!(
+                    "translate_unary_op | Address | operand {}, operand type {:?}",
+                    operand,
+                    operand.dtype()
+                );
                 Ok(operand)
             }
             UnaryOperator::Complement => {
