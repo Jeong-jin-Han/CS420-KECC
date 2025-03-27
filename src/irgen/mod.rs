@@ -529,6 +529,8 @@ impl IrgenFunc<'_> {
     /// Allocate a new block id.
     fn alloc_bid(&mut self) -> ir::BlockId {
         let bid = self.bid_counter;
+        println!("----------| alloc_bid | {}", bid);
+
         self.bid_counter += 1;
         ir::BlockId(bid)
     }
@@ -553,7 +555,7 @@ impl IrgenFunc<'_> {
     ///
     /// Panics if another block with the same bid as `context` already existed.
     fn insert_block(&mut self, context: Context, exit: ir::BlockExit) {
-        // println!("insert_block | context_bid {}", context.bid);
+        println!("insert_block | context_bid {}", context.bid);
         let block = ir::Block {
             phinodes: if context.bid == self.bid_init {
                 self.phinodes_init.clone()
@@ -653,6 +655,8 @@ impl IrgenFunc<'_> {
                 Ok(())
             }
             Statement::If(stmt) => {
+                println!("translate stmt | If | {:?}", stmt);
+                println!("translate stmt | If | alloc_bid");
                 let bid_then = self.alloc_bid();
                 let bid_else = self.alloc_bid();
                 let bid_end = self.alloc_bid();
@@ -756,6 +760,8 @@ impl IrgenFunc<'_> {
                         arg: ir::JumpArg::new(bid_cond, Vec::new()),
                     },
                 );
+
+                println!("translate stmt | For | alloc_bid");
 
                 let bid_body = self.alloc_bid();
                 let bid_step = self.alloc_bid();
@@ -2368,6 +2374,8 @@ impl IrgenFunc<'_> {
         conditional_expr: &ConditionalExpression,
         context: &mut Context,
     ) -> Result<ir::Operand, IrgenErrorMessage> {
+        println!("translate conditional | alloc_bid");
+
         let bid_then = self.alloc_bid();
         let bid_else = self.alloc_bid();
         let bid_end = self.alloc_bid();
@@ -2522,7 +2530,7 @@ impl IrgenFunc<'_> {
         rhs: &Expression,
         context: &mut Context,
     ) -> Result<ir::Operand, IrgenErrorMessage> {
-        println!("translate_logical_op_or");
+        println!("translate_logical_op_or | alloc_bid");
         let bid_then = self.alloc_bid();
         let bid_else = self.alloc_bid();
         let bid_end = self.alloc_bid();
@@ -2606,6 +2614,7 @@ impl IrgenFunc<'_> {
         // self.tempid_counter += 1;
         // let _unused = self.translate_alloc(var, dtype, None, context)?;
         // let mut lhs = self.translate_expr_rvalue(lhs, context)?;
+        println!("translate_logical_op_and | alloc_bid");
 
         let bid_then = self.alloc_bid();
         let bid_else = self.alloc_bid();
@@ -2792,7 +2801,9 @@ impl IrgenFunc<'_> {
             &BinaryOperator::Equals
             | &BinaryOperator::Less
             | &BinaryOperator::Greater
-            | &BinaryOperator::NotEquals => Dtype::BOOL,
+            | &BinaryOperator::NotEquals
+            | &BinaryOperator::LessOrEqual
+            | &BinaryOperator::GreaterOrEqual => Dtype::BOOL,
             // &BinaryOperator::Equals => {
             //     Dtype::BOOL
             // }
@@ -3347,54 +3358,58 @@ impl IrgenFunc<'_> {
                 }),
             },
             Expression::BinaryOperator(binary) => {
-                match binary.node.operator.node {
-                    BinaryOperator::Index => self.translate_index_op(
-                        &binary.node.lhs.node,
-                        &binary.node.rhs.node,
-                        context,
-                    ),
-                    BinaryOperator::Plus => {
-                        let op = binary.node.operator.node.clone();
-                        let lhs = &binary.node.lhs.node;
-                        let rhs = &binary.node.rhs.node;
+                let op = &binary.node.operator.node;
+                let lhs = &binary.node.lhs.node;
+                let rhs = &binary.node.rhs.node;
+                self.translate_binary_op(op.clone(), lhs, rhs, context)
+                // match binary.node.operator.node {
+                //     BinaryOperator::Index => self.translate_index_op(
+                //         &binary.node.lhs.node,
+                //         &binary.node.rhs.node,
+                //         context,
+                //     ),
+                //     BinaryOperator::Plus => {
+                //         let op = binary.node.operator.node.clone();
+                //         let lhs = &binary.node.lhs.node;
+                //         let rhs = &binary.node.rhs.node;
 
-                        let mut lhs = self.translate_expr_rvalue(lhs, context)?;
-                        let mut rhs = self.translate_expr_rvalue(rhs, context)?;
+                //         let mut lhs = self.translate_expr_rvalue(lhs, context)?;
+                //         let mut rhs = self.translate_expr_rvalue(rhs, context)?;
 
-                        // 🔥 포인터가 있는 경우 Load 수행 추가
-                        if let Dtype::Pointer { inner, .. } = lhs.dtype() {
-                            lhs = context.insert_instruction(ir::Instruction::Load { ptr: lhs })?;
-                        }
-                        if let Dtype::Pointer { inner, .. } = rhs.dtype() {
-                            rhs = context.insert_instruction(ir::Instruction::Load { ptr: rhs })?;
-                        }
+                //         // 🔥 포인터가 있는 경우 Load 수행 추가
+                //         if let Dtype::Pointer { inner, .. } = lhs.dtype() {
+                //             lhs = context.insert_instruction(ir::Instruction::Load { ptr: lhs })?;
+                //         }
+                //         if let Dtype::Pointer { inner, .. } = rhs.dtype() {
+                //             rhs = context.insert_instruction(ir::Instruction::Load { ptr: rhs })?;
+                //         }
 
-                        let dtype = self.merge_dtype(lhs.dtype(), rhs.dtype());
-                        println!(
-                            "translate_expr_lvalue | binary_op | lhs {} rhs {} merge {}",
-                            lhs, rhs, dtype
-                        );
+                //         let dtype = self.merge_dtype(lhs.dtype(), rhs.dtype());
+                //         println!(
+                //             "translate_expr_lvalue | binary_op | lhs {} rhs {} merge {}",
+                //             lhs, rhs, dtype
+                //         );
 
-                        let lhs = self.translate_typecast(lhs, dtype.clone(), context)?;
-                        let rhs = self.translate_typecast(rhs, dtype.clone(), context)?;
+                //         let lhs = self.translate_typecast(lhs, dtype.clone(), context)?;
+                //         let rhs = self.translate_typecast(rhs, dtype.clone(), context)?;
 
-                        context.insert_instruction(ir::Instruction::BinOp {
-                            op,
-                            lhs,
-                            rhs,
-                            dtype,
-                        })
-                    }
-                    _ => {
-                        // println!("translate_expr_lvalue binary_op");
-                        Err(IrgenErrorMessage::Misc {
-                            message:
-                                r"binary operator expression cannot be used as l-value except \ 
-                            index operator expression"
-                                    .to_string(),
-                        })
-                    }
-                }
+                //         context.insert_instruction(ir::Instruction::BinOp {
+                //             op,
+                //             lhs,
+                //             rhs,
+                //             dtype,
+                //         })
+                //     }
+                //     _ => {
+                //         // println!("translate_expr_lvalue binary_op");
+                //         Err(IrgenErrorMessage::Misc {
+                //             message:
+                //                 r"binary operator expression cannot be used as l-value except \
+                //             index operator expression"
+                //                     .to_string(),
+                //         })
+                //     }
+                // }
             }
             Expression::Constant(constant) => {
                 let constant = ir::Constant::try_from(&constant.node)
@@ -3509,8 +3524,16 @@ impl IrgenFunc<'_> {
                     },
                 )))
             }
-            Expression::StringLiteral(_string_llt) => todo!(),
-            Expression::Conditional(_)
+            Expression::StringLiteral(_)
+            | Expression::Conditional(_)
+            | Expression::Call(_)
+            | Expression::Comma(_)
+            | Expression::SizeOfTy(_)
+            | Expression::SizeOfVal(_)
+            | Expression::AlignOf(_)
+            | Expression::Cast(_) => self.translate_expr_rvalue(expr, context),
+            Expression::StringLiteral(_)
+            | Expression::Conditional(_)
             | Expression::Call(_)
             | Expression::Comma(_)
             | Expression::SizeOfTy(_)
