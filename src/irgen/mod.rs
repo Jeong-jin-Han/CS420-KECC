@@ -3472,30 +3472,51 @@ impl IrgenFunc<'_> {
                     .collect::<Result<Vec<_>, _>>()?;
 
                 let return_type = return_type.clone().set_const(false);
-                let result = context.insert_instruction(ir::Instruction::Call {
+                let mut result = context.insert_instruction(ir::Instruction::Call {
                     callee: callee.clone(),
                     args,
                     return_type,
                 })?;
 
                 let result_type = result.dtype();
-                let struct_name = result_type.get_struct_name().unwrap().clone().unwrap();
-                let ptr =
-                    self.translate_alloc(struct_name.clone(), result_type.clone(), None, context)?;
+                // match result_type {
+                //     Dtype::Struct { .. } => {
+                //         let struct_name = result_type.get_struct_name().unwrap().clone().unwrap();
+                //         let ptr = self.translate_alloc(
+                //             struct_name.clone(),
+                //             result_type.clone(),
+                //             None,
+                //             context,
+                //         )?;
 
-                let store_instr = ir::Instruction::Store {
-                    ptr: ptr.clone(),
-                    value: result.clone(),
-                };
-                context.insert_instruction(store_instr);
+                //         let store_instr = ir::Instruction::Store {
+                //             ptr: ptr.clone(),
+                //             value: result.clone(),
+                //         };
+                //         context.insert_instruction(store_instr);
+                //         result = ptr.clone();
+                //     }
+                //     _ => {}
+                // }
 
-                // println!(
-                //     "translate_expr_lvalue | callee {} | result {}",
-                //     callee.clone(),
-                //     result.clone()
-                // );
+                if let Dtype::Struct { .. } = result_type {
+                    let struct_name = result_type.get_struct_name().unwrap().clone().unwrap();
+                    let ptr = self.translate_alloc(
+                        struct_name.clone(),
+                        result_type.clone(),
+                        None,
+                        context,
+                    )?;
 
-                Ok(ptr)
+                    let store_instr = ir::Instruction::Store {
+                        ptr: ptr.clone(),
+                        value: result.clone(),
+                    };
+                    context.insert_instruction(store_instr);
+                    result = ptr.clone();
+                }
+
+                Ok(result.clone())
                 // todo!()
             }
             Expression::SizeOfTy(type_name) => {
