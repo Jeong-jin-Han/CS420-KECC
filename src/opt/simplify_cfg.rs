@@ -383,5 +383,3 @@ impl SimplifyCfgEmpty {
         // todo!()
     }
 }
-
-
