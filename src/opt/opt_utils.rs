@@ -100,6 +100,10 @@ pub(crate) fn walk(code: &mut FunctionDefinition, replaces: &HashMap<RegisterId,
                     replace_operands(lhs, replaces);
                     replace_operands(rhs, replaces);
                 }
+                Instruction::Store { ptr, value } => {
+                    replace_operands(ptr, replaces);
+                    replace_operands(value, replaces);
+                }
                 // Instruction::
                 // 등등 모든 instruction variants 처리
                 _ => {}
@@ -115,7 +119,7 @@ pub(crate) fn walk(code: &mut FunctionDefinition, replaces: &HashMap<RegisterId,
                 arg_then,
                 arg_else,
             } => {
-                todo!()
+                replace_operands(condition, replaces);
             }
             _ => {}
         }
