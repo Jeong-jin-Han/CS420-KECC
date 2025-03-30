@@ -83,6 +83,13 @@ impl Optimize<FunctionDefinition> for SimplifyCfgReach {
 impl Optimize<FunctionDefinition> for SimplifyCfgMerge {
     fn optimize(&mut self, code: &mut FunctionDefinition) -> bool {
         let graph: HashMap<BlockId, Vec<JumpArg>> = make_cfg(code);
+        let reverse_graph = reverse_cfg(&graph.clone());
+        let mut postorder = PostOrder {
+            visited: HashSet::new(),
+            cfg: &graph,
+            traversed: vec![],
+        };
+        postorder.traverse(code.bid_init);
 
         // 1. 블록으로 들어오는 점프 수 계산
         let mut indegrees: HashMap<BlockId, i32> = HashMap::new();
@@ -96,7 +103,16 @@ impl Optimize<FunctionDefinition> for SimplifyCfgMerge {
         let mut merge_targets = vec![];
 
         // 2. merge 대상 블록 추출 (불변 참조)
-        for (bid_from, block_from) in &code.blocks {
+        // for (bid_from, block_from) in &code.blocks {
+        //     if let BlockExit::Jump { arg } = &block_from.exit {
+        //         if *bid_from != arg.bid && indegrees.get(&arg.bid) == Some(&1) {
+        //             merge_targets.push((*bid_from, arg.bid, arg.args.clone()));
+        //         }
+        //     }
+        // }
+
+        for bid_from in &postorder.traversed {
+            let block_from = code.blocks.get(bid_from).unwrap();
             if let BlockExit::Jump { arg } = &block_from.exit {
                 if *bid_from != arg.bid && indegrees.get(&arg.bid) == Some(&1) {
                     merge_targets.push((*bid_from, arg.bid, arg.args.clone()));

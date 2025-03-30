@@ -64,15 +64,26 @@ pub(crate) fn reverse_cfg(
     // todo!()
 }
 
-struct PostOrder<'c> {
-    visited: HashSet<BlockId>,
-    cfg: &'c HashMap<BlockId, Vec<JumpArg>>,
-    traversed: Vec<BlockId>,
+pub(crate) struct PostOrder<'c> {
+    pub(crate) visited: HashSet<BlockId>,
+    pub(crate) cfg: &'c HashMap<BlockId, Vec<JumpArg>>,
+    pub(crate) traversed: Vec<BlockId>,
 }
 
 impl PostOrder<'_> {
-    fn traverse(&mut self, bid: BlockId) {
-        todo!()
+    pub(crate) fn traverse(&mut self, bid: BlockId) {
+        if !self.visited.insert(bid) {
+            // already inserted -> return
+            return;
+        };
+        if let Some(neighbers) = self.cfg.get(&bid) {
+            for arg in neighbers {
+                self.traverse(arg.bid);
+            }
+            self.traversed.push(bid);
+        }
+
+        // todo!()
     }
 }
 
@@ -103,6 +114,16 @@ pub(crate) fn walk(code: &mut FunctionDefinition, replaces: &HashMap<RegisterId,
                 Instruction::Store { ptr, value } => {
                     replace_operands(ptr, replaces);
                     replace_operands(value, replaces);
+                }
+                Instruction::Call {
+                    callee,
+                    args,
+                    return_type,
+                } => {
+                    replace_operands(callee, replaces);
+                    for arg in args {
+                        replace_operands(arg, replaces);
+                    }
                 }
                 // Instruction::
                 // 등등 모든 instruction variants 처리
