@@ -88,6 +88,10 @@ impl PostOrder<'_> {
 }
 
 pub(crate) fn replace_operands(operand: &mut Operand, replaces: &HashMap<RegisterId, Operand>) {
+    /*
+    주어진 operand -> rid 구하기
+    replaces: rid에 해당하는 operand 구하기
+    */
     if let Operand::Register { rid, dtype } = operand {
         if let Some(replacement) = replaces.get(rid) {
             *operand = replacement.clone();

@@ -60,7 +60,10 @@ impl Optimize<FunctionDefinition> for SimplifyCfgConstProp {
 impl Optimize<FunctionDefinition> for SimplifyCfgReach {
     fn optimize(&mut self, code: &mut FunctionDefinition) -> bool {
         let graph = make_cfg(code);
-
+        // DFS
+        /*
+        bid -> vec<args -> arg.bid>
+        */
         let mut queue = vec![code.bid_init];
         let mut visited = HashSet::new();
         let _unused = visited.insert(code.bid_init);
@@ -74,7 +77,7 @@ impl Optimize<FunctionDefinition> for SimplifyCfgReach {
             }
         }
         let size_orig = code.blocks.len();
-        code.blocks.retain(|bid, _| visited.contains(bid));
+        code.blocks.retain(|bid, _| visited.contains(bid)); // shrink 
         code.blocks.len() < size_orig
         // todo!()
     }
@@ -83,13 +86,28 @@ impl Optimize<FunctionDefinition> for SimplifyCfgReach {
 impl Optimize<FunctionDefinition> for SimplifyCfgMerge {
     fn optimize(&mut self, code: &mut FunctionDefinition) -> bool {
         let graph: HashMap<BlockId, Vec<JumpArg>> = make_cfg(code);
-        let reverse_graph = reverse_cfg(&graph.clone());
+        // println!("SimplifyCfgMerge | optimize | graph {:#?}", graph.clone());
+        // let reverse_graph = reverse_cfg(&graph.clone());
         let mut postorder = PostOrder {
             visited: HashSet::new(),
             cfg: &graph,
             traversed: vec![],
         };
         postorder.traverse(code.bid_init);
+
+        /*
+        b2(from) -> b3(to)
+
+        post order를 사용해서 merge_targets 생성
+        b1 -> b2 -> b3 일 때 b3, b2, b1 순으로
+
+        merge(b2, b3) ->  b2
+        merge(b1, b2)
+
+        역순의 경우
+        merge(b1, b2) -> b1
+        merge(b2, b3) // 여기서 문제가 발생한다. b2가 사라졌으므로
+        */
 
         // 1. 블록으로 들어오는 점프 수 계산
         let mut indegrees: HashMap<BlockId, i32> = HashMap::new();
@@ -115,7 +133,7 @@ impl Optimize<FunctionDefinition> for SimplifyCfgMerge {
             let block_from = code.blocks.get(bid_from).unwrap();
             if let BlockExit::Jump { arg } = &block_from.exit {
                 if *bid_from != arg.bid && indegrees.get(&arg.bid) == Some(&1) {
-                    merge_targets.push((*bid_from, arg.bid, arg.args.clone()));
+                    merge_targets.push((*bid_from, arg.bid, arg.args.clone())); // arg.bid는 jump 이후 blockId
                 }
             }
         }
@@ -133,8 +151,8 @@ impl Optimize<FunctionDefinition> for SimplifyCfgMerge {
             // phi node operand 치환 정보 수집
             for (i, (a, p)) in izip!(&args_to, block_to.phinodes.iter()).enumerate() {
                 assert_eq!(&a.dtype(), p.deref());
-                let from = RegisterId::arg(bid_to, i);
-                let _unused = replaces.insert(from, a.clone());
+                let old_rid = RegisterId::arg(bid_to, i); // #rid 제작하기, phinod -> rid::arg
+                let _unused = replaces.insert(old_rid, a.clone());
             }
 
             // instruction 이동
@@ -142,12 +160,12 @@ impl Optimize<FunctionDefinition> for SimplifyCfgMerge {
             for (i, instr) in block_to.instructions.into_iter().enumerate() {
                 let dtype = instr.dtype();
                 block_from.instructions.push(instr);
-                let from = RegisterId::temp(bid_to, i);
+                let old_rid = RegisterId::temp(bid_to, i); // new inserted instr, but old rid
                 let to = Operand::register(RegisterId::temp(bid_from, len + i), dtype.clone());
-                let _unused = replaces.insert(from, to);
+                let _unused = replaces.insert(old_rid, to);
             }
 
-            // Move block exit
+            // Move block exit // change the exit
             block_from.exit = block_to.exit;
 
             // println!("SimplifyCfgMerge | optimize\n");
@@ -311,6 +329,9 @@ macro_rules! some_or {
 
 impl SimplifyCfgEmpty {
     fn simplify_jump_arg(&self, arg: &mut JumpArg, empty_blocks: &HashMap<BlockId, Block>) -> bool {
+        /*
+        block을 지우는 것이 다음 block의 blockexit을 미리 앞으로 가지고 오는 것
+        */
         let block = some_or!(empty_blocks.get(&arg.bid), return false);
 
         // An empty block has no phinodes
@@ -363,6 +384,4 @@ impl SimplifyCfgEmpty {
     }
 }
 
-fn replace_operands(operand: Operand, replaces: &HashMap<RegisterId, Operand>) {
-    todo!()
-}
+
