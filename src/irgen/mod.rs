@@ -296,7 +296,7 @@ impl Irgen {
         let name = name_of_declarator(declarator);
         let name_of_params = name_of_params_from_function_declarator(declarator)
             .expect("declarator is not from function definition");
-        println!("add_function_definition | {:?}", name_of_params.clone());
+        // println!("add_function_definition | {:?}", name_of_params.clone());
 
         let (base_dtype, is_typedef) = Dtype::try_from_ast_declaration_specifiers(specifiers)
             .map_err(|e| {
@@ -655,7 +655,7 @@ impl IrgenFunc<'_> {
                 Ok(())
             }
             Statement::If(stmt) => {
-                println!("translate stmt | If | {:?}", stmt);
+                // println!("translate stmt | If | {:?}", stmt);
                 println!("translate stmt | If | alloc_bid");
                 let bid_then = self.alloc_bid();
                 let bid_else = self.alloc_bid();
@@ -1006,7 +1006,7 @@ impl IrgenFunc<'_> {
         decl: &Declaration,
         context: &mut Context,
     ) -> Result<(), IrgenErrorMessage> {
-        println!("--------translate_decl-----\n {:?}\n", decl);
+        // println!("--------translate_decl-----\n {:?}\n", decl);
         let (base_dtype, is_typedef) = Dtype::try_from_ast_declaration_specifiers(&decl.specifiers)
             .map_err(|e| IrgenErrorMessage::InvalidDtype { dtype_error: e })?;
 
@@ -2035,7 +2035,7 @@ impl IrgenFunc<'_> {
                 self.translate_expr_rvalue_member(tmp, tmp1, tmp2, context)
             }
             Expression::Call(call) => {
-                println!("translate_expr_rvalue | call {:?}", call);
+                // println!("translate_expr_rvalue | call {:?}", call);
                 self.translate_func_call(&call.node, context)
             }
             Expression::SizeOfTy(type_name) => {
@@ -2567,6 +2567,10 @@ impl IrgenFunc<'_> {
         match num0_dtype {
             Dtype::BOOL => {}
             _ => {
+                println!(
+                    "translate_logical_op_or | ::int | num0_dtype {}",
+                    num0_dtype
+                );
                 let num0 = ir::Operand::Constant(ir::Constant::int(0, num0_dtype));
                 let instr = ir::Instruction::BinOp {
                     op: BinaryOperator::NotEquals,
@@ -2668,6 +2672,10 @@ impl IrgenFunc<'_> {
         match num0_dtype {
             Dtype::BOOL => {}
             _ => {
+                println!(
+                    "translate_logical_op_and | ::int | num0_dtype {}",
+                    num0_dtype
+                );
                 let num0 = ir::Operand::Constant(ir::Constant::int(0, num0_dtype));
                 let instr = ir::Instruction::BinOp {
                     op: BinaryOperator::NotEquals,
@@ -2871,7 +2879,10 @@ impl IrgenFunc<'_> {
                     }
                 } else {
                     // println!("pass");
-                    println!("translate_unary_op | operand_type {}", operand_type.clone());
+                    println!(
+                        "translate_unary_op | ::int | Postincrement {}",
+                        operand_type.clone()
+                    );
                     dtype = operand_type;
                     const_num = ir::Operand::constant(ir::Constant::int(1, dtype.clone()));
                     let instr = ir::Instruction::BinOp {
@@ -2904,16 +2915,19 @@ impl IrgenFunc<'_> {
             UnaryOperator::Address => {
                 // need to fix
                 let operand = self.translate_expr_lvalue(&unary.operand.node, context)?;
-                println!(
-                    "translate_unary_op | Address | operand {}, operand type {:?}",
-                    operand,
-                    operand.dtype()
-                );
+                // println!(
+                //     "translate_unary_op | Address | operand {}, operand type {:?}",
+                //     operand,
+                //     operand.dtype()
+                // );
                 Ok(operand)
             }
             UnaryOperator::Complement => {
                 let operand = self.translate_expr_rvalue(&unary.operand.node, context)?;
                 let dtype = operand.dtype();
+
+                println!("translate_unary_op | ::int | Complement {}", dtype.clone());
+
                 // let rhs = ir::Operand::Constant(Dtype::int())
                 let width = dtype.get_int_width().unwrap(); // 예: 32
                 let const_val = signed_to_u128(-1, width);
@@ -2933,8 +2947,15 @@ impl IrgenFunc<'_> {
                 let operand = self.translate_expr_rvalue(&unary.operand.node, context)?;
                 let dtype = operand.dtype();
                 // let dtype = Dtype::BOOL;
+                println!("translate_unary_op | ::int | Negate {}", dtype.clone());
 
-                let num0 = ir::Operand::Constant(ir::Constant::int(0, dtype.clone()));
+                // let num0 = ir::Operand::Constant(ir::Constant::int(0, dtype.clone()));
+                let constant = match dtype {
+                    Dtype::Int { .. } => ir::Constant::int(0, dtype.clone()),
+                    _ => ir::Constant::float(0.0, dtype.clone()),
+                };
+                let num0 = ir::Operand::Constant(constant);
+
                 let num1 = ir::Operand::Constant(ir::Constant::int(1, Dtype::BOOL));
                 let cmp_instr = ir::Instruction::BinOp {
                     op: BinaryOperator::NotEquals,
@@ -2950,7 +2971,15 @@ impl IrgenFunc<'_> {
                     rhs: num1.clone(),
                     dtype: Dtype::BOOL,
                 };
-                context.insert_instruction(xor_instr)
+                // context.insert_instruction(xor_instr)
+                let result = context.insert_instruction(xor_instr)?;
+
+                let type_instr = ir::Instruction::TypeCast {
+                    value: result,
+                    target_dtype: Dtype::INT,
+                };
+                context.insert_instruction(type_instr)
+
                 // todo!()
             }
             UnaryOperator::PreIncrement => {
@@ -2991,6 +3020,11 @@ impl IrgenFunc<'_> {
                     // println!("pass");
 
                     dtype = operand_type;
+                    println!(
+                        "translate_unary_op | ::int | Preincrement {}",
+                        dtype.clone()
+                    );
+
                     const_num = ir::Operand::constant(ir::Constant::int(1, dtype.clone()));
                     let instr = ir::Instruction::BinOp {
                         op: BinaryOperator::Plus,
@@ -3054,6 +3088,10 @@ impl IrgenFunc<'_> {
                     // println!("pass");
 
                     dtype = operand_type;
+                    println!(
+                        "translate_unary_op | ::int | Predecrement {}",
+                        dtype.clone()
+                    );
                     const_num = ir::Operand::constant(ir::Constant::int(1, dtype.clone()));
                     let instr = ir::Instruction::BinOp {
                         op: BinaryOperator::Minus,
@@ -3109,7 +3147,10 @@ impl IrgenFunc<'_> {
                     }
                 } else {
                     // println!("pass");
-                    println!("translate_unary_op | operand_type {}", operand_type.clone());
+                    println!(
+                        "translate_unary_op | ::int | Postdecrement {}",
+                        operand_type.clone()
+                    );
                     dtype = operand_type;
                     const_num = ir::Operand::constant(ir::Constant::int(1, dtype.clone()));
                     let instr = ir::Instruction::BinOp {
@@ -3435,7 +3476,7 @@ impl IrgenFunc<'_> {
                 self.translate_expr_rvalue_member(tmp, tmp1, tmp2, context)
             }
             Expression::Call(call) => {
-                println!("translate_expr_lvalue | call {:?}", call);
+                // println!("translate_expr_lvalue | call {:?}", call);
                 // self.translate_func_call(&call.node, context) // fix here
                 let callee = self.translate_expr_rvalue(&call.node.callee.node, context)?;
                 let function_pointer_type = callee.dtype();
@@ -3779,10 +3820,10 @@ impl IrgenFunc<'_> {
     ) -> Result<(), IrgenErrorMessage> {
         // todo!()
         // println!("translate_parameter_decl | context_bid {}", context.bid);
-        println!(
-            "translate_parameter_decl | signature {:?} params {:?}",
-            signature.params, name_of_params
-        );
+        // println!(
+        //     "translate_parameter_decl | signature {:?} params {:?}",
+        //     signature.params, name_of_params
+        // );
         // if signature.params.len() != name_of_params.len() {
         //     panic!("length of 'parameters' and 'name_of_params' must be same")
         // }
