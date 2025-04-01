@@ -150,3 +150,20 @@ pub(crate) fn walk(code: &mut FunctionDefinition, replaces: &HashMap<RegisterId,
         }
     }
 }
+
+pub(crate) struct ClassNumGen {
+    pub(crate) counter: u64,
+}
+
+impl ClassNumGen {
+    pub(crate) fn new() -> Self {
+        Self { counter: 1 }
+    }
+
+    pub(crate) fn fresh(&mut self) -> u64 {
+        let val = self.counter;
+        self.counter += 1;
+        val
+    }
+}
+
