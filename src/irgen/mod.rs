@@ -1370,6 +1370,7 @@ impl IrgenFunc<'_> {
         println!("translate_typecast | value {} dtype {}", value_dtype, dtype);
         // ✅ 변환이 필요 없는 경우 그대로 반환
         if value_dtype == dtype {
+            println!("same type!!");
             return Ok(value);
         }
 
@@ -1960,7 +1961,7 @@ impl IrgenFunc<'_> {
                 let tmp3 = &binary.node.rhs.node;
                 let lhs_type = self.type_of_expr(tmp2)?;
                 let rhs_type = self.type_of_expr(tmp3)?;
-                let merge_dtype = self.merge_dtype(lhs_type, rhs_type);
+                let merge_dtype = self.merge_dtype(lhs_type, rhs_type)?;
                 Ok(merge_dtype)
                 // todo!()
             }
@@ -2301,7 +2302,7 @@ impl IrgenFunc<'_> {
         Ok(result)
     }
 
-    fn merge_dtype(&mut self, mut ty1: Dtype, mut ty2: Dtype) -> Dtype {
+    fn merge_dtype(&mut self, mut ty1: Dtype, mut ty2: Dtype) -> Result<Dtype, IrgenErrorMessage> {
         // 1. 배열은 포인터로 변환
         if let Some(inner) = ty1.get_array_inner() {
             ty1 = Dtype::Pointer {
@@ -2323,18 +2324,21 @@ impl IrgenFunc<'_> {
 
         match (&ty1, &ty2) {
             // 3. 정수 + 정수
-            (Dtype::Int { .. }, Dtype::Int { .. }) => promote_int_int(&ty1, &ty2),
-
+            (Dtype::Int { .. }, Dtype::Int { .. }) => {
+                let result = promote_int_int(&ty1, &ty2);
+                Ok(result)
+            }
             // 4. 정수 + 실수
             (Dtype::Int { .. }, Dtype::Float { .. }) | (Dtype::Float { .. }, Dtype::Int { .. }) => {
                 let width = std::cmp::max(
                     ty1.get_float_width().unwrap_or(32),
                     ty2.get_float_width().unwrap_or(32),
                 );
-                Dtype::Float {
+                let result = Dtype::Float {
                     width,
                     is_const: ty1.is_const() || ty2.is_const(),
-                }
+                };
+                Ok(result)
             }
 
             // 5. 실수 + 실수
@@ -2343,14 +2347,18 @@ impl IrgenFunc<'_> {
                     ty1.get_float_width().unwrap(),
                     ty2.get_float_width().unwrap(),
                 );
-                Dtype::Float {
+                let result = Dtype::Float {
                     width,
                     is_const: ty1.is_const() || ty2.is_const(),
-                }
+                };
+                Ok(result)
             }
 
             // 6. 포인터 + 정수
-            (Dtype::Pointer { .. }, Dtype::Int { .. }) => ty2.clone(),
+            (Dtype::Pointer { .. }, Dtype::Int { .. }) => {
+                let result = ty2.clone();
+                Ok(result)
+            }
             (Dtype::Int { .. }, Dtype::Pointer { .. }) => {
                 // println!("-----| merge_dtype | pointer + int cases");
                 // let result = if ty1.get_pointer_inner().is_some() {
@@ -2362,18 +2370,19 @@ impl IrgenFunc<'_> {
                 // };
                 // println!("-----| merge_dtype | result {}", result);
                 // result
-                ty1.clone()
+                let result = ty1.clone();
+                Ok(result)
             }
 
             // 7. 포인터 + 포인터 → 에러
-            (Dtype::Pointer { .. }, Dtype::Pointer { .. }) => {
-                panic!("Cannot merge two pointer types: {} and {}", ty1, ty2);
-            }
+            (Dtype::Pointer { .. }, Dtype::Pointer { .. }) => Err(IrgenErrorMessage::Misc {
+                message: format!("Cannot merge two pointer types: {} and {}", ty1, ty2),
+            }),
 
             // 8. 구조체, 함수 등 불가능한 조합
-            _ => {
-                panic!("Cannot merge types: {} and {}", ty1, ty2);
-            }
+            _ => Err(IrgenErrorMessage::Misc {
+                message: format!("Cannot merge two types: {} and {}", ty1, ty2),
+            }),
         }
     }
 
@@ -2411,7 +2420,7 @@ impl IrgenFunc<'_> {
             val_then.dtype(),
             val_else.dtype()
         );
-        let merged_dtype = self.merge_dtype(val_then.dtype(), val_else.dtype());
+        let merged_dtype = self.merge_dtype(val_then.dtype(), val_else.dtype())?;
         println!(
             "translate_conditional | merged_dtype {} val_tehn {} val_else {}",
             merged_dtype,
@@ -2611,7 +2620,17 @@ impl IrgenFunc<'_> {
         //     val_else.clone()
         // );
         let store_instr = ir::Instruction::Load { ptr: ptr.clone() };
-        context.insert_instruction(store_instr)
+        let mut result = context.insert_instruction(store_instr)?;
+        println!(
+            "translate_logical_op_or | result {} {:?}",
+            result.clone(),
+            result.dtype()
+        );
+        result = context.insert_instruction(ir::Instruction::TypeCast {
+            value: result.clone(),
+            target_dtype: Dtype::INT,
+        })?;
+        Ok(result)
         // Ok(ptr.clone())
     }
 
@@ -2718,7 +2737,17 @@ impl IrgenFunc<'_> {
         // );
 
         let store_instr = ir::Instruction::Load { ptr: ptr.clone() };
-        context.insert_instruction(store_instr)
+        let mut result = context.insert_instruction(store_instr)?;
+        println!(
+            "translate_logical_op_or | result {} {:?}",
+            result.clone(),
+            result.dtype()
+        );
+        result = context.insert_instruction(ir::Instruction::TypeCast {
+            value: result.clone(),
+            target_dtype: Dtype::INT,
+        })?;
+        Ok(result)
     }
 
     fn translate_binary_op(
@@ -2790,9 +2819,22 @@ impl IrgenFunc<'_> {
             rhs = context.insert_instruction(ir::Instruction::Load { ptr: rhs })?;
         }
 
+        // if Dtype::BOOL == lhs.dtype() {
+        //     lhs = context.insert_instruction(ir::Instruction::TypeCast {
+        //         value: lhs.clone(),
+        //         target_dtype: Dtype::INT,
+        //     })?;
+        // }
+        // if Dtype::BOOL == rhs.dtype() {
+        //     rhs = context.insert_instruction(ir::Instruction::TypeCast {
+        //         value: rhs.clone(),
+        //         target_dtype: Dtype::INT,
+        //     })?;
+        // }
+
         // println!("translate_binary_op | opernad | lhs {} rhs {}", lhs, rhs);
 
-        let dtype = self.merge_dtype(lhs.dtype(), rhs.dtype());
+        let dtype = self.merge_dtype(lhs.dtype(), rhs.dtype())?;
 
         println!(
             "translate_binary_op | type |lhs {} rhs {} | merge {}",
@@ -2802,7 +2844,11 @@ impl IrgenFunc<'_> {
         );
 
         let dtype = match &op {
-            &BinaryOperator::BitwiseOr | &BinaryOperator::BitwiseAnd => Dtype::Int {
+            // &BinaryOperator::ShiftRight
+            // | &BinaryOperator::ShiftLeft
+            &BinaryOperator::BitwiseXor
+            | &BinaryOperator::BitwiseOr
+            | &BinaryOperator::BitwiseAnd => Dtype::Int {
                 width: 32,
                 is_signed: true,
                 is_const: false,
@@ -2819,19 +2865,38 @@ impl IrgenFunc<'_> {
             | &BinaryOperator::Greater
             | &BinaryOperator::NotEquals
             | &BinaryOperator::LessOrEqual
-            | &BinaryOperator::GreaterOrEqual => Dtype::BOOL,
-            // &BinaryOperator::Equals => {
-            //     Dtype::BOOL
-            // }
+            | &BinaryOperator::GreaterOrEqual => {
+                Dtype::BOOL
+                // Dtype::INT
+            }
             _ => dtype.clone(),
         };
 
-        context.insert_instruction(ir::Instruction::BinOp {
-            op,
+        let mut result = context.insert_instruction(ir::Instruction::BinOp {
+            op: op.clone(),
             lhs,
             rhs,
-            dtype,
-        })
+            dtype: dtype.clone(),
+        })?;
+
+        // == , <, >, >=, <=, !=,
+        match &op {
+            &BinaryOperator::Equals
+            | &BinaryOperator::Less
+            | &BinaryOperator::Greater
+            | &BinaryOperator::NotEquals
+            | &BinaryOperator::LessOrEqual
+            | &BinaryOperator::GreaterOrEqual => {
+                result = context.insert_instruction(ir::Instruction::TypeCast {
+                    value: result.clone(),
+                    target_dtype: Dtype::INT,
+                })?;
+                // Dtype::INT
+            }
+            _ => {}
+        };
+
+        Ok(result)
     }
 
     fn translate_unary_op(
@@ -2845,11 +2910,28 @@ impl IrgenFunc<'_> {
         match op {
             UnaryOperator::PostIncrement => {
                 let operand_ptr = self.translate_expr_lvalue(&unary.operand.node, context)?;
-                let operand = context.insert_instruction(ir::Instruction::Load {
+                let mut operand = context.insert_instruction(ir::Instruction::Load {
                     ptr: operand_ptr.clone(),
                 })?;
-                // println!("translate_unary_op | {:?}\nopernad{} {:?}", unary.clone(), operand, operand);
-                let operand_type = operand.dtype();
+
+                let mut operand_type = operand.dtype();
+                println!(
+                    "translate_unary_op | {:?}\nopernad{} {:?} \noperand_type {}",
+                    unary.clone(),
+                    operand,
+                    operand,
+                    operand_type
+                );
+                // ME
+                // if operand_type.get_int_width().unwrap() <= 32 {
+                //     operand = context.insert_instruction(ir::Instruction::TypeCast {
+                //         value: operand.clone(),
+                //         target_dtype: Dtype::INT,
+                //     })?;
+                //     operand_type = operand.dtype();
+                // }
+                // ME
+
                 let mut dtype = Dtype::Int {
                     width: 64,
                     is_signed: true,
@@ -2904,7 +2986,21 @@ impl IrgenFunc<'_> {
                 Ok(operand) // not yet incremented
             }
             UnaryOperator::Minus | UnaryOperator::Plus => {
-                let operand = self.translate_expr_rvalue(&unary.operand.node, context)?;
+                let mut operand = self.translate_expr_rvalue(&unary.operand.node, context)?;
+                let mut operand_type = operand.dtype();
+
+                // ME
+                if let Dtype::Int { .. } = operand_type {
+                    if operand_type.get_int_width().unwrap() <= 32 {
+                        operand = context.insert_instruction(ir::Instruction::TypeCast {
+                            value: operand.clone(),
+                            target_dtype: Dtype::INT,
+                        })?;
+                        operand_type = operand.dtype();
+                    }
+                }
+                // ME
+
                 let instr = ir::Instruction::UnaryOp {
                     op: (unary.operator.node).clone(),
                     operand: operand.clone(),
@@ -2923,20 +3019,34 @@ impl IrgenFunc<'_> {
                 Ok(operand)
             }
             UnaryOperator::Complement => {
-                let operand = self.translate_expr_rvalue(&unary.operand.node, context)?;
-                let dtype = operand.dtype();
+                let mut operand = self.translate_expr_rvalue(&unary.operand.node, context)?;
+                let mut operand_type = operand.dtype();
+                // ME
+                if let Dtype::Int { .. } = operand_type {
+                    if operand_type.get_int_width().unwrap() <= 32 {
+                        operand = context.insert_instruction(ir::Instruction::TypeCast {
+                            value: operand.clone(),
+                            target_dtype: Dtype::INT,
+                        })?;
+                        operand_type = operand.dtype();
+                    }
+                }
+                // ME
 
-                println!("translate_unary_op | ::int | Complement {}", dtype.clone());
+                println!(
+                    "translate_unary_op | ::int | Complement {}",
+                    operand_type.clone()
+                );
 
                 // let rhs = ir::Operand::Constant(Dtype::int())
-                let width = dtype.get_int_width().unwrap(); // 예: 32
+                let width = operand_type.get_int_width().unwrap(); // 예: 32
                 let const_val = signed_to_u128(-1, width);
-                let rhs = ir::Operand::constant(ir::Constant::int(const_val, dtype.clone()));
+                let rhs = ir::Operand::constant(ir::Constant::int(const_val, operand_type.clone()));
                 let instr = ir::Instruction::BinOp {
                     op: BinaryOperator::BitwiseXor,
                     lhs: operand,
                     rhs,
-                    dtype,
+                    dtype: operand_type,
                 };
                 context.insert_instruction(instr)
             }
@@ -3337,7 +3447,7 @@ impl IrgenFunc<'_> {
         let rhs_dtype = rhs.dtype();
         // println!("translate_assignplus_op | rhs_dtype {}", rhs_dtype);
 
-        let merge_dtype = self.merge_dtype(lhs_ptr_dtype_inner.clone(), rhs_dtype.clone());
+        let merge_dtype = self.merge_dtype(lhs_ptr_dtype_inner.clone(), rhs_dtype.clone())?;
 
         println!(
             "translate_assign_binary_op | merge_dtype {}, lhs_ptr_dtype_inner {}, rhs_dtype {}",
@@ -3345,13 +3455,16 @@ impl IrgenFunc<'_> {
             lhs_ptr_dtype_inner.clone(),
             rhs_dtype.clone()
         );
-        if merge_dtype == lhs_ptr_dtype_inner {
-            // println!("merge_dtype == lhs_ptr_dtype_inner");
-            rhs = self.translate_typecast(rhs, lhs_ptr_dtype_inner.clone(), context)?;
-        } else {
-            lhs_value = self.translate_typecast(lhs_value, rhs_dtype, context)?;
-        }
-
+        // if merge_dtype == lhs_ptr_dtype_inner {
+        //     println!("merge_dtype == lhs_ptr_dtype_inner");
+        //     rhs = self.translate_typecast(rhs, lhs_ptr_dtype_inner.clone(), context)?;
+        // } else {
+        //     // lhs_value = self.translate_typecast(lhs_value, rhs_dtype, context)?;
+        //     lhs_value = self.translate_typecast(lhs_value, merge_dtype.clone(), context)?;
+        //     rhs = self.translate_typecast(rhs, merge_dtype.clone(), context)?;
+        // }
+        lhs_value = self.translate_typecast(lhs_value, merge_dtype.clone(), context)?;
+        rhs = self.translate_typecast(rhs, merge_dtype.clone(), context)?;
         // lhs type or rhs type?
         let operator = match op {
             BinaryOperator::AssignPlus => BinaryOperator::Plus,
@@ -3368,14 +3481,27 @@ impl IrgenFunc<'_> {
         };
 
         // 4️⃣ `lhs_value + rhs` 수행
+        // let mut result = context.insert_instruction(ir::Instruction::BinOp {
+        //     op: operator,
+        //     lhs: lhs_value.clone(),
+        //     rhs,
+        //     dtype: lhs_value.dtype().clone(),
+        // })?;
         let mut result = context.insert_instruction(ir::Instruction::BinOp {
             op: operator,
             lhs: lhs_value.clone(),
             rhs,
-            dtype: lhs_value.dtype().clone(),
+            dtype: merge_dtype.clone(),
         })?;
+        // let type_instr = ir::Instruction::TypeCast {
+        //     value: result.clone(),
+        //     target_dtype: lhs_ptr_dtype_inner.clone(),
+        // };
 
+        // result = context.insert_instruction(type_instr)?;
+        // result = self.translate_typecast(result.clone(), lhs_ptr_dtype_inner.clone(), context)?;
         result = self.translate_typecast(result, lhs_ptr_dtype_inner.clone(), context)?;
+        // result = self.translate_typecast(result, merge_dtype.clone(), context)?;
 
         // 5️⃣ 결과값을 LHS 위치에 Store
         let store_inst = ir::Instruction::Store {
@@ -3600,11 +3726,8 @@ impl IrgenFunc<'_> {
             }
             Expression::StringLiteral(_)
             | Expression::Conditional(_)
-            | Expression::Call(_)
             | Expression::Comma(_)
-            | Expression::SizeOfTy(_)
             | Expression::SizeOfVal(_)
-            | Expression::AlignOf(_)
             | Expression::Cast(_) => self.translate_expr_rvalue(expr, context),
             Expression::StringLiteral(_)
             | Expression::Conditional(_)
@@ -4064,9 +4187,9 @@ fn promote_int_int(ty1: &Dtype, ty2: &Dtype) -> Dtype {
 
 fn signed_to_u128(value: i128, width: usize) -> u128 {
     let mask = match width {
-        1 => 1,
-        8 => u8::MAX as u128,
-        16 => u16::MAX as u128,
+        // 1 => 1,
+        // 8 => u8::MAX as u128,
+        // 16 => u16::MAX as u128,
         32 => u32::MAX as u128,
         64 => u64::MAX as u128,
         128 => u128::MAX,

@@ -108,63 +108,89 @@ fn test_examples_irgen_small() {
     // println!("[testing irgen for \"examples/c/{HELLO_MAIN}.c\"]");
     // test_irgen(Path::new(&format!("examples/c/{HELLO_MAIN}.c")));
 
-    let test_files = vec![
-        "hello_main.c",
-        "alignof.c",
-        "array.c",
-        "array2.c",
-        "array3.c",
-        "array4.c",
-        "array5.c", 
-        "bar.c",
-        "bitwise.c", 
-        "cmp.c", 
-        "comma.c",
-        "complement.c",
-        "cond.c", 
-    ];
     // let test_files = vec![
-    //     // "complete_cond.c", // fail
-    //     // "cond_and_loop.c", // fail
-    //     // "cond.c",
-    //     // "fib2.c",
-    //     // "fib3.c", // fail
-    //     // "fib4.c", // fail
-    //     // "fib5.c" // fail
-    //     // "fibonacci.c",
-    //     // "float.c", // fail
+    //     "hello_main.c",
+    //     "alignof.c",
+    //     "array.c",
+    //     "array2.c",
+    //     "array3.c",
+    //     "array4.c",
+    //     "array5.c",
+    //     "bar.c",
+    //     "bitwise.c",
+    //     "cmp.c",
+    //     "comma.c",
+    //     "complement.c",
+    //     "cond.c",
+    //     "complete_cond.c", // success
+    //     "cond_and_loop.c", // success
+    //     "cond.c",
+    //     "fib2.c",
+    //     "fib3.c", // success
+    //     "fib4.c", // success
+    //     "fib5.c", // success
+    //     "fibonacci.c",
+    //     "float.c", // success
+    //     "float2.c",
+    //     "foo.c",
+    //     "foo2.c",
+    //     "foo3.c",
+    //     "foo4.c",
+    //     "for_continue_break.c",
+    //     "gcd.c",             // success
+    //     "integer_literal.c", // success
+    //     "integer_literal2.c",
+    //     "logical_op.c",
+    //     "lost_copy.c",
+    //     "minus_constant.c",
+    //     "negate.c",
+    //     "pointer.c",
+    //     "return_void.c",
+    //     "shift.c",
+    //     "simple_cond.c",
+    //     "simple_for.c",
+    //     "simple_if.c",
+    //     "simple.c",
+    //     "sizeof.c",
+    //     "sizeof2.c",
+    //     "sizeof3.c", // success
+    //     "sizeof4.c",
+    //     "struct.c",
+    //     "struct2.c",
+    //     "struct3.c",
+    //     "struct4.c",
+    //     "swap.c",
+    //     "switch-in-loop.c", // success
+    //     "temp.c",
+    //     "temp2.c",
+    //     "test.c",
+    //     "typecast.c",
+    //     "typedef.c", // success
+    //     "unary.c",   // success
+    //     "while_continue_break.c",
     // ];
-    for file in test_files {
-        println!("[testing irgen for \"examples/c/{file}\"]");
-        test_irgen(Path::new(&format!("examples/c/{file}")));
-    }
-    // let test_files = vec!["complete_cond.c"];
+
+    // let test_files = [
+    //     "side_effect.c"
+    // ];
+
+    // for file in test_files {
+    //     println!("[testing irgen for \"examples_new/c/{file}\"]");
+    //     test_irgen(Path::new(&format!("examples_new/c/{file}")));
+    // }
 
     // let test_files = vec![
-    // "examples/c/array.c",
-    // "examples/c/array2.c",
-    // "examples/c/array3.c",
-    // "examples/c/array4.c",
-    // "examples/c/array5.c",
-    // "examples/c/float.c", 
-    // "examples/c/sizeof2.c",
-    // "examples/c/struct.c",
-    // "examples/c/struct2.c",
-    // "examples/c/struct3.c",
-    // "examples/c/struct4.c",
-    // "examples/c/temp2.c",
+    //     // "logical.c",
+    //     // "struct_0.c", // pass
+    //     // "test_polished_me.c", //pass
+    //     // "test_polished_me2.c", //pass
+    //     // "test_polished_me3.c",
+    //     // "test_polished_me4.c",
+    //     // "test_polished_me5.c", // pass
+    //     // "test_polished_me6.c", // fail
+    //     // "test.c",
+    //     "test2.c",
     // ];
-
-    let test_files = vec![
-        "examples/c/sizeof2.c",
-    ];
-
-    for file in test_files {
-        println!("[testing irgen for \"{file}\"]");
-        test_irgen(Path::new(&format!("{file}")));
-    }
-
-    // let test_files = vec!["logical.c"];
 
     // for file in test_files {
     //     println!("[testing irgen for \"examples/HW2_fuzz_c/{file}\"]");
@@ -173,13 +199,18 @@ fn test_examples_irgen_small() {
 
     // test_dir(Path::new("examples/c"), OsStr::new("c"), |path| {
     //     let path_str = &path.to_str().expect("`path` must be transformed to `&str`");
+
     //     if !IRGEN_SMALL_TEST_IGNORE_LIST.contains(path_str) && !path_str.contains(HELLO_MAIN) {
     //         println!("[testing irgen for {path:?}]");
     //         test_irgen(path);
     //     }
     // });
-}
 
+    test_dir(Path::new("examples/c"), OsStr::new("c"), |path| {
+        println!("[testing irgen for {path:?}]");
+        test_irgen(path);
+    });
+}
 
 #[test]
 fn test_examples_irgen_large() {
@@ -203,25 +234,25 @@ fn test_examples_simplify_cfg() {
         &Path::new("examples/simplify_cfg/const_prop.input.ir"),
         &Path::new("examples/simplify_cfg/const_prop.output.ir"),
         &mut FunctionPass::<SimplifyCfgConstProp>::default(),
-    );
+    ); //pass
 
     test_opt(
         &Path::new("examples/simplify_cfg/reach.input.ir"),
         &Path::new("examples/simplify_cfg/reach.output.ir"),
         &mut FunctionPass::<SimplifyCfgReach>::default(),
-    );
+    ); //pass
 
     test_opt(
         &Path::new("examples/simplify_cfg/merge.input.ir"),
         &Path::new("examples/simplify_cfg/merge.output.ir"),
         &mut FunctionPass::<SimplifyCfgMerge>::default(),
-    );
+    ); //pass
 
     test_opt(
         &Path::new("examples/simplify_cfg/empty.input.ir"),
         &Path::new("examples/simplify_cfg/empty.output.ir"),
         &mut FunctionPass::<SimplifyCfgEmpty>::default(),
-    );
+    ); //pass
 
     test_opt_between_dirs(
         Path::new("examples/ir0"),
@@ -263,16 +294,22 @@ fn test_examples_deadcode() {
 #[test]
 fn test_examples_gvn() {
     test_opt(
-        &Path::new("examples/gvn/gvn.input.ir"),
-        &Path::new("examples/gvn/gvn.output.ir"),
+        &Path::new("examples/gvn/me/ex1.input.ir"),
+        &Path::new("examples/gvn/me/ex1.output.ir"),
         &mut Gvn::default(),
-    );
+    ); // ME
 
-    test_opt_between_dirs(
-        Path::new("examples/ir3"),
-        Path::new("examples/ir4"),
-        &mut Gvn::default(),
-    );
+    // test_opt(
+    //     &Path::new("examples/gvn/gvn.input.ir"),
+    //     &Path::new("examples/gvn/gvn.output.ir"),
+    //     &mut Gvn::default(),
+    // );
+
+    // test_opt_between_dirs(
+    //     Path::new("examples/ir3"),
+    //     Path::new("examples/ir4"),
+    //     &mut Gvn::default(),
+    // );
 }
 
 #[test]

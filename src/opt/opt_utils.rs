@@ -166,4 +166,3 @@ impl ClassNumGen {
         val
     }
 }
-
