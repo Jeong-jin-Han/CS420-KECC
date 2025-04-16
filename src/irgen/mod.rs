@@ -2573,23 +2573,30 @@ impl IrgenFunc<'_> {
         println!("translate_logical_op_or |num0_dtype {}", num0_dtype);
 
         let dtype = Dtype::BOOL;
-        match num0_dtype {
-            Dtype::BOOL => {}
-            _ => {
-                println!(
-                    "translate_logical_op_or | ::int | num0_dtype {}",
-                    num0_dtype
-                );
-                let num0 = ir::Operand::Constant(ir::Constant::int(0, num0_dtype));
-                let instr = ir::Instruction::BinOp {
-                    op: BinaryOperator::NotEquals,
-                    lhs: val_else.clone(),
-                    rhs: num0.clone(),
-                    dtype,
-                };
-                val_else = context_else.insert_instruction(instr)?;
-            }
-        }
+        // match num0_dtype {
+        //     Dtype::BOOL => {}
+        //     _ => {
+        //         println!(
+        //             "translate_logical_op_or | ::int | num0_dtype {}",
+        //             num0_dtype
+        //         );
+        //         let num0 = ir::Operand::Constant(ir::Constant::int(0, num0_dtype));
+        //         let instr = ir::Instruction::BinOp {
+        //             op: BinaryOperator::NotEquals,
+        //             lhs: val_else.clone(),
+        //             rhs: num0.clone(),
+        //             dtype,
+        //         };
+        //         val_else = context_else.insert_instruction(instr)?;
+        //     }
+        // } // 아마도 여기서 문제
+
+        println!(
+            "find bug!! {:?}, {:?}",
+            val_then.clone().dtype(),
+            val_else.clone().dtype(),
+            // ptr.clone().dtype().get_pointer_inner()
+        );
 
         let _unused = context_then.insert_instruction(ir::Instruction::Store {
             ptr: ptr.clone(),
@@ -2626,11 +2633,16 @@ impl IrgenFunc<'_> {
             result.clone(),
             result.dtype()
         );
-        result = context.insert_instruction(ir::Instruction::TypeCast {
-            value: result.clone(),
-            target_dtype: Dtype::INT,
-        })?;
+        // result = context.insert_instruction(ir::Instruction::TypeCast {
+        //     value: result.clone(),
+        //     target_dtype: Dtype::INT,
+        // })?;
+        // Ok(result)
+
+        // self.translate_typecast(result.clone(), Dtype::INT, context) // 여기서 문제 아마도 ??
+
         Ok(result)
+
         // Ok(ptr.clone())
     }
 
@@ -2679,7 +2691,7 @@ impl IrgenFunc<'_> {
         // let ptr = self.translate_alloc(var, merged_dtype)?; // ME
         let ptr = self.translate_alloc(var, Dtype::BOOL, None, context)?; // ME 
 
-        let val_else = ir::Operand::constant(ir::Constant::int(0, Dtype::BOOL));
+        let mut val_else = ir::Operand::constant(ir::Constant::int(0, Dtype::BOOL));
 
         // println!("translate_logical_op_and | val_else {}", val_else.dtype());
 
@@ -2688,24 +2700,38 @@ impl IrgenFunc<'_> {
         let dtype = Dtype::BOOL;
 
         let num0_dtype = val_then.dtype();
-        match num0_dtype {
-            Dtype::BOOL => {}
-            _ => {
-                println!(
-                    "translate_logical_op_and | ::int | num0_dtype {}",
-                    num0_dtype
-                );
-                let num0 = ir::Operand::Constant(ir::Constant::int(0, num0_dtype));
-                let instr = ir::Instruction::BinOp {
-                    op: BinaryOperator::NotEquals,
-                    lhs: val_then.clone(),
-                    rhs: num0.clone(),
-                    dtype,
-                };
-                val_then = context_then.insert_instruction(instr)?;
-            }
-        }
+        // match num0_dtype {
+        //     Dtype::BOOL => {}
+        //     _ => {
+        //         println!(
+        //             "translate_logical_op_and | ::int | num0_dtype {}",
+        //             num0_dtype
+        //         );
+        //         let num0 = ir::Operand::Constant(ir::Constant::int(0, num0_dtype));
+        //         let instr = ir::Instruction::BinOp {
+        //             op: BinaryOperator::NotEquals,
+        //             lhs: val_then.clone(),
+        //             rhs: num0.clone(),
+        //             dtype,
+        //         };
+        //         val_then = context_then.insert_instruction(instr)?;
+        //     }
+        // } // 아마도 여기서 문제??
 
+        println!(
+            "find bug!! {:?}, {:?}, {:?}",
+            val_then.clone().dtype(),
+            val_else.clone().dtype(),
+            ptr.clone().dtype().get_pointer_inner()
+        );
+
+        /*
+        typecast val_then, val_else, before store
+        val_else ptr_inner type
+        */
+        let ptr_inner = ptr.clone().dtype().get_pointer_inner().unwrap().clone();
+        val_then =
+            self.translate_typecast(val_then.clone(), ptr_inner.clone(), &mut context_then)?;
         // Finishes the then branch
         let _unused = context_then.insert_instruction(ir::Instruction::Store {
             ptr: ptr.clone(),
@@ -2718,6 +2744,8 @@ impl IrgenFunc<'_> {
             },
         );
 
+        val_else =
+            self.translate_typecast(val_else.clone(), ptr_inner.clone(), &mut context_else)?;
         // Finishes the else branch
         let _unused = context_else.insert_instruction(ir::Instruction::Store {
             ptr: ptr.clone(),
@@ -2739,14 +2767,18 @@ impl IrgenFunc<'_> {
         let store_instr = ir::Instruction::Load { ptr: ptr.clone() };
         let mut result = context.insert_instruction(store_instr)?;
         println!(
-            "translate_logical_op_or | result {} {:?}",
+            "translate_logical_op_and | result {} {:?}",
             result.clone(),
             result.dtype()
         );
-        result = context.insert_instruction(ir::Instruction::TypeCast {
-            value: result.clone(),
-            target_dtype: Dtype::INT,
-        })?;
+        // result = context.insert_instruction(ir::Instruction::TypeCast {
+        //     value: result.clone(),
+        //     target_dtype: Dtype::INT,
+        // })?;
+
+        // Ok(result)
+
+        // self.translate_typecast(result.clone(), Dtype::INT, context) // 여기서 문제 아마도
         Ok(result)
     }
 
@@ -2880,21 +2912,22 @@ impl IrgenFunc<'_> {
         })?;
 
         // == , <, >, >=, <=, !=,
-        match &op {
-            &BinaryOperator::Equals
-            | &BinaryOperator::Less
-            | &BinaryOperator::Greater
-            | &BinaryOperator::NotEquals
-            | &BinaryOperator::LessOrEqual
-            | &BinaryOperator::GreaterOrEqual => {
-                result = context.insert_instruction(ir::Instruction::TypeCast {
-                    value: result.clone(),
-                    target_dtype: Dtype::INT,
-                })?;
-                // Dtype::INT
-            }
-            _ => {}
-        };
+        // match &op {
+        //     &BinaryOperator::Equals
+        //     | &BinaryOperator::Less
+        //     | &BinaryOperator::Greater
+        //     | &BinaryOperator::NotEquals
+        //     | &BinaryOperator::LessOrEqual
+        //     | &BinaryOperator::GreaterOrEqual => {
+        //         // result = context.insert_instruction(ir::Instruction::TypeCast {
+        //         //     value: result.clone(),
+        //         //     target_dtype: Dtype::INT,
+        //         // })?;
+        //         result = self.translate_typecast(result.clone(), Dtype::INT, context)?;
+        //         // Dtype::INT
+        //     }
+        //     _ => {}
+        // }; // 아미도 여기서 문제???
 
         Ok(result)
     }
@@ -2992,10 +3025,12 @@ impl IrgenFunc<'_> {
                 // ME
                 if let Dtype::Int { .. } = operand_type {
                     if operand_type.get_int_width().unwrap() <= 32 {
-                        operand = context.insert_instruction(ir::Instruction::TypeCast {
-                            value: operand.clone(),
-                            target_dtype: Dtype::INT,
-                        })?;
+                        // operand = context.insert_instruction(ir::Instruction::TypeCast {
+                        //     value: operand.clone(),
+                        //     target_dtype: Dtype::INT,
+                        // })?;
+                        operand = self.translate_typecast(operand.clone(), Dtype::INT, context)?;
+
                         operand_type = operand.dtype();
                     }
                 }
@@ -3024,10 +3059,12 @@ impl IrgenFunc<'_> {
                 // ME
                 if let Dtype::Int { .. } = operand_type {
                     if operand_type.get_int_width().unwrap() <= 32 {
-                        operand = context.insert_instruction(ir::Instruction::TypeCast {
-                            value: operand.clone(),
-                            target_dtype: Dtype::INT,
-                        })?;
+                        // operand = context.insert_instruction(ir::Instruction::TypeCast {
+                        //     value: operand.clone(),
+                        //     target_dtype: Dtype::INT,
+                        // })?;
+                        operand = self.translate_typecast(operand.clone(), Dtype::INT, context)?;
+
                         operand_type = operand.dtype();
                     }
                 }
@@ -3084,11 +3121,13 @@ impl IrgenFunc<'_> {
                 // context.insert_instruction(xor_instr)
                 let result = context.insert_instruction(xor_instr)?;
 
-                let type_instr = ir::Instruction::TypeCast {
-                    value: result,
-                    target_dtype: Dtype::INT,
-                };
-                context.insert_instruction(type_instr)
+                // let type_instr = ir::Instruction::TypeCast {
+                //     value: result,
+                //     target_dtype: Dtype::INT,
+                // };
+                // context.insert_instruction(type_instr)
+
+                self.translate_typecast(result.clone(), Dtype::INT, context)
 
                 // todo!()
             }
@@ -3323,10 +3362,11 @@ impl IrgenFunc<'_> {
         // );
 
         // ✅ 인덱스 변환 (i32 → i64) - GEP 연산을 위해 확장 필요
-        let index_64 = context.insert_instruction(ir::Instruction::TypeCast {
-            value: rhs.clone(),
-            target_dtype: Dtype::LONG,
-        })?;
+        // let index_64 = context.insert_instruction(ir::Instruction::TypeCast {
+        //     value: rhs.clone(),
+        //     target_dtype: Dtype::LONG,
+        // })?;
+        let index_64 = self.translate_typecast(rhs.clone(), Dtype::LONG, context)?;
 
         // ✅ 배열 크기 가져오기
         let mut elt_size = 4; // 기본 int 크기 (4바이트)
@@ -3813,7 +3853,7 @@ impl IrgenFunc<'_> {
                 };
                 condition = context.insert_instruction(instr)?;
             }
-        }
+        } // 아마도 여기서 문제
 
         // Implicit type casting
         let condition = self.translate_typecast_to_bool(condition, &mut context)?;
