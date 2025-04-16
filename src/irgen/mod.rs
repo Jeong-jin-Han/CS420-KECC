@@ -1373,6 +1373,16 @@ impl IrgenFunc<'_> {
             println!("same type!!");
             return Ok(value);
         }
+        if dtype == Dtype::BOOL {
+            let const_operand = ir::Operand::constant(ir::Constant::int(0, value_dtype.clone()));
+            let neq_instr = ir::Instruction::BinOp {
+                op: BinaryOperator::NotEquals,
+                lhs: value.clone(),
+                rhs: const_operand,
+                dtype: Dtype::BOOL,
+            };
+            return context.insert_instruction(neq_instr);
+        }
 
         match (&value_dtype, &dtype) {
             // ✅ 정수 -> 정수 변환
@@ -2565,7 +2575,7 @@ impl IrgenFunc<'_> {
         let ptr = self.translate_alloc(var, Dtype::BOOL, None, context)?; // ME 
 
         let mut context_then = Context::new(bid_then);
-        let val_then = ir::Operand::constant(ir::Constant::int(1, Dtype::BOOL));
+        let mut val_then = ir::Operand::constant(ir::Constant::int(1, Dtype::BOOL));
 
         let mut context_else = Context::new(bid_else);
         let mut val_else = self.translate_expr_rvalue(rhs, &mut context_else)?;
@@ -2598,6 +2608,9 @@ impl IrgenFunc<'_> {
             // ptr.clone().dtype().get_pointer_inner()
         );
 
+        let ptr_inner = ptr.clone().dtype().get_pointer_inner().unwrap().clone();
+        val_then =
+            self.translate_typecast(val_then.clone(), ptr_inner.clone(), &mut context_then)?;
         let _unused = context_then.insert_instruction(ir::Instruction::Store {
             ptr: ptr.clone(),
             value: val_then.clone(),
@@ -2609,6 +2622,8 @@ impl IrgenFunc<'_> {
             },
         );
 
+        val_else =
+            self.translate_typecast(val_else.clone(), ptr_inner.clone(), &mut context_else)?;
         // Finishes the else branch
         let _unused = context_else.insert_instruction(ir::Instruction::Store {
             ptr: ptr.clone(),
@@ -2875,18 +2890,18 @@ impl IrgenFunc<'_> {
             dtype
         );
 
-        let dtype = match &op {
-            // &BinaryOperator::ShiftRight
-            // | &BinaryOperator::ShiftLeft
-            &BinaryOperator::BitwiseXor
-            | &BinaryOperator::BitwiseOr
-            | &BinaryOperator::BitwiseAnd => Dtype::Int {
-                width: 32,
-                is_signed: true,
-                is_const: false,
-            },
-            _ => dtype.clone(),
-        };
+        // let dtype = match &op {
+        //     // &BinaryOperator::ShiftRight
+        //     // | &BinaryOperator::ShiftLeft
+        //     &BinaryOperator::BitwiseXor
+        //     | &BinaryOperator::BitwiseOr
+        //     | &BinaryOperator::BitwiseAnd => Dtype::Int {
+        //         width: 32,
+        //         is_signed: true,
+        //         is_const: false,
+        //     },
+        //     _ => dtype.clone(),
+        // };
 
         let lhs = self.translate_typecast(lhs, dtype.clone(), context)?;
         let rhs = self.translate_typecast(rhs, dtype.clone(), context)?;
@@ -3033,7 +3048,7 @@ impl IrgenFunc<'_> {
 
                         operand_type = operand.dtype();
                     }
-                }
+                } // 아마도 여기서 문제
                 // ME
 
                 let instr = ir::Instruction::UnaryOp {
@@ -3078,6 +3093,9 @@ impl IrgenFunc<'_> {
                 // let rhs = ir::Operand::Constant(Dtype::int())
                 let width = operand_type.get_int_width().unwrap(); // 예: 32
                 let const_val = signed_to_u128(-1, width);
+
+                println!("translate_unary_op | const_val {}", const_val);
+
                 let rhs = ir::Operand::constant(ir::Constant::int(const_val, operand_type.clone()));
                 let instr = ir::Instruction::BinOp {
                     op: BinaryOperator::BitwiseXor,
@@ -3091,44 +3109,71 @@ impl IrgenFunc<'_> {
                 // ! 1 -> 0 // 1 != 0
                 // ! 0 -> 1
 
-                let operand = self.translate_expr_rvalue(&unary.operand.node, context)?;
-                let dtype = operand.dtype();
-                // let dtype = Dtype::BOOL;
-                println!("translate_unary_op | ::int | Negate {}", dtype.clone());
+                // let operand = self.translate_expr_rvalue(&unary.operand.node, context)?;
+                // let dtype = operand.dtype();
+                // // let dtype = Dtype::BOOL;
+                // println!("translate_unary_op | ::int | Negate {}", dtype.clone());
 
-                // let num0 = ir::Operand::Constant(ir::Constant::int(0, dtype.clone()));
-                let constant = match dtype {
-                    Dtype::Int { .. } => ir::Constant::int(0, dtype.clone()),
-                    _ => ir::Constant::float(0.0, dtype.clone()),
-                };
-                let num0 = ir::Operand::Constant(constant);
-
-                let num1 = ir::Operand::Constant(ir::Constant::int(1, Dtype::BOOL));
-                let cmp_instr = ir::Instruction::BinOp {
-                    op: BinaryOperator::NotEquals,
-                    lhs: operand.clone(),
-                    rhs: num0.clone(),
-                    dtype: Dtype::BOOL,
-                };
-                let cmp_operand = context.insert_instruction(cmp_instr)?;
-
-                let xor_instr = ir::Instruction::BinOp {
-                    op: BinaryOperator::BitwiseXor,
-                    lhs: cmp_operand.clone(),
-                    rhs: num1.clone(),
-                    dtype: Dtype::BOOL,
-                };
-                // context.insert_instruction(xor_instr)
-                let result = context.insert_instruction(xor_instr)?;
-
-                // let type_instr = ir::Instruction::TypeCast {
-                //     value: result,
-                //     target_dtype: Dtype::INT,
+                // // let num0 = ir::Operand::Constant(ir::Constant::int(0, dtype.clone()));
+                // let constant = match dtype {
+                //     Dtype::Int { .. } => ir::Constant::int(0, dtype.clone()),
+                //     _ => ir::Constant::float(0.0, dtype.clone()),
                 // };
-                // context.insert_instruction(type_instr)
+                // let num0 = ir::Operand::Constant(constant);
 
-                self.translate_typecast(result.clone(), Dtype::INT, context)
+                // let num1 = ir::Operand::Constant(ir::Constant::int(1, Dtype::BOOL));
+                // let cmp_instr = ir::Instruction::BinOp {
+                //     op: BinaryOperator::NotEquals,
+                //     lhs: operand.clone(),
+                //     rhs: num0.clone(),
+                //     dtype: Dtype::BOOL,
+                // };
+                // let cmp_operand = context.insert_instruction(cmp_instr)?;
 
+                // let xor_instr = ir::Instruction::BinOp {
+                //     op: BinaryOperator::BitwiseXor,
+                //     lhs: cmp_operand.clone(),
+                //     rhs: num1.clone(),
+                //     dtype: Dtype::BOOL,
+                // };
+                // // context.insert_instruction(xor_instr)
+                // let result = context.insert_instruction(xor_instr)?;
+
+                // // let type_instr = ir::Instruction::TypeCast {
+                // //     value: result,
+                // //     target_dtype: Dtype::INT,
+                // // };
+                // // context.insert_instruction(type_instr)
+
+                // self.translate_typecast(result.clone(), Dtype::INT, context)
+
+                // already given "negate"!!
+                let mut operand = self.translate_expr_rvalue(&unary.operand.node, context)?;
+                let mut operand_type = operand.dtype();
+
+                match operand_type {
+                    Dtype::Float { .. } => {
+                        let const_operand =
+                            ir::Operand::Constant(ir::Constant::float(0.0, operand_type.clone()));
+                        let neq_instr = ir::Instruction::BinOp {
+                            op: BinaryOperator::NotEquals,
+                            lhs: operand.clone(),
+                            rhs: const_operand,
+                            dtype: Dtype::BOOL,
+                        };
+                        operand = context.insert_instruction(neq_instr)?;
+                    }
+                    _ => {
+                        println!("todo")
+                    }
+                }
+
+                let instr = ir::Instruction::UnaryOp {
+                    op: (unary.operator.node).clone(),
+                    operand: operand.clone(),
+                    dtype: operand.dtype(),
+                };
+                context.insert_instruction(instr)
                 // todo!()
             }
             UnaryOperator::PreIncrement => {
@@ -3845,11 +3890,17 @@ impl IrgenFunc<'_> {
             &Dtype::BOOL => {}
             _ => {
                 let rhs = ir::Operand::Constant(ir::Constant::int(0, cond_dtype.clone()));
+                // let instr = ir::Instruction::BinOp {
+                //     op: BinaryOperator::NotEquals,
+                //     lhs: condition.clone(),
+                //     rhs,
+                //     dtype: cond_dtype.clone(),
+                // }; // 아마도 여기서 문제
                 let instr = ir::Instruction::BinOp {
                     op: BinaryOperator::NotEquals,
                     lhs: condition.clone(),
                     rhs,
-                    dtype: cond_dtype.clone(),
+                    dtype: Dtype::BOOL,
                 };
                 condition = context.insert_instruction(instr)?;
             }
