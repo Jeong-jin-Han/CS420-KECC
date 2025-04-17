@@ -3092,9 +3092,13 @@ impl IrgenFunc<'_> {
 
                 // let rhs = ir::Operand::Constant(Dtype::int())
                 let width = operand_type.get_int_width().unwrap(); // 예: 32
-                let const_val = signed_to_u128(-1, width);
+                // let const_val = signed_to_u128(-1, width);
+                let minus_value = -1;
+                let const_val = minus_value as u128;
 
                 println!("translate_unary_op | const_val {}", const_val);
+
+                // operand_type = operand_type.set_signed(true);
 
                 let rhs = ir::Operand::constant(ir::Constant::int(const_val, operand_type.clone()));
                 let instr = ir::Instruction::BinOp {
@@ -3152,6 +3156,20 @@ impl IrgenFunc<'_> {
                 let mut operand_type = operand.dtype();
 
                 match operand_type {
+                    Dtype::Int { .. } => {
+                        let int_width = operand_type.get_int_width().unwrap();
+                        if int_width > 1 {
+                            let const_operand =
+                                ir::Operand::Constant(ir::Constant::int(0, operand_type.clone()));
+                            let neq_instr = ir::Instruction::BinOp {
+                                op: BinaryOperator::NotEquals,
+                                lhs: operand.clone(),
+                                rhs: const_operand,
+                                dtype: Dtype::BOOL,
+                            };
+                            operand = context.insert_instruction(neq_instr)?;
+                        }
+                    }
                     Dtype::Float { .. } => {
                         let const_operand =
                             ir::Operand::Constant(ir::Constant::float(0.0, operand_type.clone()));
