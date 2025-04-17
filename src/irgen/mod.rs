@@ -3077,6 +3077,10 @@ impl IrgenFunc<'_> {
             UnaryOperator::Complement => {
                 let mut operand = self.translate_expr_rvalue(&unary.operand.node, context)?;
                 let mut operand_type = operand.dtype();
+                /*
+                xor 먼저 한 다음에 typecast를 해주어야 하는데 ...
+                */
+
                 // ME
                 if let Dtype::Int { .. } = operand_type {
                     if operand_type.get_int_width().unwrap() <= 32 {
@@ -3084,7 +3088,12 @@ impl IrgenFunc<'_> {
                         //     value: operand.clone(),
                         //     target_dtype: Dtype::INT,
                         // })?;
-                        operand = self.translate_typecast(operand.clone(), Dtype::INT, context)?;
+                        let dtype = Dtype::Int {
+                            width: 32,
+                            is_signed: operand_type.is_int_signed(),
+                            is_const: operand_type.is_const(),
+                        };
+                        operand = self.translate_typecast(operand.clone(), dtype, context)?;
 
                         operand_type = operand.dtype();
                     }
@@ -3097,8 +3106,9 @@ impl IrgenFunc<'_> {
                 );
 
                 // let rhs = ir::Operand::Constant(Dtype::int())
-                let width = operand_type.get_int_width().unwrap(); // 예: 32
+                // let width = operand_type.get_int_width().unwrap(); // 예: 32
                 // let const_val = signed_to_u128(-1, width);
+
                 let minus_value = -1;
                 let const_val = minus_value as u128;
 
@@ -4279,47 +4289,119 @@ fn promote_int_int(ty1: &Dtype, ty2: &Dtype) -> Dtype {
 
     // 기본 승격 로직
     // let result =
+    // match (s1, s2) {
+    //     (true, true) | (false, false) => Dtype::Int {
+    //         width: std::cmp::max(w1, w2),
+    //         is_signed: s1,
+    //         is_const: ty1.is_const() || ty2.is_const(),
+    //     },
+    //     (true, false) | (false, true) => {
+    //         if w1 >= w2 {
+    //             Dtype::Int {
+    //                 width: w1,
+    //                 is_signed: s1,
+    //                 is_const: ty1.is_const() || ty2.is_const(),
+    //             }
+    //         } else {
+    //             Dtype::Int {
+    //                 width: w2,
+    //                 is_signed: s2,
+    //                 is_const: ty1.is_const() || ty2.is_const(),
+    //             }
+    //         }
+    //     }
+    // }
+
     match (s1, s2) {
-        (true, true) | (false, false) => Dtype::Int {
-            width: std::cmp::max(w1, w2),
-            is_signed: s1,
-            is_const: ty1.is_const() || ty2.is_const(),
-        },
+        (true, true) | (false, false) => {
+            // same sign, pick wider
+            Dtype::Int {
+                width: std::cmp::max(w1, w2),
+                is_signed: s1,
+                is_const: ty1.is_const() || ty2.is_const(),
+            }
+        }
+
         (true, false) | (false, true) => {
-            if w1 > w2 {
+            // signed vs unsigned
+            let (signed_width, unsigned_width) = if s1 { (w1, w2) } else { (w2, w1) };
+
+            if unsigned_width >= signed_width {
+                // unsigned dominates
                 Dtype::Int {
-                    width: w1,
-                    is_signed: s1,
+                    width: unsigned_width,
+                    is_signed: false,
                     is_const: ty1.is_const() || ty2.is_const(),
                 }
             } else {
+                // signed dominates
                 Dtype::Int {
-                    width: w2,
-                    is_signed: s2,
+                    width: signed_width,
+                    is_signed: true,
                     is_const: ty1.is_const() || ty2.is_const(),
                 }
             }
         }
     }
+
     // println!("-------| promote_int_int | result {}", result);
     // result
 }
 
-fn signed_to_u128(value: i128, width: usize) -> u128 {
-    let mask = match width {
-        // 1 => 1,
-        // 8 => u8::MAX as u128,
-        // 16 => u16::MAX as u128,
-        32 => u32::MAX as u128,
-        64 => u64::MAX as u128,
-        128 => u128::MAX,
-        _ => panic!(
-            "unsupported width for signed to unsigned conversion: {}",
-            width
-        ),
-    };
-    (value as u128) & mask
+/*
+
+match (s1, s2) {
+    (true, true) | (false, false) => {
+        // same sign, pick wider
+        Dtype::Int {
+            width: std::cmp::max(w1, w2),
+            is_signed: s1,
+            is_const: ty1.is_const() || ty2.is_const(),
+        }
+    }
+
+    (true, false) | (false, true) => {
+        // signed vs unsigned
+        let (signed_width, unsigned_width) = if s1 {
+            (w1, w2)
+        } else {
+            (w2, w1)
+        };
+
+        if unsigned_width >= signed_width {
+            // unsigned dominates
+            Dtype::Int {
+                width: unsigned_width,
+                is_signed: false,
+                is_const: ty1.is_const() || ty2.is_const(),
+            }
+        } else {
+            // signed dominates
+            Dtype::Int {
+                width: signed_width,
+                is_signed: true,
+                is_const: ty1.is_const() || ty2.is_const(),
+            }
+        }
+    }
 }
+*/
+
+// fn signed_to_u128(value: i128, width: usize) -> u128 {
+//     let mask = match width {
+//         // 1 => 1,
+//         // 8 => u8::MAX as u128,
+//         // 16 => u16::MAX as u128,
+//         32 => u32::MAX as u128,
+//         64 => u64::MAX as u128,
+//         128 => u128::MAX,
+//         _ => panic!(
+//             "unsupported width for signed to unsigned conversion: {}",
+//             width
+//         ),
+//     };
+//     (value as u128) & mask
+// }
 
 fn sizeofval_manual(dtype: &Dtype) -> u128 {
     // println!("sizeofval_manual");
