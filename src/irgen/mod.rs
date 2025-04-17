@@ -1374,7 +1374,13 @@ impl IrgenFunc<'_> {
             return Ok(value);
         }
         if dtype == Dtype::BOOL {
-            let const_operand = ir::Operand::constant(ir::Constant::int(0, value_dtype.clone()));
+            let const_operand = match value_dtype {
+                Dtype::Int { .. } => {
+                    ir::Operand::constant(ir::Constant::int(0, value_dtype.clone()))
+                }
+                _ => ir::Operand::constant(ir::Constant::float(0.0, value_dtype.clone())),
+            };
+            // let const_operand = ir::Operand::constant(ir::Constant::int(0, value_dtype.clone()));
             let neq_instr = ir::Instruction::BinOp {
                 op: BinaryOperator::NotEquals,
                 lhs: value.clone(),
@@ -3907,7 +3913,12 @@ impl IrgenFunc<'_> {
         match &cond_dtype {
             &Dtype::BOOL => {}
             _ => {
-                let rhs = ir::Operand::Constant(ir::Constant::int(0, cond_dtype.clone()));
+                let rhs = match cond_dtype {
+                    Dtype::Int { .. } => {
+                        ir::Operand::Constant(ir::Constant::int(0, cond_dtype.clone()))
+                    }
+                    _ => ir::Operand::Constant(ir::Constant::float(0.0, cond_dtype.clone())),
+                };
                 // let instr = ir::Instruction::BinOp {
                 //     op: BinaryOperator::NotEquals,
                 //     lhs: condition.clone(),
