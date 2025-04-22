@@ -1,11 +1,14 @@
 //! Utilities for implementing optimizations.
 //!
 //! You can freely add utilities commonly used in the implementation of multiple optimizations here.
+use std::cmp::Reverse;
+use std::collections::btree_map::IntoValues;
 use std::collections::{HashMap, HashSet};
 use std::io::empty;
 use std::ops::{Deref, DerefMut};
 
 use itertools::izip;
+use itertools::traits::HomogeneousTuple;
 use lang_c::ast::ConditionalExpression;
 
 use crate::asm::Function;
@@ -15,8 +18,15 @@ use crate::opt::*;
 
 use core::cmp::Ordering;
 
-
-pub trait Walk {
+macro_rules! some_or {
+    ($option:expr, $fallback:expr) => {
+        match $option {
+            Some(val) => val,
+            None => $fallback,
+        }
+    };
+}
+pub(crate) trait Walk {
     fn walk<F>(&mut self, f: F) -> bool
     where
         F: FnMut(&mut Operand) -> bool;
@@ -83,6 +93,10 @@ impl Walk for Instruction {
             }
             Self::Value { value } => {
                 value.walk(&mut f) // maybe ??
+            }
+            Self::GetElementPtr { ptr, offset, dtype } => {
+                ptr.walk(&mut f)
+                // offset.walk(&mut f);
             }
             _ => todo!() // GetElementPtr
         }
@@ -197,24 +211,186 @@ pub(crate) struct PostOrder<'c> {
     pub(crate) traversed: Vec<BlockId>,
 }
 
+// impl PostOrder<'_> {
+//     pub(crate) fn traverse(&mut self, bid: BlockId) {
+//         if !self.visited.insert(bid) {
+//             // already inserted -> return
+//             return;
+//         };
+//         if let Some(neighbers) = self.cfg.get(&bid) {
+//             for arg in neighbers {
+//                 self.traverse(arg.bid);
+//             }
+//             self.traversed.push(bid);
+//         }
+
+//         // todo!()
+//     }
+// }
+
 impl PostOrder<'_> {
     pub(crate) fn traverse(&mut self, bid: BlockId) {
-        if !self.visited.insert(bid) {
-            // already inserted -> return
-            return;
-        };
-        if let Some(neighbers) = self.cfg.get(&bid) {
-            for arg in neighbers {
-                self.traverse(arg.bid);
+        for jump in self.cfg.get(&bid).unwrap() {
+            if self.visited.insert(jump.bid) {
+                self.traverse(jump.bid);
             }
-            self.traversed.push(bid);
         }
-
-        // todo!()
+        self.traversed.push(bid);
     }
 }
 
-pub(crate) fn replace_operands(operand: &mut Operand, replaces: &HashMap<RegisterId, Operand>) {
+fn traverse_postorder(bid_init: BlockId, cfg:&HashMap<BlockId, Vec<JumpArg>>) -> Vec<BlockId> {
+    let mut post_order = PostOrder {
+        visited: HashSet::new(),
+        cfg,
+        traversed: Vec::new(),
+    };
+    let _unused = post_order.visited.insert(bid_init);
+    post_order.traverse(bid_init);
+    post_order.traversed
+}
+
+pub(crate) struct Domtree {
+    pub(crate) idoms: HashMap<BlockId, BlockId>,
+    pub(crate) frontiers: HashMap<BlockId, Vec<BlockId>>,
+    pub(crate) reverse_post_order: Vec<BlockId>,
+}
+
+impl Domtree {
+    pub(crate) fn new(
+        bid_init: BlockId,
+        cfg: &HashMap<BlockId, Vec<JumpArg>>,
+        reverse_cfg: &HashMap<BlockId, Vec<(BlockId, JumpArg)>>,
+    ) -> Self {
+        let mut reverse_post_order = traverse_postorder(bid_init, cfg);
+        reverse_post_order.reverse();
+
+        let inverse_reverse_post_order: HashMap<BlockId, usize> = reverse_post_order
+            .iter()
+            .enumerate()
+            .map(|(i, bid)| (*bid, i))
+            .collect(); // maybe type??
+
+        // The immediate dominator (idom) of each block
+        let mut idoms = HashMap::<BlockId, BlockId>::new();
+
+        loop {
+            let mut changed = false;
+
+            for bid in &reverse_post_order {
+                if *bid == bid_init {
+                    continue;
+                }
+
+                let mut idom = None;
+                for (bid_prev, _) in reverse_cfg.get(bid).unwrap() {
+                    if *bid_prev == bid_init || idoms.get(bid_prev).is_some() {
+                        idom = Some(intersect_idom(
+                            idom,
+                            *bid_prev,
+                            &inverse_reverse_post_order,
+                            &idoms,
+                        ));
+                    }
+                }
+
+                if let Some(idom) = idom {
+                    let _unused = idoms
+                        .entry(*bid)
+                        .and_modify(|v| {
+                            if *v != idom {
+                                changed = true;
+                                *v = idom;
+                            }
+                        })
+                        .or_insert_with(|| {
+                            changed = true; 
+                            idom
+                        });
+                }
+            }
+
+            if !changed { // not changed
+                break;
+            }
+        }
+
+        let mut frontiers = HashMap::new();
+        for (bid, prevs) in reverse_cfg {
+            if prevs.len() <= 1 {
+                continue;
+            }
+
+            let idom = *some_or!(idoms.get(bid), continue);
+
+            for (bid_prev, _) in prevs {
+                let mut runner = *bid_prev;
+                while !Self::dominates(&idoms, runner, *bid) {
+                    frontiers.entry(runner).or_insert_with(Vec::new).push(*bid);
+                    println!("runner: {}, bid: {}, idom: {}", runner, bid, idom);
+                    runner = *idoms.get(&runner).unwrap();
+                }   
+            }
+        }
+        Self {
+            idoms,
+            frontiers,
+            reverse_post_order,
+        }
+    }
+
+    pub(crate) fn idom(&self, bid: BlockId) -> Option<BlockId> {
+        self.idoms.get(&bid).cloned()
+    }
+
+    pub(crate) fn dominates(idoms: &HashMap<BlockId, BlockId>, bid1: BlockId, mut bid2: BlockId) -> bool {
+        loop {
+            bid2 = *some_or!(idoms.get(&bid2), return false);
+            if bid1 == bid2 {
+                return true;
+            }
+        }
+    }
+
+    pub(crate) fn frontiers(&self, bid: BlockId) -> Option<&Vec<BlockId>> {
+        self.frontiers.get(&bid)
+    }
+
+    pub(crate) fn walk<F>(&self, mut f: F) 
+    where  F: FnMut(Option<BlockId>, BlockId),
+    {
+        for bid in &self.reverse_post_order {
+            f(self.idoms.get(bid).cloned(), *bid);
+        }
+    }
+}
+
+fn intersect_idom(
+    lhs: Option<BlockId>,
+    mut rhs: BlockId,
+    inverse_reverse_post_order: &HashMap<BlockId, usize>,
+    idoms: &HashMap<BlockId, BlockId>,
+) -> BlockId {
+    let mut lhs = some_or!(lhs, return rhs);
+
+    loop {
+        if lhs == rhs {
+            return lhs;
+        }
+
+        let lhs_index = inverse_reverse_post_order.get(&lhs).unwrap();
+        let rhs_index = inverse_reverse_post_order.get(&rhs).unwrap();
+
+        match lhs_index.cmp(rhs_index) {
+            Ordering::Less => rhs =*idoms.get(&rhs).unwrap(),
+            Ordering::Greater => lhs = *idoms.get(&lhs).unwrap(),
+            Ordering::Equal => panic!("intersect_idom: lhs == rhs cannot happen"),
+        }
+    }
+}
+
+
+pub(crate) fn replace_operands(operand: &mut Operand, replaces: &HashMap<RegisterId, Operand>) -> bool {
     /*
     주어진 operand -> rid 구하기
     replaces: rid에 해당하는 operand 구하기
@@ -222,8 +398,10 @@ pub(crate) fn replace_operands(operand: &mut Operand, replaces: &HashMap<Registe
     if let Operand::Register { rid, dtype } = operand {
         if let Some(replacement) = replaces.get(rid) {
             *operand = replacement.clone();
+            return true;
         }
     }
+    false
     // todo!()
 }
 
@@ -239,21 +417,21 @@ pub(crate) fn walk(code: &mut FunctionDefinition, replaces: &HashMap<RegisterId,
                     rhs,
                     dtype,
                 } => {
-                    replace_operands(lhs, replaces);
-                    replace_operands(rhs, replaces);
+                    let _unused = replace_operands(lhs, replaces);
+                    let _unused = replace_operands(rhs, replaces);
                 }
                 Instruction::Store { ptr, value } => {
-                    replace_operands(ptr, replaces);
-                    replace_operands(value, replaces);
+                    let _unused = replace_operands(ptr, replaces);
+                    let _unused = replace_operands(value, replaces);
                 }
                 Instruction::Call {
                     callee,
                     args,
                     return_type,
                 } => {
-                    replace_operands(callee, replaces);
+                    let _unused = replace_operands(callee, replaces);
                     for arg in args {
-                        replace_operands(arg, replaces);
+                        let _unused = replace_operands(arg, replaces);
                     }
                 }
                 // Instruction::
@@ -264,14 +442,14 @@ pub(crate) fn walk(code: &mut FunctionDefinition, replaces: &HashMap<RegisterId,
 
         match &mut block.exit {
             BlockExit::Return { value } => {
-                replace_operands(value, replaces);
+                let _unused = replace_operands(value, replaces);
             }
             BlockExit::ConditionalJump {
                 condition,
                 arg_then,
                 arg_else,
             } => {
-                replace_operands(condition, replaces);
+                let _unused = replace_operands(condition, replaces);
             }
             _ => {}
         }

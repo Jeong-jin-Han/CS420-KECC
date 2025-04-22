@@ -15,7 +15,7 @@ pub struct Mem2regInner {}
 macro_rules! some_or {
     ($option:expr, $fallback:expr) => {
         match $option {
-            Some(val) => val,
+            Some(val) => val.clone(),
             None => $fallback,
         }
     };
@@ -23,7 +23,7 @@ macro_rules! some_or {
 
 fn mark_inpromotable(inpromotable:&mut HashSet<usize>, operand:&Operand) {
     if let Some((RegisterId::Local { aid }, _)) = operand.get_register() {
-        inpromotable.insert(*aid);
+        let _unused = inpromotable.insert(*aid);
     }
 }
 
@@ -34,7 +34,7 @@ enum OperandVar {
 }
 
 impl OperandVar {
-    pub fn lookup(
+    pub(crate) fn lookup(
         &self,
         dtype: &Dtype,
         phinode_indexes: &HashMap<(usize, BlockId), usize>,
@@ -60,7 +60,7 @@ struct JoinTable<'s> {
 }
 
 impl<'s> JoinTable<'s> {
-    pub fn new(domtree: &'s Domtree, joins: &'s HashSet<(usize, BlockId)>) -> Self {
+    pub(crate) fn new(domtree: &'s Domtree, joins: &'s HashSet<(usize, BlockId)>) -> Self { // Maybe joins -> 
         Self {
             inner: HashMap::new(),
             domtree,
@@ -68,7 +68,7 @@ impl<'s> JoinTable<'s> {
         }
     }
 
-    pub fn lookup(&mut self, aid: usize, mut bid: BlockId) -> BlockId {
+    pub(crate) fn lookup(&mut self, aid: usize, mut bid: BlockId) -> BlockId {
         let mut bids = Vec::new();
         let ret = loop {
             if let Some(ret) = self.inner.get(&(aid, bid)) {
@@ -79,10 +79,10 @@ impl<'s> JoinTable<'s> {
             if self.joins.contains(&(aid, bid)) {
                 break bid;
             }
-            bid = some_or!(self.domtree.parent(bid), break bid);
+            bid = some_or!(self.domtree.idoms.get(&bid), break bid);
         };
         for bid in bids {
-            self.inner.insert((aid, bid), ret);
+            let _unused = self.inner.insert((aid, bid), ret);
         }
         ret
     }
@@ -149,7 +149,7 @@ impl Optimize<FunctionDefinition> for Mem2regInner {
         // B2 -> B1 in reverse CFG
 
         // Calculate the join blocks with which a phinode may be inserted for each promotable location.
-        let join: HashMap<usize, HashSet<BlockId>> = stores
+        let joins: HashMap<usize, HashSet<BlockId>> = stores
             .iter()
             .filter(|(aid, _)| !inpromotable.contains(*aid))
             .map(|(aid, bids)| {
@@ -159,8 +159,8 @@ impl Optimize<FunctionDefinition> for Mem2regInner {
                     while let Some(bid) = stack.pop() {
                         let bid_frontiers = some_or!(domtree.frontiers(bid), continue);
                         for bid_froniter in bid_frontiers {
-                            if visited.insert(*bid_froniter) {
-                                stack.push(*bid_froniter);
+                            if visited.insert(bid_froniter) { // maybe
+                                stack.push(bid_froniter); // maybe
                             }
                         }
                     }
@@ -169,8 +169,14 @@ impl Optimize<FunctionDefinition> for Mem2regInner {
             })
             .collect();
         
+        let flatten_joins:HashSet<(usize, BlockId)> = joins
+            .iter()
+            .flat_map(|(aid, bids)| bids.iter().map(move |bid| (*aid, *bid)))
+            .collect();
+
         // Table for the nearest join block according to the dominator tree.
-        let mut join_table = JoinTable::new(&domtree, &joins);
+        let mut join_table = JoinTable::new(&domtree, &flatten_joins);
+
 
         // Replacement dictionary
         let mut replaces = HashMap::<RegisterId, OperandVar>::new();

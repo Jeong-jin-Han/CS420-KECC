@@ -174,8 +174,8 @@ impl Optimize<FunctionDefinition> for SimplifyCfgMerge {
             // println!("replaces {:?}\n\n", replaces.clone());
 
             // Replaces removed registers
-            // let _ = code.walk(|operand| replace_operands(operand, &replaces));
-            walk(code, &replaces);
+            let _ = code.walk(|operand| replace_operands(operand, &replaces));
+            // walk(code, &replaces);
 
             result = true;
         }
