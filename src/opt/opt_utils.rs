@@ -8,9 +8,136 @@ use std::ops::{Deref, DerefMut};
 use itertools::izip;
 use lang_c::ast::ConditionalExpression;
 
+use crate::asm::Function;
 use crate::ir::*;
 // use crate::opt::opt_utils::*;
 use crate::opt::*;
+
+use core::cmp::Ordering;
+
+
+pub trait Walk {
+    fn walk<F>(&mut self, f: F) -> bool
+    where
+        F: FnMut(&mut Operand) -> bool;
+}
+
+impl Walk for FunctionDefinition {
+    fn walk<F>(&mut self,mut f: F) -> bool
+        where
+            F: FnMut(&mut Operand) -> bool {
+        self.blocks
+            .iter_mut()
+            .map(|(_, block)| block.walk(&mut f))
+            .fold(false, |l, r| l || r)
+    }
+}
+
+impl Walk for Block {
+    fn walk<F>(&mut self, mut f: F) -> bool
+        where
+            F: FnMut(&mut Operand) -> bool {
+        let changed1 = self
+                .instructions
+                .iter_mut()
+                .map(|i| i.walk(&mut f))
+                .fold(false, |l, r| l||r);
+        
+        let changed2 = self.exit.walk(&mut f);
+        changed1 || changed2
+    }
+}
+
+impl Walk for Instruction {
+    fn walk<F>(&mut self, mut f: F) -> bool
+        where
+            F: FnMut(&mut Operand) -> bool {
+        match self {
+            Self::Nop => false,
+            Self::BinOp { lhs, rhs, .. } => {
+                let changed1 = lhs.walk(&mut f);
+                let changed2 = rhs.walk(&mut f);
+                changed1 || changed2
+            }
+            Self::UnaryOp { operand, ..} => {
+                operand.walk(&mut f)
+            }
+            Self::Store {ptr, value} => {
+                let changed1 = ptr.walk(&mut f);
+                let changed2 = value.walk(&mut f);
+                changed1 || changed2
+            }
+            Self::Load { ptr } => {
+                ptr.walk(&mut f)
+            }
+            Self::Call { callee, args, ..} => {
+                let changed1 = callee.walk(&mut f);
+                let changed2 = args
+                    .iter_mut()
+                    .map(|a| a.walk(&mut f))
+                    .fold(false, |l,r| l||r);
+                changed1 || changed2
+            }
+            Self::TypeCast { value, .. } => {
+                value.walk(&mut f)
+            }
+            Self::Value { value } => {
+                value.walk(&mut f) // maybe ??
+            }
+            _ => todo!() // GetElementPtr
+        }
+    }
+}
+
+impl Walk for BlockExit {
+    fn walk<F>(&mut self, mut f: F) -> bool
+        where
+            F: FnMut(&mut Operand) -> bool {
+        match self {
+            Self::Jump {arg} => arg.walk(&mut f),
+            Self::ConditionalJump { condition, arg_then, arg_else } => {
+                let changed1 = condition.walk(&mut f);
+                let changed2 = arg_then.walk(&mut f);
+                let changed3 = arg_else.walk(&mut f);
+                changed1 || changed2 || changed3
+            }
+            Self::Switch { value, default, cases } => {
+                let changed1 = value.walk(&mut f);
+                let changed2 = default.walk(&mut f);
+                let changed3 = cases
+                    .iter_mut()
+                    .map(|(_, op)| op.walk(&mut f))
+                    .fold(false, |l,r| l||r);
+                changed1 || changed2 || changed3
+            }
+            Self::Return { value } => {
+                value.walk(&mut f)
+            }
+            _ => todo!()
+        }
+    }
+}
+
+impl Walk for JumpArg {
+    fn walk<F>(&mut self, mut f: F) -> bool
+        where
+            F: FnMut(&mut Operand) -> bool {
+        self
+            .args
+            .iter_mut()
+            .map(|op| op.walk(&mut f))
+            .fold(false, |l, r| l||r) 
+    }
+}
+
+impl Walk for Operand {
+    fn walk<F>(&mut self, mut f: F) -> bool
+        where
+            F: FnMut(&mut Operand) -> bool {
+        f(self)
+    }
+}
+
 
 /// .
 // #![allow(dead_code)]
@@ -150,6 +277,8 @@ pub(crate) fn walk(code: &mut FunctionDefinition, replaces: &HashMap<RegisterId,
         }
     }
 }
+
+
 
 pub(crate) struct ClassNumGen {
     pub(crate) counter: u64,
