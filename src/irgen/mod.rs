@@ -3077,6 +3077,7 @@ impl IrgenFunc<'_> {
             UnaryOperator::Complement => {
                 let mut operand = self.translate_expr_rvalue(&unary.operand.node, context)?;
                 let mut operand_type = operand.dtype();
+                let operand_old_type = operand_type.clone();
                 /*
                 xor 먼저 한 다음에 typecast를 해주어야 하는데 ...
                 */
@@ -3088,11 +3089,15 @@ impl IrgenFunc<'_> {
                         //     value: operand.clone(),
                         //     target_dtype: Dtype::INT,
                         // })?;
-                        let dtype = Dtype::Int {
-                            width: 32,
-                            is_signed: operand_type.is_int_signed(),
-                            is_const: operand_type.is_const(),
-                        };
+
+                        // let dtype = Dtype::Int {
+                        //     width: 32,
+                        //     is_signed: operand_type.is_int_signed(),
+                        //     is_const: operand_type.is_const(),
+                        // };
+
+                        let dtype = promote_int_int(&operand_type, &operand_type);
+
                         operand = self.translate_typecast(operand.clone(), dtype, context)?;
 
                         operand_type = operand.dtype();
@@ -3116,7 +3121,12 @@ impl IrgenFunc<'_> {
 
                 // operand_type = operand_type.set_signed(true);
 
-                let rhs = ir::Operand::constant(ir::Constant::int(const_val, operand_type.clone()));
+                let mut rhs =
+                    ir::Operand::constant(ir::Constant::int(const_val, operand_old_type.clone()));
+                if operand_old_type != operand_type {
+                    rhs = self.translate_typecast(rhs.clone(), operand_type.clone(), context)?;
+                }
+
                 let instr = ir::Instruction::BinOp {
                     op: BinaryOperator::BitwiseXor,
                     lhs: operand,
@@ -4254,7 +4264,7 @@ fn is_invalid_structure(dtype: &Dtype, structs: &HashMap<String, Option<Dtype>>)
 
 // merge_dtype helper ftn
 fn promote_int_int(ty1: &Dtype, ty2: &Dtype) -> Dtype {
-    // println!("-------| promote_int_int | ty1 {}, ty2 {}", ty1, ty2);
+    println!("-------| promote_int_int | ty1 {}, ty2 {}", ty1, ty2);
     let (mut w1, mut s1) = (ty1.get_int_width().unwrap(), ty1.is_int_signed());
     let (mut w2, mut s2) = (ty2.get_int_width().unwrap(), ty2.is_int_signed());
 
@@ -4268,16 +4278,25 @@ fn promote_int_int(ty1: &Dtype, ty2: &Dtype) -> Dtype {
         return result;
     }
 
+    let mut base = false;
     // 먼저 정수 승격 (i8, u8 등 → int or unsigned int)
     if w1 < 32 {
         w1 = 32;
+    } else if !s1 && w1 >= 32 {
+        base = true;
     }
     if w2 < 32 {
         w2 = 32;
+    } else if !s2 && w2 >= 32 {
+        base = true;
     }
 
+    /*
+    원본이 32를 가진게 아직 유지 되는지가 중요
+    */
+
     // ⚠️ 특별 케이스: signed와 unsigned 둘 다 32비트인 경우 → C 규칙상 int 유지
-    if w1 == 32 && w2 == 32 && ((s1 && !s2) || (!s1 && s2)) {
+    if w1 == 32 && w2 == 32 && !base {
         let result = Dtype::Int {
             width: 32,
             is_signed: true, // i32 선택
@@ -4286,31 +4305,6 @@ fn promote_int_int(ty1: &Dtype, ty2: &Dtype) -> Dtype {
         // println!("-------| promote_int_int | result {}", result);
         return result;
     }
-
-    // 기본 승격 로직
-    // let result =
-    // match (s1, s2) {
-    //     (true, true) | (false, false) => Dtype::Int {
-    //         width: std::cmp::max(w1, w2),
-    //         is_signed: s1,
-    //         is_const: ty1.is_const() || ty2.is_const(),
-    //     },
-    //     (true, false) | (false, true) => {
-    //         if w1 >= w2 {
-    //             Dtype::Int {
-    //                 width: w1,
-    //                 is_signed: s1,
-    //                 is_const: ty1.is_const() || ty2.is_const(),
-    //             }
-    //         } else {
-    //             Dtype::Int {
-    //                 width: w2,
-    //                 is_signed: s2,
-    //                 is_const: ty1.is_const() || ty2.is_const(),
-    //             }
-    //         }
-    //     }
-    // }
 
     match (s1, s2) {
         (true, true) | (false, false) => {
