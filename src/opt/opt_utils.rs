@@ -33,26 +33,32 @@ pub(crate) trait Walk {
 }
 
 impl Walk for FunctionDefinition {
-    fn walk<F>(&mut self,mut f: F) -> bool
-        where
-            F: FnMut(&mut Operand) -> bool {
+    fn walk<F>(&mut self, mut f: F) -> bool
+    where
+        F: FnMut(&mut Operand) -> bool,
+    {
+        #[allow(clippy::unnecessary_fold)]
         self.blocks
             .iter_mut()
             .map(|(_, block)| block.walk(&mut f))
             .fold(false, |l, r| l || r)
+
+        // self.blocks.iter_mut().any(|(_, block)| block.walk(&mut f))
     }
 }
 
 impl Walk for Block {
     fn walk<F>(&mut self, mut f: F) -> bool
-        where
-            F: FnMut(&mut Operand) -> bool {
+    where
+        F: FnMut(&mut Operand) -> bool,
+    {
+        #[allow(clippy::unnecessary_fold)]
         let changed1 = self
-                .instructions
-                .iter_mut()
-                .map(|i| i.walk(&mut f))
-                .fold(false, |l, r| l||r);
-        
+            .instructions
+            .iter_mut()
+            .map(|i| i.walk(&mut f))
+            .fold(false, |l, r| l || r);
+
         let changed2 = self.exit.walk(&mut f);
         changed1 || changed2
     }
@@ -60,8 +66,9 @@ impl Walk for Block {
 
 impl Walk for Instruction {
     fn walk<F>(&mut self, mut f: F) -> bool
-        where
-            F: FnMut(&mut Operand) -> bool {
+    where
+        F: FnMut(&mut Operand) -> bool,
+    {
         match self {
             Self::Nop => false,
             Self::BinOp { lhs, rhs, .. } => {
@@ -69,28 +76,23 @@ impl Walk for Instruction {
                 let changed2 = rhs.walk(&mut f);
                 changed1 || changed2
             }
-            Self::UnaryOp { operand, ..} => {
-                operand.walk(&mut f)
-            }
-            Self::Store {ptr, value} => {
+            Self::UnaryOp { operand, .. } => operand.walk(&mut f),
+            Self::Store { ptr, value } => {
                 let changed1 = ptr.walk(&mut f);
                 let changed2 = value.walk(&mut f);
                 changed1 || changed2
             }
-            Self::Load { ptr } => {
-                ptr.walk(&mut f)
-            }
-            Self::Call { callee, args, ..} => {
+            Self::Load { ptr } => ptr.walk(&mut f),
+            Self::Call { callee, args, .. } => {
                 let changed1 = callee.walk(&mut f);
+                #[allow(clippy::unnecessary_fold)]
                 let changed2 = args
                     .iter_mut()
                     .map(|a| a.walk(&mut f))
-                    .fold(false, |l,r| l||r);
+                    .fold(false, |l, r| l || r);
                 changed1 || changed2
             }
-            Self::TypeCast { value, .. } => {
-                value.walk(&mut f)
-            }
+            Self::TypeCast { value, .. } => value.walk(&mut f),
             Self::Value { value } => {
                 value.walk(&mut f) // maybe ??
             }
@@ -98,60 +100,72 @@ impl Walk for Instruction {
                 ptr.walk(&mut f)
                 // offset.walk(&mut f);
             }
-            _ => todo!() // GetElementPtr
+            _ => todo!(), // GetElementPtr
         }
     }
 }
 
 impl Walk for BlockExit {
     fn walk<F>(&mut self, mut f: F) -> bool
-        where
-            F: FnMut(&mut Operand) -> bool {
+    where
+        F: FnMut(&mut Operand) -> bool,
+    {
         match self {
-            Self::Jump {arg} => arg.walk(&mut f),
-            Self::ConditionalJump { condition, arg_then, arg_else } => {
+            Self::Jump { arg } => arg.walk(&mut f),
+            Self::ConditionalJump {
+                condition,
+                arg_then,
+                arg_else,
+            } => {
                 let changed1 = condition.walk(&mut f);
                 let changed2 = arg_then.walk(&mut f);
                 let changed3 = arg_else.walk(&mut f);
                 changed1 || changed2 || changed3
             }
-            Self::Switch { value, default, cases } => {
+            Self::Switch {
+                value,
+                default,
+                cases,
+            } => {
                 let changed1 = value.walk(&mut f);
                 let changed2 = default.walk(&mut f);
+                #[allow(clippy::unnecessary_fold)]
                 let changed3 = cases
                     .iter_mut()
                     .map(|(_, op)| op.walk(&mut f))
-                    .fold(false, |l,r| l||r);
+                    .fold(false, |l, r| l || r);
                 changed1 || changed2 || changed3
             }
-            Self::Return { value } => {
-                value.walk(&mut f)
-            }
-            _ => todo!()
+            Self::Return { value } => value.walk(&mut f),
+            _ => todo!(),
         }
     }
 }
 
 impl Walk for JumpArg {
     fn walk<F>(&mut self, mut f: F) -> bool
-        where
-            F: FnMut(&mut Operand) -> bool {
-        self
-            .args
+    where
+        F: FnMut(&mut Operand) -> bool,
+    {
+        #[allow(clippy::unnecessary_fold)]
+        self.args
             .iter_mut()
             .map(|op| op.walk(&mut f))
-            .fold(false, |l, r| l||r) 
+            .fold(false, |l, r| l || r)
     }
 }
 
 impl Walk for Operand {
     fn walk<F>(&mut self, mut f: F) -> bool
-        where
-            F: FnMut(&mut Operand) -> bool {
-        f(self)
+    where
+        F: FnMut(&mut Operand) -> bool,
+    {
+        println!("WALK Operand: {:?}", self);
+        let tmp = f(self);
+        println!("Operand tmp: {:?}", tmp);
+        tmp
     }
 }
-
 
 /// .
 // #![allow(dead_code)]
@@ -239,7 +253,7 @@ impl PostOrder<'_> {
     }
 }
 
-fn traverse_postorder(bid_init: BlockId, cfg:&HashMap<BlockId, Vec<JumpArg>>) -> Vec<BlockId> {
+fn traverse_postorder(bid_init: BlockId, cfg: &HashMap<BlockId, Vec<JumpArg>>) -> Vec<BlockId> {
     let mut post_order = PostOrder {
         visited: HashSet::new(),
         cfg,
@@ -284,7 +298,8 @@ impl Domtree {
 
                 let mut idom = None;
                 for (bid_prev, _) in reverse_cfg.get(bid).unwrap() {
-                    if *bid_prev == bid_init || idoms.get(bid_prev).is_some() {
+                    // if *bid_prev == bid_init || idoms.get(bid_prev).is_some() {
+                    if *bid_prev == bid_init || idoms.contains_key(bid_prev) {
                         idom = Some(intersect_idom(
                             idom,
                             *bid_prev,
@@ -304,13 +319,14 @@ impl Domtree {
                             }
                         })
                         .or_insert_with(|| {
-                            changed = true; 
+                            changed = true;
                             idom
                         });
                 }
             }
 
-            if !changed { // not changed
+            if !changed {
+                // not changed
                 break;
             }
         }
@@ -329,7 +345,7 @@ impl Domtree {
                     frontiers.entry(runner).or_insert_with(Vec::new).push(*bid);
                     println!("runner: {}, bid: {}, idom: {}", runner, bid, idom);
                     runner = *idoms.get(&runner).unwrap();
-                }   
+                }
             }
         }
         Self {
@@ -343,7 +359,11 @@ impl Domtree {
         self.idoms.get(&bid).cloned()
     }
 
-    pub(crate) fn dominates(idoms: &HashMap<BlockId, BlockId>, bid1: BlockId, mut bid2: BlockId) -> bool {
+    pub(crate) fn dominates(
+        idoms: &HashMap<BlockId, BlockId>,
+        bid1: BlockId,
+        mut bid2: BlockId,
+    ) -> bool {
         loop {
             bid2 = *some_or!(idoms.get(&bid2), return false);
             if bid1 == bid2 {
@@ -356,8 +376,9 @@ impl Domtree {
         self.frontiers.get(&bid)
     }
 
-    pub(crate) fn walk<F>(&self, mut f: F) 
-    where  F: FnMut(Option<BlockId>, BlockId),
+    pub(crate) fn walk<F>(&self, mut f: F)
+    where
+        F: FnMut(Option<BlockId>, BlockId),
     {
         for bid in &self.reverse_post_order {
             f(self.idoms.get(bid).cloned(), *bid);
@@ -382,15 +403,17 @@ fn intersect_idom(
         let rhs_index = inverse_reverse_post_order.get(&rhs).unwrap();
 
         match lhs_index.cmp(rhs_index) {
-            Ordering::Less => rhs =*idoms.get(&rhs).unwrap(),
+            Ordering::Less => rhs = *idoms.get(&rhs).unwrap(),
             Ordering::Greater => lhs = *idoms.get(&lhs).unwrap(),
             Ordering::Equal => panic!("intersect_idom: lhs == rhs cannot happen"),
         }
     }
 }
 
-
-pub(crate) fn replace_operands(operand: &mut Operand, replaces: &HashMap<RegisterId, Operand>) -> bool {
+pub(crate) fn replace_operands(
+    operand: &mut Operand,
+    replaces: &HashMap<RegisterId, Operand>,
+) -> bool {
     /*
     주어진 operand -> rid 구하기
     replaces: rid에 해당하는 operand 구하기
@@ -405,58 +428,56 @@ pub(crate) fn replace_operands(operand: &mut Operand, replaces: &HashMap<Registe
     // todo!()
 }
 
-pub(crate) fn walk(code: &mut FunctionDefinition, replaces: &HashMap<RegisterId, Operand>) {
-    for block in code.blocks.values_mut() {
-        // instructions
-        for instr in block.instructions.iter_mut() {
-            // let tmp = instr.deref_mut();
-            match instr.deref_mut() {
-                Instruction::BinOp {
-                    op,
-                    lhs,
-                    rhs,
-                    dtype,
-                } => {
-                    let _unused = replace_operands(lhs, replaces);
-                    let _unused = replace_operands(rhs, replaces);
-                }
-                Instruction::Store { ptr, value } => {
-                    let _unused = replace_operands(ptr, replaces);
-                    let _unused = replace_operands(value, replaces);
-                }
-                Instruction::Call {
-                    callee,
-                    args,
-                    return_type,
-                } => {
-                    let _unused = replace_operands(callee, replaces);
-                    for arg in args {
-                        let _unused = replace_operands(arg, replaces);
-                    }
-                }
-                // Instruction::
-                // 등등 모든 instruction variants 처리
-                _ => {}
-            }
-        }
+// pub(crate) fn walk(code: &mut FunctionDefinition, replaces: &HashMap<RegisterId, Operand>) {
+//     for block in code.blocks.values_mut() {
+//         // instructions
+//         for instr in block.instructions.iter_mut() {
+//             // let tmp = instr.deref_mut();
+//             match instr.deref_mut() {
+//                 Instruction::BinOp {
+//                     op,
+//                     lhs,
+//                     rhs,
+//                     dtype,
+//                 } => {
+//                     let _unused = replace_operands(lhs, replaces);
+//                     let _unused = replace_operands(rhs, replaces);
+//                 }
+//                 Instruction::Store { ptr, value } => {
+//                     let _unused = replace_operands(ptr, replaces);
+//                     let _unused = replace_operands(value, replaces);
+//                 }
+//                 Instruction::Call {
+//                     callee,
+//                     args,
+//                     return_type,
+//                 } => {
+//                     let _unused = replace_operands(callee, replaces);
+//                     for arg in args {
+//                         let _unused = replace_operands(arg, replaces);
+//                     }
+//                 }
+//                 // Instruction::
+//                 // 등등 모든 instruction variants 처리
+//                 _ => {}
+//             }
+//         }
 
-        match &mut block.exit {
-            BlockExit::Return { value } => {
-                let _unused = replace_operands(value, replaces);
-            }
-            BlockExit::ConditionalJump {
-                condition,
-                arg_then,
-                arg_else,
-            } => {
-                let _unused = replace_operands(condition, replaces);
-            }
-            _ => {}
-        }
-    }
-}
-
-
+//         match &mut block.exit {
+//             BlockExit::Return { value } => {
+//                 let _unused = replace_operands(value, replaces);
+//             }
+//             BlockExit::ConditionalJump {
+//                 condition,
+//                 arg_then,
+//                 arg_else,
+//             } => {
+//                 let _unused = replace_operands(condition, replaces);
+//             }
+//             _ => {}
+//         }
+//     }
+// }
 
 pub(crate) struct ClassNumGen {
     pub(crate) counter: u64,
