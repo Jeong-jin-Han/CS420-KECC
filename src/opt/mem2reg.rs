@@ -55,7 +55,7 @@ impl OperandVar {
         // todo!()
     }
 }
-
+#[derive(Debug)]
 struct JoinTable<'s> {
     inner: HashMap<(usize, BlockId), BlockId>,
     domtree: &'s Domtree,
@@ -139,6 +139,9 @@ impl Optimize<FunctionDefinition> for Mem2regInner {
                     Instruction::Value { value } => {
                         mark_inpromotable(&mut inpromotable, value); // maybe??
                     }
+                    Instruction::GetElementPtr { ptr, offset, dtype } => {
+                        mark_inpromotable(&mut inpromotable, ptr);
+                    }
                     _ => todo!(), // Instruction::GetElementPtr
                 }
             }
@@ -213,10 +216,18 @@ impl Optimize<FunctionDefinition> for Mem2regInner {
                         let (rid, _) = some_or!(ptr.get_register(), continue);
                         if let RegisterId::Local { aid } = rid {
                             if inpromotable.contains(aid) {
+                                println!("? | Store | continue | bid {:?}", bid);
                                 continue;
                             }
+                            println!("? | Store | bid {:?}", bid);
+
                             let _unused =
                                 end_values.insert((*aid, *bid), OperandVar::Operand(value.clone()));
+
+                            // 불필요한 phinode도 추가해주어야 함
+                            // 추가: store에서도 join block 후보에 phinode 추가
+                            let bid_join = join_table.lookup(*aid, *bid);
+                            let _ = phinode_indexes.insert((*aid, bid_join));
                         }
                     }
                     Instruction::Load { ptr } => {
@@ -225,7 +236,12 @@ impl Optimize<FunctionDefinition> for Mem2regInner {
                             if inpromotable.contains(aid) {
                                 continue;
                             }
-                            let bid_join = join_table.lookup(*aid, *bid);
+                            let bid_join = join_table.lookup(*aid, *bid); // 여기서 문제가 생기는 것 같음
+                            println!(
+                                "? | Load instruction | bid_join {:?} (aid, bid) {:?}",
+                                bid_join,
+                                (aid, bid)
+                            );
                             let end_value_join = end_values.get(&(*aid, bid_join)).cloned();
                             let var = end_values.entry((*aid, *bid)).or_insert_with(|| {
                                 end_value_join.unwrap_or_else(|| {
@@ -245,6 +261,15 @@ impl Optimize<FunctionDefinition> for Mem2regInner {
                 }
             }
         }
+        println!(
+            "GENERATE phinodes recursively | before| phinode_indexes {:?}",
+            phinode_indexes
+        );
+
+        println!(
+            "GENERATE phinodes recursively | before| join_table {:?}",
+            join_table
+        );
 
         // Generates phinodes recursively.
         let mut phinode_visited = phinode_indexes;
@@ -277,14 +302,17 @@ impl Optimize<FunctionDefinition> for Mem2regInner {
         // The phinode indexes for promoted allocations in each block
         let mut phinode_indexes = HashMap::<(usize, BlockId), usize>::new();
 
+        println!("INSERT phinodes | before {:?}", phinodes); // phinodes를 누락함 -> 왜 누락했을까?
         // Inserts phinodes.
         for ((aid, bid), (dtype, _)) in &phinodes {
             let name = code.allocations.get(*aid).unwrap().name();
             let block = code.blocks.get_mut(bid).unwrap();
             let index = block.phinodes.len();
+            println!("INSERT phinodes | before | {:?}", block.phinodes.clone());
             block
                 .phinodes
                 .push(Named::new(name.cloned(), dtype.clone()));
+            println!("INSERT phinodes | after | {:?}", block.phinodes.clone());
             let _unused = phinode_indexes.insert((*aid, *bid), index);
             println!("INSERT PHINODE {:?} → {:?}", (aid, bid), index);
         }
@@ -312,17 +340,18 @@ impl Optimize<FunctionDefinition> for Mem2regInner {
         //     true
         // });
 
+        // walk 는 정상
         let _unused = code.walk(|operand| {
             println!("WALK | operand {:?} ", operand.clone());
             let (rid, dtype) = some_or!(operand.get_register(), return false);
-            println!("WALK | (rid, dtype) {:?}", (rid, dtype));
-            // println!("WALK | replaces {:?}", replaces);
+            // // println!("WALK | (rid, dtype) {:?}", (rid, dtype));
+            // // println!("WALK | replaces {:?}", replaces);
             let tmp = replaces.get(rid);
             println!("WALK | tmp {:?}", tmp.clone());
             let operand_var = some_or!(tmp, return false);
-            println!("WALK | {:?} → {:?}", operand.clone(), operand_var.clone());
+            // // println!("WALK | {:?} → {:?}", operand.clone(), operand_var.clone());
             let tmp = operand_var.lookup(dtype, &phinode_indexes);
-            println!("WALK | lookup result: {:?}", tmp);
+            // // println!("WALK | lookup result: {:?}", tmp);
             *operand = tmp.clone();
             true
         });

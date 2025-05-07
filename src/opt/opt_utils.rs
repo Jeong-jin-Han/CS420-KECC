@@ -160,10 +160,11 @@ impl Walk for Operand {
     where
         F: FnMut(&mut Operand) -> bool,
     {
-        println!("WALK Operand: {:?}", self);
-        let tmp = f(self);
-        println!("Operand tmp: {:?}", tmp);
-        tmp
+        // println!("WALK Operand: {:?}", self);
+        // let tmp = f(self);
+        // println!("Operand tmp: {:?}", tmp);
+        // tmp
+        f(self)
     }
 }
 
@@ -263,7 +264,7 @@ fn traverse_postorder(bid_init: BlockId, cfg: &HashMap<BlockId, Vec<JumpArg>>) -
     post_order.traverse(bid_init);
     post_order.traversed
 }
-
+#[derive(Debug)]
 pub(crate) struct Domtree {
     pub(crate) idoms: HashMap<BlockId, BlockId>,
     pub(crate) frontiers: HashMap<BlockId, Vec<BlockId>>,
