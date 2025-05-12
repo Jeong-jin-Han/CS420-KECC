@@ -123,7 +123,14 @@ impl Optimize<FunctionDefinition> for Mem2regInner {
                             stores.entry(*aid).or_default().push(*bid);
                         }
                     }
-                    Instruction::Load { ptr } => {}
+                    Instruction::Load { ptr } => {
+                        //maybe
+                        // let (rid, _) = some_or!(ptr.get_register(), continue);
+                        // if let RegisterId::Local { aid } = rid {
+                        //     // load 만 있어도 DF 계산의 root 로 포함
+                        //     stores.entry(*aid).or_default().push(*bid);
+                        // }
+                    }
                     Instruction::Call { callee, args, .. } => {
                         mark_inpromotable(&mut inpromotable, callee);
                         for arg in args {
@@ -203,31 +210,55 @@ impl Optimize<FunctionDefinition> for Mem2regInner {
 
         // Phinodes to be inserted. If '(aid, bid)' is in this set, then a phinod for 'aid' should
         // be inserted at the beginning of 'bid'
-        let mut phinode_indexes = HashSet::<(usize, BlockId)>::new();
+        // let mut phinode_indexes = HashSet::<(usize, BlockId)>::new();
 
         // The values stored in local allocations at the end of each block. If '(aid, bid) |-> x',
         // Then the value stored in 'aid' at the end of 'bid' is 'X'.
         let mut end_values = HashMap::<(usize, BlockId), OperandVar>::new();
 
+        // ① HashSet 에 (aid, bid_df) 쌍 전체를 먼저 넣는다
+        let mut phinode_indexes: HashSet<(usize, BlockId)> = flatten_joins.clone();
+
+        // ② (선택) end_values 도 미리 Φ 자리표시자로 깔아두면 이후 로직이 깔끔
+        for (aid, bid_df) in &flatten_joins {
+            let _unusd = end_values
+                .entry((*aid, *bid_df))
+                .or_insert_with(|| OperandVar::Phi((*aid, *bid_df)));
+        }
+
         for (bid, block) in &code.blocks {
             for (i, instr) in block.instructions.iter().enumerate() {
                 match instr.deref() {
                     Instruction::Store { ptr, value } => {
+                        // Store에서만 end_values.insert를 관리함
                         let (rid, _) = some_or!(ptr.get_register(), continue);
                         if let RegisterId::Local { aid } = rid {
                             if inpromotable.contains(aid) {
-                                println!("? | Store | continue | bid {:?}", bid);
+                                println!("? | Store | continue | bid {:?}, aid {:?}", bid, aid);
                                 continue;
                             }
-                            println!("? | Store | bid {:?}", bid);
 
-                            let _unused =
-                                end_values.insert((*aid, *bid), OperandVar::Operand(value.clone()));
+                            // let _unused =
+                            //     end_values.insert((*aid, *bid), OperandVar::Operand(value.clone())); // maybe?
+                            let canon = if let Some((reg_id, _)) = value.get_register() {
+                                // 로드-결과 등 이미 치환된 레지스터면 그 치환값 사용
+                                replaces
+                                    .get(reg_id)
+                                    .cloned()
+                                    .unwrap_or_else(|| OperandVar::Operand(value.clone()))
+                            } else {
+                                OperandVar::Operand(value.clone())
+                            };
+                            println!(
+                                "? | Store | bid {:?}, aid {:?}, canon {:?}",
+                                bid, aid, canon
+                            );
+                            let _unused = end_values.insert((*aid, *bid), canon);
 
                             // 불필요한 phinode도 추가해주어야 함
                             // 추가: store에서도 join block 후보에 phinode 추가
                             let bid_join = join_table.lookup(*aid, *bid);
-                            let _ = phinode_indexes.insert((*aid, bid_join));
+                            let _ = phinode_indexes.insert((*aid, bid_join)); // 여기서 문제 단순히 insert해주면 안된다??
                         }
                     }
                     Instruction::Load { ptr } => {
@@ -236,19 +267,51 @@ impl Optimize<FunctionDefinition> for Mem2regInner {
                             if inpromotable.contains(aid) {
                                 continue;
                             }
-                            let bid_join = join_table.lookup(*aid, *bid); // 여기서 문제가 생기는 것 같음
-                            println!(
-                                "? | Load instruction | bid_join {:?} (aid, bid) {:?}",
-                                bid_join,
-                                (aid, bid)
-                            );
-                            let end_value_join = end_values.get(&(*aid, bid_join)).cloned();
+
+                            // let bid_join = join_table.lookup(*aid, *bid); // 여기서 문제가 생기는 것 같음
+                            // println!(
+                            //     "? | Load instruction | bid_join {:?} (aid, bid) {:?}",
+                            //     bid_join,
+                            //     (aid, bid)
+                            // );
+
+                            // println!("before INSERT replace | end_values {:?}", end_values);
+                            // let end_value_join = end_values.get(&(*aid, bid_join)).cloned();
+                            // println!(
+                            //     "before INSERT replace | end value_join {:?} | (aid, bid) {:?}",
+                            //     end_value_join,
+                            //     (*aid, bid_join)
+                            // );
+                            // let var = end_values.entry((*aid, *bid)).or_insert_with(|| {
+                            //     end_value_join.unwrap_or_else(|| {
+                            //         let _unused = phinode_indexes.insert((*aid, bid_join));
+                            //         println!(
+                            //             "before INSERT replace | INSERT phinode_indexes {:?}",
+                            //             (*aid, bid_join)
+                            //         );
+                            //         OperandVar::Phi((*aid, bid_join))
+                            //     })
+                            // });
+
+                            // ★ PATCH: recursion 에서 쓰던 find_end_value 로 똑같이 처리
+                            let bid_join = join_table.lookup(*aid, *bid);
+                            // 조인 지점(bid_join)까지 올라가서 가장 최근 end_value 찾기
+                            let end_val =
+                                find_end_value(*aid, *bid, bid_join, &end_values, &domtree.idoms)
+                                    .cloned();
+
+                            // 이 block에서 쓸 var: 이미 값이 있으면 그대로, 없으면
+                            //  - end_val(Some)이면 그 값,
+                            //  - 없으면 Φ 후보 푸쉬
                             let var = end_values.entry((*aid, *bid)).or_insert_with(|| {
-                                end_value_join.unwrap_or_else(|| {
+                                if let Some(v) = end_val {
+                                    v
+                                } else {
                                     let _unused = phinode_indexes.insert((*aid, bid_join));
                                     OperandVar::Phi((*aid, bid_join))
-                                })
+                                }
                             });
+
                             let register_id = RegisterId::temp(*bid, i);
                             let operand_var = var.clone();
                             let result = replaces.insert(register_id, operand_var.clone());
@@ -271,25 +334,88 @@ impl Optimize<FunctionDefinition> for Mem2regInner {
             join_table
         );
 
+        println!(
+            "GENERATE phinodes recursively | before| end_values {:?}",
+            end_values
+        );
+
+        println!(
+            "GENERATE phinodes recursively | before| replaces {:?}",
+            replaces
+        );
+
         // Generates phinodes recursively.
         let mut phinode_visited = phinode_indexes;
         let mut phinode_stack = phinode_visited.iter().cloned().collect::<Vec<_>>();
         let mut phinodes =
             BTreeMap::<(usize, BlockId), (Dtype, HashMap<BlockId, OperandVar>)>::new();
+
+        // // 2️⃣  동시에 end_values 에 Φ 자리표시자 깔아두면 이후 로직이 일관
+        // for (aid, bid_df) in &flatten_joins {
+        //     let _unused = end_values
+        //         .entry((*aid, *bid_df))
+        //         .or_insert_with(|| OperandVar::Phi((*aid, *bid_df)));
+        // }
+
         while let Some((aid, bid)) = phinode_stack.pop() {
             let mut cases = HashMap::new();
             let prevs = some_or!(reverse_cfg.get(&bid), continue);
             for (bid_prev, _) in prevs {
+                /*
+                bid_prev -> bid
+                지금 현재 문제:
+                bid_prev_join 으로 bid_prev에서의 join point의 bid
+                end_value_prev_join: 해당 bid에서의 phinode or 기존에 지정된 end value
+
+                (aid, bid_prev)에 해당하는 end_value가 없으면
+                join point에서의 phinode 값으로 생각함
+
+                문제는 그 중간에 store가 존재하게 되면 phinode가 아닌 해당 값으로 end value를 지정해주어야함.
+
+                idom으로 계속 타고 올라감
+                bid_prev -> ... -> bid_prev_join 까지
+                bid_prev_join될 때 이 때 phinode를 넣어주는 것
+                그 이전에는 그 값을 동일하게 적용해주는 로직으로
+
+                */
+                // let bid_prev_join = join_table.lookup(aid, bid_prev);
+                // let end_value_prev_join = end_values.get(&(aid, bid_prev_join)).cloned();
+
+                // let var = end_values.entry((aid, bid_prev)).or_insert_with(|| {
+                //     end_value_prev_join.clone().unwrap_or_else(|| {
+                //         if phinode_visited.insert((aid, bid_prev_join)) {
+                //             phinode_stack.push((aid, bid_prev_join));
+                //         }
+                //         OperandVar::Phi((aid, bid_prev_join))
+                //     })
+                // });
+
                 let bid_prev_join = join_table.lookup(aid, bid_prev);
-                let end_value_prev_join = end_values.get(&(aid, bid_prev_join)).cloned();
+
+                let end_values_clone = end_values.clone();
+
+                let end_value_prev = find_end_value(
+                    aid,
+                    bid_prev,
+                    bid_prev_join,
+                    &end_values_clone,
+                    &domtree.idoms,
+                );
+
                 let var = end_values.entry((aid, bid_prev)).or_insert_with(|| {
-                    end_value_prev_join.unwrap_or_else(|| {
+                    end_value_prev.cloned().unwrap_or_else(|| {
                         if phinode_visited.insert((aid, bid_prev_join)) {
                             phinode_stack.push((aid, bid_prev_join));
                         }
                         OperandVar::Phi((aid, bid_prev_join))
                     })
                 });
+
+                println!(
+                    "GENERATE phinodes recursively | (aid, bid_prev, bid_prev_join, end_value_prev, var) {:#?}",
+                    (aid, bid_prev, bid_prev_join, end_value_prev, var.clone())
+                ); // 여기서 문제가 생길지도?? -> join_table.lookup에서
+
                 let _unused = cases.insert(bid_prev, var.clone());
             }
 
@@ -323,6 +449,10 @@ impl Optimize<FunctionDefinition> for Mem2regInner {
             for (bid_prev, operand_prev) in phinode {
                 let block_prev = code.blocks.get_mut(bid_prev).unwrap();
                 let operand_prev = operand_prev.lookup(dtype, &phinode_indexes);
+                println!(
+                    "INSERT phinode argument | bid {:?} |operand_prev {:?}",
+                    bid, operand_prev
+                );
                 block_prev.exit.walk_jump_args(|arg| {
                     if &arg.bid == bid {
                         assert_eq!(arg.args.len(), index);
@@ -383,4 +513,23 @@ impl Optimize<FunctionDefinition> for Mem2regInner {
         true
         // todo!()
     }
+}
+
+fn find_end_value<'a>(
+    aid: usize,
+    mut bid: BlockId,
+    join_limit: BlockId,
+    end_values: &'a HashMap<(usize, BlockId), OperandVar>,
+    idoms: &HashMap<BlockId, BlockId>,
+) -> Option<&'a OperandVar> {
+    loop {
+        if let Some(val) = end_values.get(&(aid, bid)) {
+            return Some(val);
+        }
+        if bid == join_limit {
+            break;
+        }
+        bid = *idoms.get(&bid)?; // None이면 도중에 중단
+    }
+    None
 }
