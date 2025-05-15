@@ -7,16 +7,59 @@ use lang_c::ast;
 use crate::ir::*;
 use crate::opt::opt_utils::*;
 use crate::opt::*;
-
+use std::collections::BTreeMap;
 pub type Gvn = FunctionPass<GvnInner>;
 
 #[derive(Default, Clone, Copy, Debug)]
 pub struct GvnInner {}
-/*
-같은 함수 내에서 -> GVN
 
-동일한 class numbering
-*/
+macro_rules! some_or {
+    ($option:expr, $fallback:expr) => {
+        match $option {
+            Some(val) => val.clone(),
+            None => $fallback,
+        }
+    };
+}
+
+// SSA 레지스터나 계산된 값
+type ClassNum = u64;
+
+struct GvnContext {
+    rt: HashMap<Operand, ClassNum>, // SSA 레지스터 → classnum
+    et: HashMap<ExprV, ClassNum>,   // 표현식 → classnum
+    class_gen: ClassNumGen,
+    lt_map: HashMap<BlockId, HashMap<ClassNum, OperandVar>>, // leader table
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum OperandVar {
+    Operand(Operand),
+    Phi((ClassNum, BlockId)),
+}
+
+impl OperandVar {
+    pub(crate) fn lookup(
+        &self,
+        dtype: &Dtype,
+        phinode_indexes: &HashMap<(ClassNum, BlockId), usize>,
+    ) -> Operand {
+        println!("=== OperandVar lookup ===");
+        println!("phinode_indexes keys: {:?}", phinode_indexes.keys());
+        match self {
+            OperandVar::Operand(o) => o.clone(),
+            OperandVar::Phi(var) => {
+                println!("LOOKUP PHI {:?} → {:?}", var, phinode_indexes.get(var));
+                if let Some(index) = phinode_indexes.get(var) {
+                    Operand::register(RegisterId::arg(var.1, *index), dtype.clone())
+                } else {
+                    Operand::constant(Constant::undef(dtype.clone()))
+                }
+            }
+        }
+        // todo!()
+    }
+}
 
 impl Optimize<FunctionDefinition> for GvnInner {
     fn optimize(&mut self, code: &mut FunctionDefinition) -> bool {
@@ -25,31 +68,35 @@ impl Optimize<FunctionDefinition> for GvnInner {
         ET : Expr<num> -> num
         LT : (Line, Num) -> Operand
         */
-        let mut class_gen = ClassNumGen::new();
-
-        let graph = make_cfg(code);
-        let mut postorder = PostOrder {
-            visited: HashSet::new(),
-            cfg: &graph,
-            traversed: vec![],
+        let mut ctx = GvnContext {
+            rt: HashMap::new(),
+            et: HashMap::new(),
+            class_gen: ClassNumGen::new(),
+            lt_map: HashMap::new(),
         };
-        postorder.traverse(code.bid_init);
-        let mut rpo = postorder.traversed;
-        rpo.reverse();
-        let mut rt: HashMap<RegisterId, u64> = HashMap::new();
-        let mut ct: HashMap<Constant, u64> = HashMap::new();
-        let mut et: HashMap<ExprV, u64> = HashMap::new();
-        let mut lt: HashMap<(RegisterId, u64), Operand> = HashMap::new();
-        for bid in &rpo {
-            let bid_block = code.blocks.get(bid).unwrap();
-            // println!("bid_from {:#?}", bid_from);
-            // Operand -> const, reg
 
-            // println!("bid_from {} {:#?}", bid, bid_block.instructions.deref());
+        let mut changed = false;
 
-            for (i, instr) in bid_block.instructions.clone().into_iter().enumerate() {
-                // println!("bid_from {} {:#?}", bid, instr.name());
+        // Draws CFG, reverse CFG and dominator trree.
+        let cfg = make_cfg(code);
+        let reverse_cfg = reverse_cfg(&cfg);
+        let domtree = Domtree::new(code.bid_init, &cfg, &reverse_cfg);
+        println!("cfg {:?}", cfg);
+        println!("reverse_cfg {:?}", reverse_cfg);
 
+        for bid in &domtree.reverse_post_order {
+            // 1. LT@B_init = LT@idom(B)_final
+            let inherited_lt = domtree
+                .idom(*bid)
+                .and_then(|idom| ctx.lt_map.get(&idom))
+                .cloned()
+                .unwrap_or_default();
+
+            let mut current_lt = inherited_lt;
+            println!("bid {:?} | current LT {:?}", bid, current_lt);
+            // 2. 각 명령어 처리
+            for (instr_idx, instr) in code.blocks[bid].instructions.iter().enumerate() {
+                println!();
                 match instr.deref() {
                     Instruction::BinOp {
                         op,
@@ -57,203 +104,294 @@ impl Optimize<FunctionDefinition> for GvnInner {
                         rhs,
                         dtype,
                     } => {
-                        let rid = RegisterId::temp(*bid, i);
-                        let cn_lhs = operand_to_classnum(lhs, &mut class_gen, &mut rt, &mut ct);
-                        let cn_rhs = operand_to_classnum(rhs, &mut class_gen, &mut rt, &mut ct);
-                        let exprv = ExprV::BinOp {
+                        let lhs = operand_to_class(lhs, &mut ctx);
+                        let rhs = operand_to_class(rhs, &mut ctx);
+
+                        let expr = ExprV::BinOp {
                             op: op.clone(),
-                            lhs: cn_lhs,
-                            rhs: cn_rhs,
+                            lhs,
+                            rhs,
                             dtype: dtype.clone(),
                         };
-                        /*
-                        expr -> cn // 기존에 존재하는지 아니면 새로 할당해야하는지
-                        rid -> cn
-                        */
-                        let cn_exprv = exprv_to_classnum(&exprv, &mut class_gen, &mut et);
-                        println!("instr: {:?}\n cn_exprv {} \n\n", instr, cn_exprv);
 
-                        let _unused = rt.insert(rid, cn_exprv);
+                        let classnum = *ctx.et.entry(expr.clone()).or_insert_with(|| {
+                            println!("ET new {:?} | ", expr.clone());
+                            ctx.class_gen.fresh()
+                        });
+                        println!(
+                            "bid : {:?} | classnum : {:?} | instr : {:?} ",
+                            bid, instr, classnum
+                        );
 
+                        let rid = RegisterId::temp(*bid, instr_idx);
                         let operand = Operand::Register {
                             rid,
                             dtype: dtype.clone(),
                         };
+                        let _unused = ctx.rt.insert(operand.clone(), classnum);
 
-                        // let _unused = lt.insert((rid, cn_exprv), operand);
-                        insert_elt_to_lt(rid, cn_exprv, operand, &mut lt);
-                        /*
-                        이 rid에 대해서 cn_exprv를 하는 것과 동시에
+                        let operandvar = OperandVar::Operand(operand.clone()); // maybe??
 
-                        exprv_to_classnum하는 과정 속에서 exprv를 insert하는 순간에
-                        lt 도 insert을 수행해야 한다.
-                        rid, cnexprv -> operand를 제작하기
-
-                        그런데 무엇보다도
-                        */
-
-                        // println!("binary")
+                        // LT에 리더 없으면 등록
+                        let _unused = current_lt.entry(classnum).or_insert_with(|| {
+                            println!("LT new | classnum : {:?}", classnum); // 존재할 때는 실행 안 됨!
+                            operandvar
+                        });
                     }
-                    Instruction::Store { ptr, value } => {
-                        let cn_value = operand_to_classnum(value, &mut class_gen, &mut rt, &mut ct);
-                        allocate_rid_to_classnum(ptr, cn_value, &mut rt);
-                        let cn_ptr = operand_to_classnum(ptr, &mut class_gen, &mut rt, &mut ct);
+                    Instruction::GetElementPtr { ptr, offset, dtype } => {
+                        let ptr = operand_to_class(ptr, &mut ctx);
+                        let offset = operand_to_class(offset, &mut ctx);
+
+                        let expr = ExprV::GetElementPtr {
+                            ptr,
+                            offset,
+                            dtype: dtype.clone(),
+                        };
+                        let classnum = *ctx.et.entry(expr.clone()).or_insert_with(|| {
+                            println!("ET new {:?} | ", expr.clone());
+                            ctx.class_gen.fresh()
+                        });
+                        println!(
+                            "bid : {:?} | classnum : {:?} | instr : {:?} ",
+                            bid, instr, classnum
+                        );
+
+                        let rid = RegisterId::temp(*bid, instr_idx);
+                        let operand = Operand::Register {
+                            rid,
+                            dtype: dtype.clone(),
+                        };
+                        let _unused = ctx.rt.insert(operand.clone(), classnum);
+
+                        let operandvar = OperandVar::Operand(operand.clone()); // maybe??
+
+                        // LT에 리더 없으면 등록
+                        let _unused = current_lt.entry(classnum).or_insert_with(|| {
+                            println!("LT new | classnum : {:?}", classnum); // 존재할 때는 실행 안 됨!
+                            operandvar
+                        });
                     }
                     Instruction::Load { ptr } => {
-                        /* lt에 할당하기 */
-                        let cn_ptr = operand_to_classnum(ptr, &mut class_gen, &mut rt, &mut ct);
-                        let rid = RegisterId::temp(*bid, i);
-                        let operand = Operand::Register {
-                            rid,
-                            dtype: ptr.dtype().get_pointer_inner().unwrap().clone(),
+                        let dtype = ptr.dtype();
+                        let ptr = operand_to_class(ptr, &mut ctx);
+                        let expr = ExprV::Load { ptr };
+                        let classnum = *ctx.et.entry(expr.clone()).or_insert_with(|| {
+                            println!("ET new {:?} | ", expr.clone());
+                            ctx.class_gen.fresh()
+                        });
+                        println!(
+                            "bid : {:?} | classnum : {:?} | instr : {:?} ",
+                            bid, instr, classnum
+                        );
+
+                        let rid = RegisterId::temp(*bid, instr_idx);
+                        let operand = Operand::Register { rid, dtype };
+                        let _unused = ctx.rt.insert(operand.clone(), classnum);
+
+                        let operandvar = OperandVar::Operand(operand.clone()); // maybe??
+
+                        // LT에 리더 없으면 등록
+                        let _unused = current_lt.entry(classnum).or_insert_with(|| {
+                            println!("LT new | classnum : {:?}", classnum); // 존재할 때는 실행 안 됨!
+                            operandvar
+                        });
+                    }
+                    Instruction::Call {
+                        callee,
+                        args,
+                        return_type,
+                    } => {
+                        let callee = operand_to_class(callee, &mut ctx);
+                        let args = args
+                            .iter()
+                            .map(|arg| operand_to_class(arg, &mut ctx))
+                            .collect::<Vec<_>>();
+                        let expr = ExprV::Call {
+                            callee,
+                            args,
+                            return_type: return_type.clone(),
                         };
 
-                        println!("instr: {:?}\n rid {} cn_ptr {} \n\n", instr, rid, cn_ptr);
-                        let _unused = rt.insert(rid, cn_ptr);
-                        // let _unused = lt.insert((rid, cn_ptr), operand); // LT
-                        // insert_elt_to_lt(rid, cn_ptr, operand, &mut lt);
+                        let classnum = *ctx.et.entry(expr.clone()).or_insert_with(|| {
+                            println!("ET new {:?} | ", expr.clone());
+                            ctx.class_gen.fresh()
+                        });
+                        println!(
+                            "bid : {:?} | classnum : {:?} | instr : {:?} ",
+                            bid, instr, classnum
+                        );
+
+                        let rid = RegisterId::temp(*bid, instr_idx);
+                        let operand = Operand::Register {
+                            rid,
+                            dtype: return_type.clone(),
+                        };
+                        let _unused = ctx.rt.insert(operand.clone(), classnum);
+
+                        let operandvar = OperandVar::Operand(operand.clone()); // maybe??
+
+                        // LT에 리더 없으면 등록
+                        let _unused = current_lt.entry(classnum).or_insert_with(|| {
+                            println!("LT new | classnum : {:?}", classnum); // 존재할 때는 실행 안 됨!
+                            operandvar
+                        });
                     }
-                    _ => {}
+
+                    _ => {} // 다른 명령어는 추후 확장
                 }
+                println!();
             }
-        }
-        println!("optimize |\n rt {:#?}\n\n", rt.clone());
-        println!("optimize |\n rt {}\n", rt.len());
-        println!("optimize |class_gen.counter {}", class_gen.counter);
 
-        println!("optimize |\n et {:#?}\n\n", et.clone());
-        println!("optimize |\n lt {:#?}\n\n", lt.clone());
-        println!("optimize |\n lt {}\n", lt.len());
+            let _unused = ctx.lt_map.insert(*bid, current_lt);
 
-        let replaces = make_replaces_from_lt(&lt);
-        println!("optimize | replaces {:?}\n\n", replaces);
-        if replaces.is_empty() {
-            return false;
+            /*
+
+            아래 코드는 mem2reg에서 사용한 join 구현
+            내가 하고 싶은 것은 ctx.rt 를 이용, DF 이용
+
+            DF의 교집합에서 해당 classnum, bid <- 중복되어서 들어오는 clas
+            */
+
+            /*
+            phinodes를 어떻게 넣어주어야 할 것인가?
+            Leader table management만 작성하면 됨
+            */
+
+            // make phinode_indexes based on classnumber existing in the pred LT
+
+            /* inertion phinodes (replacement) */
+            // (1) phinode_indexes (ClassNum, BlockId) -> argument는
+
+            let mut phinodes = BTreeMap::<ClassNum, (Dtype, HashMap<BlockId, OperandVar>)>::new();
+            // (2) LT phinode insert
+
+            /* insertion declaration, arguments*/
+            // (1) phinode_indexes
+
+            // The phinode indexes for same classnum allocations in each block
+            let phinode_indexes = HashMap::<(ClassNum, BlockId), usize>::new();
+
+            // (2) insert phinode declaration
+            for ((cn), (dtype, _)) in &phinodes {
+                // let name = code.allocations.get(*aid).unwrap().name();
+                // let block = code.blocks.get_mut(bid).unwrap();
+                // let index = block.phinodes.len();
+                // println!("INSERT phinodes | before | {:?}", block.phinodes.clone());
+                // block
+                //     .phinodes
+                //     .push(Named::new(name.cloned(), dtype.clone()));
+                // println!("INSERT phinodes | after | {:?}", block.phinodes.clone());
+                // let _unused = phinode_indexes.insert((*aid, *bid), index);
+                // println!("INSERT PHINODE {:?} → {:?}", (aid, bid), index);
+            }
+
+            // (3) insert phinode arguments
+
+            let replaces = make_replaces_from_lt(&ctx, &phinode_indexes);
+
+            changed |= code.walk(|op| {
+                if let Some(replacement) = replaces.get(op) {
+                    // println!("REPLACES | op : {:?} -> replacement : {:?}", op.clone(), replacement.clone());
+                    *op = replacement.clone();
+                    return true;
+                }
+                false
+            });
+
+            println!("========== bid | {} ==========", bid);
+            println!("REPLACES | {:?}", replaces);
+            println!("RT | {:?}", ctx.rt);
+            println!("ET | {:?}", ctx.et);
+            println!("LT | {:?}", ctx.lt_map);
+            println!("===============================");
         }
-        walk(code, &replaces);
-        true
-        // todo!()
+
+        // changed를 규합해야 하는 로직
+        changed
     }
 }
 
-/*
-rid에서 없다고 해도 같은 classnum일 수 있는데 이 문제를 어떻게 해결할까?
-일단 rid와 연관된 classnum을 찾고
-
-그리고 rid에 할당해주기, 바로 freshnum으로 해주면 안된다.
-*/
-fn operand_to_classnum(
-    operand: &Operand,
-    class_gen: &mut ClassNumGen,
-    rt: &mut HashMap<RegisterId, u64>,
-    ct: &mut HashMap<Constant, u64>,
-) -> u64 {
+fn operand_to_class(operand: &Operand, ctx: &mut GvnContext) -> ClassNumOrConst {
     match operand {
-        Operand::Register { rid, dtype } => {
-            // rid -> class num
-            rt.get(rid)
-                .copied()
-                .expect("Use-before-def: Register classnum not found in RT")
+        Operand::Register { .. } => {
+            let classnum = ctx
+                .rt
+                .entry(operand.clone())
+                .or_insert_with(|| ctx.class_gen.fresh());
+            ClassNumOrConst::ClassNum(*classnum)
         }
         Operand::Constant(c) => {
-            // constant -> class num
-            if let Some(class_num) = ct.get(c) {
-                *class_num
-            } else {
-                let fresh_num = class_gen.fresh();
-                let _unused = ct.insert(c.clone(), fresh_num);
-                fresh_num
-            }
+            ClassNumOrConst::Const(c.clone()) // 상수는 그대로
         }
     }
 }
 
-fn exprv_to_classnum(
-    exprv: &ExprV,
-    class_gen: &mut ClassNumGen,
-    et: &mut HashMap<ExprV, u64>,
-) -> u64 {
-    if let Some(cn) = et.get(exprv) {
-        *cn
-    } else {
-        let fresh_num = class_gen.fresh();
-        let _unsed = et.insert(exprv.clone(), fresh_num);
-        fresh_num
-    }
-    // todo!()
-}
-
-/*
-rid 미리 할당하기
-SSA <- register 이름을 한 번만 사용하기 때문에
-*/
-fn allocate_rid_to_classnum(operand: &Operand, classnum: u64, rt: &mut HashMap<RegisterId, u64>) {
-    match operand {
-        Operand::Register { rid, dtype } => {
-            if let Some(cn) = rt.get(rid) {
-                println!("is it possible case???");
-            } else {
-                let _unused = rt.insert(*rid, classnum);
-            }
-        }
-        _ => {
-            todo!()
-        }
-    }
-}
-
-fn insert_elt_to_lt(
-    rid: RegisterId,
-    classnum: u64,
-    operand: Operand,
-    lt: &mut HashMap<(RegisterId, u64), Operand>,
-) {
-    // 먼저: 기존 LT에 같은 classnum을 가진 entry가 있는지 확인
-    if let Some((_, existing_operand)) = lt.iter().find(|((_existing_rid, cn), _)| *cn == classnum)
-    {
-        // 이미 리더가 있으니 그 리더를 사용해서 insert
-        let _unused = lt.insert((rid, classnum), existing_operand.clone());
-    } else {
-        // 없다면 현재 operand를 리더로 등록
-        let _unused = lt.insert((rid, classnum), operand);
-    }
-}
-
-fn make_replaces_from_lt(lt: &HashMap<(RegisterId, u64), Operand>) -> HashMap<RegisterId, Operand> {
+fn make_replaces_from_lt(
+    ctx: &GvnContext,
+    phinode_indexes: &HashMap<(ClassNum, BlockId), usize>,
+) -> HashMap<Operand, Operand> {
+    let rt = &ctx.rt;
+    let lt_map = &ctx.lt_map;
     let mut replaces = HashMap::new();
 
-    for ((rid, _cn), operand) in lt.iter() {
-        // 이미 rid가 있으면 skip (선행 리더 유지)
-        let _unused = replaces.entry(*rid).or_insert(operand.clone());
+    for (bid, lt_block) in lt_map {
+        for (classnum, operandvar) in lt_block {
+            let old_operands = find_all_keys_by_value_in_block(rt, *bid, &classnum);
+            for old_operand in old_operands {
+                let _unused = replaces.entry(old_operand.clone()).or_insert_with(|| {
+                    operandvar.lookup(
+                        &old_operand.dtype(), // 실제 dtype 필요시 LT 저장 구조 확장 가능
+                        phinode_indexes,
+                    )
+                });
+            }
+        }
     }
 
     replaces
 }
 
-/*
-RT : register numbering
-ET : Expr((reg, const) or (reg, reg) or (const, const)) -> combine numbering, generate new numberinng
-and when we compare we need to compare the Expr(op, u64, u64) <- also we consider about the order
-
-CT : constant numbering
-
-constant에 대해서도 numbering??
-*/
-
-impl GvnInner {
-    // fn local_block_optimize(&mut self, &Block)
+fn find_all_keys_by_value_in_block(
+    rt: &HashMap<Operand, ClassNum>,
+    bid: BlockId,
+    classnum: &ClassNum,
+) -> Vec<Operand> {
+    rt.iter()
+        .filter_map(|(op, cn)| match op {
+            Operand::Register {
+                rid: RegisterId::Temp { bid: obid, .. },
+                ..
+            } if cn == classnum && *obid == bid => Some(op.clone()),
+            _ => None,
+        })
+        .collect()
 }
+
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+enum ClassNumOrConst {
+    ClassNum(u64),
+    Const(Constant),
+}
+
 #[derive(Eq, Hash, PartialEq, Clone, Debug)]
-pub(crate) enum ExprV {
+enum ExprV {
     BinOp {
         op: ast::BinaryOperator,
-        lhs: u64,
-        rhs: u64,
+        lhs: ClassNumOrConst,
+        rhs: ClassNumOrConst,
         dtype: Dtype,
     },
-    UnaryOp {
-        op: ast::UnaryOperator,
-        operand: u64,
+    GetElementPtr {
+        ptr: ClassNumOrConst,
+        offset: ClassNumOrConst,
         dtype: Dtype,
+    },
+    Load {
+        ptr: ClassNumOrConst,
+    }, // UnaryOp 등 추가 가능
+    Call {
+        callee: ClassNumOrConst,
+        args: Vec<ClassNumOrConst>,
+        return_type: Dtype,
     },
 }
