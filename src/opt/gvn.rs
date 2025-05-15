@@ -227,7 +227,7 @@ impl Optimize<FunctionDefinition> for GvnInner {
                         let callee = operand_to_class(callee, &mut ctx);
                         let args = args
                             .iter()
-                            .map(|arg| operand_to_class(arg, &mut ctx))
+                            .map(|arg| operand_to_class_call(arg, &mut ctx))
                             .collect::<Vec<_>>();
 
                         let expr = ExprV::Call {
@@ -472,9 +472,14 @@ impl Optimize<FunctionDefinition> for GvnInner {
     }
 }
 
-fn operand_to_class(operand: &Operand, ctx: &mut GvnContext) -> ClassNumOrConst {
+fn operand_to_class_call(operand: &Operand, ctx: &mut GvnContext) -> ClassNumOrConst {
     match operand {
         Operand::Register { dtype, .. } => {
+            println!(
+                "dtype ptr: {:?}, dtype cosnt: {:?}",
+                dtype.get_pointer_inner(),
+                dtype.is_const()
+            );
             if dtype.get_pointer_inner().is_some() {
                 // 포인터는 alias 분석 없으므로 보수적으로 매번 fresh
                 ClassNumOrConst::ClassNum(ctx.class_gen.fresh())
@@ -485,6 +490,19 @@ fn operand_to_class(operand: &Operand, ctx: &mut GvnContext) -> ClassNumOrConst 
                     .or_insert_with(|| ctx.class_gen.fresh());
                 ClassNumOrConst::ClassNum(*classnum)
             }
+        }
+        Operand::Constant(c) => ClassNumOrConst::Const(c.clone()),
+    }
+}
+
+fn operand_to_class(operand: &Operand, ctx: &mut GvnContext) -> ClassNumOrConst {
+    match operand {
+        Operand::Register { dtype, .. } => {
+            let classnum = ctx
+                .rt
+                .entry(operand.clone())
+                .or_insert_with(|| ctx.class_gen.fresh());
+            ClassNumOrConst::ClassNum(*classnum)
         }
         Operand::Constant(c) => ClassNumOrConst::Const(c.clone()),
     }
