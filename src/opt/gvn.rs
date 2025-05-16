@@ -112,7 +112,10 @@ impl Optimize<FunctionDefinition> for GvnInner {
                 .cloned()
                 .unwrap_or_default();
 
-            let mut current_lt = inherited_lt;
+            // let current_lt = ctx.lt_map.get_mut(bid).unwrap();
+            let current_lt = ctx.lt_map.entry(*bid).or_default();
+            let mut current_lt = std::mem::take(current_lt);
+            current_lt.extend(inherited_lt);
 
             /* phinode에 대한 classnum을 미리 설정해주기 */
             let prevs = reverse_cfg.get(bid).cloned().unwrap_or(vec![]);
@@ -171,6 +174,7 @@ impl Optimize<FunctionDefinition> for GvnInner {
             let phinode_len = block.phinodes.len();
 
             let mut mem2reg_cns: HashSet<ClassNum> = HashSet::new();
+            let mut all_same_const = true;
 
             for aid in 0..phinode_len {
                 let phi_rid = RegisterId::arg(*bid, aid);
@@ -190,6 +194,9 @@ impl Optimize<FunctionDefinition> for GvnInner {
                                 cn_list.push(*classnum);
                                 let _unused = mem2reg_cns.insert(*classnum);
                                 arg_operand = arg_op.clone();
+                                if let Operand::Register { .. } = arg_op {
+                                    all_same_const = false
+                                }
                             } else {
                                 println!("Missing classnum for operand {:?}", arg_op);
                             }
@@ -202,13 +209,16 @@ impl Optimize<FunctionDefinition> for GvnInner {
                     if cn_list.iter().all(|cn| cn == first_cn) && cn_list.len() > 1 {
                         let phi_op = Operand::register(phi_rid, dtype.clone());
                         let _unused = ctx.rt.insert(phi_op.clone(), *first_cn);
-                        let phi_op_var = OperandVar::Operand(phi_op.clone());
+                        let mut phi_op_var = OperandVar::Operand(phi_op.clone());
+                        if all_same_const {
+                            phi_op_var = OperandVar::Operand(arg_operand.clone());
+                        }
                         let _unused = current_lt.insert(*first_cn, phi_op_var);
                         println!(
                             "Assigning PHI result {:?} to classnum {:?} (from args)",
                             phi_op, first_cn
                         );
-                        println!("cn list {:?}", cn_list)
+                        println!("cn list {:?} all_same_const {:?}", cn_list, all_same_const);
                     } else {
                         mem2reg_cns = HashSet::new();
                     }
@@ -481,7 +491,10 @@ impl Optimize<FunctionDefinition> for GvnInner {
                         });
                 }
                 BlockExit::Jump { arg } => arg.args.iter().for_each(|op| {
-                    let _unused = operand_to_class_jump(op, &mut ctx);
+                    let operandvar = OperandVar::Operand(op.clone());
+                    let cn = operand_to_class_jump(op, &mut ctx);
+                    let jmpbid = ctx.lt_map.entry(arg.bid).or_default();
+                    let _unused = jmpbid.insert(cn, operandvar);
                 }),
                 BlockExit::Return { value } => {
                     let _unused = operand_to_class_jump(value, &mut ctx);
@@ -590,13 +603,15 @@ impl Optimize<FunctionDefinition> for GvnInner {
                     }
 
                     /* new phinode 삽입하기 */
-                    let current_lt = ctx.lt_map.get_mut(bid).unwrap();
+                    let current_lt = ctx.lt_map.entry(*bid).or_default();
+                    let mut current_lt = std::mem::take(current_lt);
                     let new_operand = OperandVar::Phi((*classnum, *bid));
                     let _unused = current_lt.insert(*classnum, new_operand);
+                    let _unused = ctx.lt_map.insert(*bid, current_lt);
                 }
             }
-
-            let replaces = make_replaces_from_lt(&ctx, &phinode_indexes);
+            let old_operands = find_operands_in_block(&ctx.rt, *bid);
+            let replaces = make_replaces_from_lt(&ctx, *bid, old_operands, &phinode_indexes);
 
             changed |= code.walk(|op| {
                 if let Some(replacement) = replaces.get(op) {
@@ -656,33 +671,50 @@ fn operand_to_class(operand: &Operand, ctx: &mut GvnContext) -> ClassNumOrConst 
     }
 }
 
-fn operand_to_class_jump(operand: &Operand, ctx: &mut GvnContext) -> ClassNumOrConst {
+fn operand_to_class_jump(operand: &Operand, ctx: &mut GvnContext) -> ClassNum {
     let classnum = ctx
         .rt
         .entry(operand.clone())
         .or_insert_with(|| ctx.class_gen.fresh());
-    ClassNumOrConst::ClassNum(*classnum)
+    *classnum
+}
+
+fn find_operands_in_block(rt: &HashMap<Operand, ClassNum>, bid: BlockId) -> Vec<Operand> {
+    rt.iter()
+        .filter_map(|(op, _cn)| match op {
+            Operand::Register {
+                rid: RegisterId::Temp { bid: obid, .. },
+                ..
+            } if *obid == bid => Some(op.clone()),
+
+            Operand::Register {
+                rid: RegisterId::Arg { bid: obid, .. },
+                ..
+            } if *obid == bid => Some(op.clone()),
+
+            _ => None,
+        })
+        .collect()
 }
 
 fn make_replaces_from_lt(
     ctx: &GvnContext,
+    bid: BlockId,
+    old_operands: Vec<Operand>,
     phinode_indexes: &HashMap<(ClassNum, BlockId), usize>,
 ) -> HashMap<Operand, Operand> {
-    let rt = &ctx.rt;
-    let lt_map = &ctx.lt_map;
+    // let rt = &ctx.rt;
+    let lt_map = ctx.lt_map.get(&bid).unwrap();
     let mut replaces = HashMap::new();
 
-    for (bid, lt_block) in lt_map {
-        for (classnum, operandvar) in lt_block {
-            let old_operands = find_all_keys_by_value_in_block(rt, *bid, classnum);
-            for old_operand in old_operands {
-                let _unused = replaces.entry(old_operand.clone()).or_insert_with(|| {
-                    operandvar.lookup(
-                        &old_operand.dtype(), // 실제 dtype 필요시 LT 저장 구조 확장 가능
-                        phinode_indexes,
-                    )
-                });
-            }
+    for old_op in old_operands {
+        let cn = ctx.rt.get(&old_op).unwrap();
+        if let Some(new_opvar) = lt_map.get(cn) {
+            let new_op = new_opvar.lookup(
+                &old_op.dtype(), // 실제 dtype 필요시 LT 저장 구조 확장 가능
+                phinode_indexes,
+            );
+            let _unused = replaces.insert(old_op.clone(), new_op.clone());
         }
     }
 
@@ -694,14 +726,9 @@ fn find_all_keys_by_value_in_block(
     bid: BlockId,
     classnum: &ClassNum,
 ) -> Vec<Operand> {
-    rt.iter()
-        .filter_map(|(op, cn)| match op {
-            Operand::Register {
-                rid: RegisterId::Temp { bid: obid, .. },
-                ..
-            } if cn == classnum && *obid == bid => Some(op.clone()),
-            _ => None,
-        })
+    find_operands_in_block(rt, bid)
+        .into_iter()
+        .filter(|op| rt.get(op) == Some(classnum))
         .collect()
 }
 
