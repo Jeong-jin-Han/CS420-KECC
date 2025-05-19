@@ -97,7 +97,9 @@ impl Walk for Instruction {
                 value.walk(&mut f) // maybe ??
             }
             Self::GetElementPtr { ptr, offset, dtype } => {
-                ptr.walk(&mut f)
+                let changed1 = ptr.walk(&mut f);
+                let changed2 = offset.walk(&mut f);
+                changed1 || changed2
                 // offset.walk(&mut f);
             }
             _ => todo!(), // GetElementPtr

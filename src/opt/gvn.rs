@@ -100,9 +100,13 @@ impl Optimize<FunctionDefinition> for GvnInner {
         let reverse_cfg = reverse_cfg(&cfg);
         let domtree = Domtree::new(code.bid_init, &cfg, &reverse_cfg);
 
-        println!("code {:?}", code);
-        // println!("cfg {:#?}", cfg);
-        // println!("reverse_cfg {:#?}", reverse_cfg);
+        // println!("code {:?}", code);
+        // println!("cfg {:?}", cfg);
+        // println!("reverse_cfg {:?}", reverse_cfg);
+        // println!(
+        //     "domtree.reverse_post_order {:?}",
+        //     domtree.reverse_post_order
+        // );
 
         for bid in &domtree.reverse_post_order {
             // 1. LT@B_init = LT@idom(B)_final
@@ -170,6 +174,10 @@ impl Optimize<FunctionDefinition> for GvnInner {
             //     */
             // }
 
+            /*
+            Goal: jumparg에서 bid와 arg operand가 나와있으니 할당되지 않았으면 바로바로 추가해주기
+            */
+
             let block = code.blocks.get(bid).unwrap();
             let phinode_len = block.phinodes.len();
 
@@ -198,7 +206,23 @@ impl Optimize<FunctionDefinition> for GvnInner {
                                     all_same_const = false
                                 }
                             } else {
-                                println!("Missing classnum for operand {:?}", arg_op);
+                                /* classnum을 할당해주는 logic
+                                jump.bid에 해당하는 LT table도 채워주고
+                                RT table도 채워주고
+                                */
+                                let classnum = *ctx
+                                    .rt
+                                    .entry(arg_op.clone())
+                                    .or_insert_with(|| ctx.class_gen.fresh());
+                                let jump_lt = ctx.lt_map.entry(jump.bid).or_default();
+                                let mut jump_lt = std::mem::take(jump_lt);
+                                let new_operand = OperandVar::Operand(arg_op.clone());
+                                let _unused = jump_lt.insert(classnum, new_operand);
+                                let _unused = ctx.lt_map.insert(jump.bid, jump_lt);
+                                cn_list.push(classnum);
+                                let _unused = mem2reg_cns.insert(classnum);
+                                arg_operand = arg_op.clone();
+                                // println!("Missing classnum for operand {:?}", arg_op); // maybe
                             }
                         }
                     }
@@ -452,55 +476,55 @@ impl Optimize<FunctionDefinition> for GvnInner {
                             operandvar
                         });
                     }
-                    Instruction::Store { ptr, value } => {
-                        let ptr = operand_to_class(ptr, &mut ctx);
-                        let value = operand_to_class(value, &mut ctx);
-                    }
+                    // Instruction::Store { ptr, value } => {
+                    //     let ptr = operand_to_class(ptr, &mut ctx);
+                    //     let value = operand_to_class(value, &mut ctx);
+                    // }
                     _ => {} // 다른 명령어는 추후 확장
                 }
                 println!();
             }
-            match &block.exit {
-                BlockExit::ConditionalJump {
-                    condition,
-                    arg_then,
-                    arg_else,
-                } => {
-                    let _unused = operand_to_class_jump(condition, &mut ctx);
-                    arg_then.args.iter().for_each(|op| {
-                        let _unused = operand_to_class_jump(op, &mut ctx);
-                    });
-                    arg_else.args.iter().for_each(|op| {
-                        let _unused = operand_to_class_jump(op, &mut ctx);
-                    });
-                }
-                BlockExit::Switch {
-                    value,
-                    default,
-                    cases,
-                } => {
-                    let _unused = operand_to_class_jump(value, &mut ctx);
-                    default.args.iter().for_each(|op| {
-                        let _unused = operand_to_class_jump(op, &mut ctx);
-                    });
-                    cases
-                        .iter()
-                        .flat_map(|(_, jmp)| jmp.args.iter())
-                        .for_each(|op| {
-                            let _unused = operand_to_class_jump(op, &mut ctx);
-                        });
-                }
-                BlockExit::Jump { arg } => arg.args.iter().for_each(|op| {
-                    let operandvar = OperandVar::Operand(op.clone());
-                    let cn = operand_to_class_jump(op, &mut ctx);
-                    let jmpbid = ctx.lt_map.entry(arg.bid).or_default();
-                    let _unused = jmpbid.insert(cn, operandvar);
-                }),
-                BlockExit::Return { value } => {
-                    let _unused = operand_to_class_jump(value, &mut ctx);
-                }
-                _ => {}
-            }
+            // match &block.exit {
+            //     BlockExit::ConditionalJump {
+            //         condition,
+            //         arg_then,
+            //         arg_else,
+            //     } => {
+            //         let _unused = operand_to_class_jump(condition, &mut ctx);
+            //         arg_then.args.iter().for_each(|op| {
+            //             let _unused = operand_to_class_jump(op, &mut ctx);
+            //         });
+            //         arg_else.args.iter().for_each(|op| {
+            //             let _unused = operand_to_class_jump(op, &mut ctx);
+            //         });
+            //     }
+            //     BlockExit::Switch {
+            //         value,
+            //         default,
+            //         cases,
+            //     } => {
+            //         let _unused = operand_to_class_jump(value, &mut ctx);
+            //         default.args.iter().for_each(|op| {
+            //             let _unused = operand_to_class_jump(op, &mut ctx);
+            //         });
+            //         cases
+            //             .iter()
+            //             .flat_map(|(_, jmp)| jmp.args.iter())
+            //             .for_each(|op| {
+            //                 let _unused = operand_to_class_jump(op, &mut ctx);
+            //             });
+            //     }
+            //     BlockExit::Jump { arg } => arg.args.iter().for_each(|op| {
+            //         let operandvar = OperandVar::Operand(op.clone());
+            //         let cn = operand_to_class_jump(op, &mut ctx);
+            //         let jmpbid = ctx.lt_map.entry(arg.bid).or_default();
+            //         let _unused = jmpbid.insert(cn, operandvar);
+            //     }),
+            //     BlockExit::Return { value } => {
+            //         let _unused = operand_to_class_jump(value, &mut ctx);
+            //     }
+            //     _ => {}
+            // }
 
             current_ct.retain(|cn| !mem2reg_cns.contains(cn));
             let _unused = ctx.lt_map.insert(*bid, current_lt);
