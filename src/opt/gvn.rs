@@ -103,10 +103,10 @@ impl Optimize<FunctionDefinition> for GvnInner {
         // println!("code {:?}", code);
         // println!("cfg {:?}", cfg);
         // println!("reverse_cfg {:?}", reverse_cfg);
-        // println!(
-        //     "domtree.reverse_post_order {:?}",
-        //     domtree.reverse_post_order
-        // );
+        println!(
+            "domtree.reverse_post_order {:?}",
+            domtree.reverse_post_order
+        );
 
         for bid in &domtree.reverse_post_order {
             // 1. LT@B_init = LT@idom(B)_final
@@ -182,7 +182,7 @@ impl Optimize<FunctionDefinition> for GvnInner {
             let phinode_len = block.phinodes.len();
 
             let mut mem2reg_cns: HashSet<ClassNum> = HashSet::new();
-            let mut all_same_const = true;
+            // let mut all_same_const = true;
 
             for aid in 0..phinode_len {
                 let phi_rid = RegisterId::arg(*bid, aid);
@@ -190,6 +190,7 @@ impl Optimize<FunctionDefinition> for GvnInner {
                 let mut arg_operand = Operand::register(phi_rid, dtype.clone());
                 // 각 pred 블록에서 해당 aid 위치의 값을 수집
                 let mut cn_list = Vec::new();
+                let mut new_op = true;
                 if let Some(prev_list) = reverse_cfg.get(bid) {
                     for (_pred_bid, jump) in prev_list {
                         if let Some(arg_op) = jump.args.get(aid) {
@@ -202,9 +203,7 @@ impl Optimize<FunctionDefinition> for GvnInner {
                                 cn_list.push(*classnum);
                                 let _unused = mem2reg_cns.insert(*classnum);
                                 arg_operand = arg_op.clone();
-                                if let Operand::Register { .. } = arg_op {
-                                    all_same_const = false
-                                }
+                                new_op = false;
                             } else {
                                 /* classnum을 할당해주는 logic
                                 jump.bid에 해당하는 LT table도 채워주고
@@ -233,16 +232,16 @@ impl Optimize<FunctionDefinition> for GvnInner {
                     if cn_list.iter().all(|cn| cn == first_cn) && cn_list.len() > 1 {
                         let phi_op = Operand::register(phi_rid, dtype.clone());
                         let _unused = ctx.rt.insert(phi_op.clone(), *first_cn);
-                        let mut phi_op_var = OperandVar::Operand(phi_op.clone());
-                        if all_same_const {
-                            phi_op_var = OperandVar::Operand(arg_operand.clone());
+                        let mut phi_op_var = OperandVar::Operand(arg_operand.clone());
+                        if new_op {
+                            phi_op_var = OperandVar::Operand(phi_op.clone());
                         }
                         let _unused = current_lt.insert(*first_cn, phi_op_var);
                         println!(
                             "Assigning PHI result {:?} to classnum {:?} (from args)",
                             phi_op, first_cn
                         );
-                        println!("cn list {:?} all_same_const {:?}", cn_list, all_same_const);
+                        // println!("cn list {:?} all_same_const {:?}", cn_list, all_same_const);
                     } else {
                         mem2reg_cns = HashSet::new();
                     }
