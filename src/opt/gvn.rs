@@ -108,7 +108,7 @@ impl Optimize<FunctionDefinition> for GvnInner {
         //     "domtree.reverse_post_order {:?}",
         //     domtree.reverse_post_order
         // );
-
+        let mut phinode_indexes = HashMap::<(ClassNum, BlockId), usize>::new();
         for bid in &domtree.reverse_post_order {
             // 1. LT@B_init = LT@idom(B)_final
             let inherited_lt = domtree
@@ -227,6 +227,7 @@ impl Optimize<FunctionDefinition> for GvnInner {
                     }
                 }
 
+                // println!("bid {:?}, mem2reg_cns  {:?}", bid, mem2reg_cns);
                 /*
                 replace할 때 arg_op를 하는게 아니라 해당 block의 LT로 가서 적절한 op를 받아와야 한다. 단순히 LT로 보는게 아니라
                 */
@@ -243,10 +244,11 @@ impl Optimize<FunctionDefinition> for GvnInner {
                             phi_op_var = OperandVar::Operand(phi_op.clone());
                         }
                         let _unused = current_lt.insert(*first_cn, phi_op_var);
-                        println!(
-                            "Assigning PHI result {:?} to classnum {:?} (from args) {:?} new_op",
-                            phi_op, first_cn, new_op
-                        );
+
+                        // println!(
+                        //     "Assigning PHI result {:?} to classnum {:?} (from args) {:?} new_op",
+                        //     phi_op, first_cn, new_op
+                        // );
                         // println!("cn list {:?} all_same_const {:?}", cn_list, all_same_const);
                     } else {
                         mem2reg_cns = HashSet::new();
@@ -257,10 +259,13 @@ impl Optimize<FunctionDefinition> for GvnInner {
             }
 
             let mut current_ct: HashSet<ClassNum> = HashSet::new();
+            let mut cphi_flag = false;
+
+            // let mut phichecker_ct: HashSet<ClassNum> = HashSet::new();
             // println!("bid {:?} | current LT {:?}", bid, current_lt);
             // 2. 각 명령어 처리
             for (instr_idx, instr) in code.blocks[bid].instructions.iter().enumerate() {
-                println!();
+                cphi_flag = false;
                 match instr.deref() {
                     Instruction::BinOp {
                         op,
@@ -293,13 +298,14 @@ impl Optimize<FunctionDefinition> for GvnInner {
                             dtype: dtype.clone(),
                         };
                         let _unused = ctx.rt.insert(operand.clone(), classnum);
-                        let _unused = current_ct.insert(classnum);
 
                         let operandvar = OperandVar::Operand(operand.clone()); // maybe??
 
                         // LT에 리더 없으면 등록
                         let _unused = current_lt.entry(classnum).or_insert_with(|| {
                             println!("LT new | classnum : {:?}", classnum); // 존재할 때는 실행 안 됨!
+                            cphi_flag = true;
+                            let _unused = current_ct.insert(classnum);
                             operandvar
                         });
                     }
@@ -327,13 +333,14 @@ impl Optimize<FunctionDefinition> for GvnInner {
                             dtype: dtype.clone(),
                         };
                         let _unused = ctx.rt.insert(operand.clone(), classnum);
-                        let _unused = current_ct.insert(classnum);
 
                         let operandvar = OperandVar::Operand(operand.clone()); // maybe??
 
                         // LT에 리더 없으면 등록
                         let _unused = current_lt.entry(classnum).or_insert_with(|| {
                             println!("LT new | classnum : {:?}", classnum); // 존재할 때는 실행 안 됨!
+                            cphi_flag = true;
+                            let _unused = current_ct.insert(classnum);
                             operandvar
                         });
                     }
@@ -353,13 +360,14 @@ impl Optimize<FunctionDefinition> for GvnInner {
                         let rid = RegisterId::temp(*bid, instr_idx);
                         let operand = Operand::Register { rid, dtype };
                         let _unused = ctx.rt.insert(operand.clone(), classnum);
-                        let _unused = current_ct.insert(classnum);
 
                         let operandvar = OperandVar::Operand(operand.clone()); // maybe??
 
                         // LT에 리더 없으면 등록
                         let _unused = current_lt.entry(classnum).or_insert_with(|| {
                             println!("LT new | classnum : {:?}", classnum); // 존재할 때는 실행 안 됨!
+                            cphi_flag = true;
+                            let _unused = current_ct.insert(classnum);
                             operandvar
                         });
                     }
@@ -400,7 +408,6 @@ impl Optimize<FunctionDefinition> for GvnInner {
                             dtype: return_type.clone(),
                         };
                         let _unused = ctx.rt.insert(operand.clone(), classnum);
-                        let _unused = current_ct.insert(classnum);
 
                         let operandvar = OperandVar::Operand(operand.clone()); // maybe??
 
@@ -411,6 +418,8 @@ impl Optimize<FunctionDefinition> for GvnInner {
                         } else {
                             let _unused = current_lt.entry(classnum).or_insert_with(|| {
                                 println!("LT new | classnum : {:?}", classnum); // 존재할 때는 실행 안 됨!
+                                cphi_flag = true;
+                                let _unused = current_ct.insert(classnum);
                                 operandvar
                             });
                         }
@@ -439,13 +448,14 @@ impl Optimize<FunctionDefinition> for GvnInner {
                             dtype: target_dtype.clone(),
                         };
                         let _unused = ctx.rt.insert(operand.clone(), classnum);
-                        let _unused = current_ct.insert(classnum);
 
                         let operandvar = OperandVar::Operand(operand.clone()); // maybe??
 
                         // LT에 리더 없으면 등록
                         let _unused = current_lt.entry(classnum).or_insert_with(|| {
                             println!("LT new | classnum : {:?}", classnum); // 존재할 때는 실행 안 됨!
+                            cphi_flag = true;
+                            let _unused = current_ct.insert(classnum);
                             operandvar
                         });
                     }
@@ -471,13 +481,14 @@ impl Optimize<FunctionDefinition> for GvnInner {
                             dtype: dtype.clone(),
                         };
                         let _unused = ctx.rt.insert(operand.clone(), classnum);
-                        let _unused = current_ct.insert(classnum);
 
                         let operandvar = OperandVar::Operand(operand.clone()); // maybe??
 
                         // LT에 리더 없으면 등록
                         let _unused = current_lt.entry(classnum).or_insert_with(|| {
                             println!("LT new | classnum : {:?}", classnum); // 존재할 때는 실행 안 됨!
+                            cphi_flag = true;
+                            let _unused = current_ct.insert(classnum);
                             operandvar
                         });
                     }
@@ -489,47 +500,6 @@ impl Optimize<FunctionDefinition> for GvnInner {
                 }
                 println!();
             }
-            // match &block.exit {
-            //     BlockExit::ConditionalJump {
-            //         condition,
-            //         arg_then,
-            //         arg_else,
-            //     } => {
-            //         let _unused = operand_to_class_jump(condition, &mut ctx);
-            //         arg_then.args.iter().for_each(|op| {
-            //             let _unused = operand_to_class_jump(op, &mut ctx);
-            //         });
-            //         arg_else.args.iter().for_each(|op| {
-            //             let _unused = operand_to_class_jump(op, &mut ctx);
-            //         });
-            //     }
-            //     BlockExit::Switch {
-            //         value,
-            //         default,
-            //         cases,
-            //     } => {
-            //         let _unused = operand_to_class_jump(value, &mut ctx);
-            //         default.args.iter().for_each(|op| {
-            //             let _unused = operand_to_class_jump(op, &mut ctx);
-            //         });
-            //         cases
-            //             .iter()
-            //             .flat_map(|(_, jmp)| jmp.args.iter())
-            //             .for_each(|op| {
-            //                 let _unused = operand_to_class_jump(op, &mut ctx);
-            //             });
-            //     }
-            //     BlockExit::Jump { arg } => arg.args.iter().for_each(|op| {
-            //         let operandvar = OperandVar::Operand(op.clone());
-            //         let cn = operand_to_class_jump(op, &mut ctx);
-            //         let jmpbid = ctx.lt_map.entry(arg.bid).or_default();
-            //         let _unused = jmpbid.insert(cn, operandvar);
-            //     }),
-            //     BlockExit::Return { value } => {
-            //         let _unused = operand_to_class_jump(value, &mut ctx);
-            //     }
-            //     _ => {}
-            // }
 
             current_ct.retain(|cn| !mem2reg_cns.contains(cn));
             let _unused = ctx.lt_map.insert(*bid, current_lt);
@@ -562,101 +532,112 @@ impl Optimize<FunctionDefinition> for GvnInner {
             pred <- phinode argument
             current <- phinode declaration, phinode 를 LT 채우기
             */
+            if cphi_flag {
+                // println!(
+                //     "bid {:?} | candidate_classnums {:?}",
+                //     bid,
+                //     current_ct.clone()
+                // );
+                // println!("bid {:?} | preds_len {:?}", bid, prevs.len()); // preds.len() > 1 인 경우만 phinode 삽입
 
-            let mut phinode_indexes = HashMap::<(ClassNum, BlockId), usize>::new();
+                let mut operands_from_preds = HashMap::new();
+                // 이게 왜 필요할까? 왜냐하면 phinode를 삽입하게 되면 이값을 argument에 넣어주어야 해서
+                for classnum in ctx.ct_map.get(bid).unwrap() {
+                    // classnum 에 대해서 이전 block이 가지고 있는지 ct로 확인하기, ct에서 있으면
+                    // Check if all predecessor blocks of bid have LT[classnum]
+                    let mut all_have = true;
 
-            println!(
-                "bid {:?} | candidate_classnums {:?}",
-                bid,
-                current_ct.clone()
-            );
-            println!("bid {:?} | preds_len {:?}", bid, prevs.len()); // preds.len() > 1 인 경우만 phinode 삽입
+                    let operand = find_all_keys_by_value_in_block(&ctx.rt, *bid, classnum);
+                    // operand가 없는 것과 무관하게 LT에서 판단했어야 함
+                    let dtype = operand[0].dtype();
 
-            let mut operands_from_preds = HashMap::new();
-            // 이게 왜 필요할까? 왜냐하면 phinode를 삽입하게 되면 이값을 argument에 넣어주어야 해서
-            for classnum in ctx.ct_map.get(bid).unwrap() {
-                // classnum 에 대해서 이전 block이 가지고 있는지 ct로 확인하기, ct에서 있으면
-                // Check if all predecessor blocks of bid have LT[classnum]
-                let mut all_have = true;
-
-                let operand = find_all_keys_by_value_in_block(&ctx.rt, *bid, classnum);
-                let dtype = operand[0].dtype();
-
-                for (prev_bid, _) in prevs.clone() {
-                    let tmp = ctx.ct_map.get(&prev_bid);
-                    if let Some(ct) = ctx.ct_map.get(&prev_bid) {
-                        if ct.contains(classnum) {
-                            let lt = ctx.lt_map.get(&prev_bid).unwrap();
-                            let value = lt.get(classnum).unwrap();
-                            let _unused = operands_from_preds.insert(prev_bid, value.clone());
-                            continue;
-                        } else {
-                            all_have = false;
-                            break;
-                        }
-                    }
-                    all_have = false;
-                    break;
-                }
-
-                if all_have && prevs.len() > 1 {
-                    println!(
-                        "all_have: True | classnum {} | operand_from_preds {:?}",
-                        classnum, operands_from_preds
-                    );
-                    /*
-                    지금 보면 aid 가 없는 경우 name을 적지 않음 -> classnum 에 대한 phinode이기 때문에 name 을 적을 필요 X
-
-                    block.phinodes.len(); <- 이 부분은 그 해당 block에 가서 넣어주어야 하기 때문에 지금 이 시점에서는 phinode를 insert하고 그 위치를 기록하고
-                    추후에 다시 block 들에 대해서 traversal해서 해당 부분 채우기, 그런데 문제가 있어 이렇게 되면
-                    아니다 이 loop 내에서 찾고서 하는게 더 낳을 듯, perv block 정보가 필요한데 그부분을 여기서 traversal 하게 하면 매 순간마다 돌려야 하는데
-                    */
-                    let block = code.blocks.get_mut(bid).unwrap();
-                    let index = block.phinodes.len();
-                    block.phinodes.push(Named::new(None, dtype.clone()));
-                    let _unused = phinode_indexes.insert((*classnum, *bid), index);
-
-                    /* prevs block에 대해서 argument 작성해주기 */
-                    /* LT table 값을 사용하기  */
-                    for (prev_bid, _) in &prevs {
-                        let block = code.blocks.get_mut(prev_bid).unwrap();
-                        let prev_block_lt = ctx.lt_map.get(prev_bid).unwrap();
-                        let operandvar_prev = prev_block_lt.get(classnum).unwrap();
-                        let operand_prev = operandvar_prev.lookup(&dtype, &phinode_indexes);
-                        block.exit.walk_jump_args(|arg| {
-                            if &arg.bid == bid {
-                                assert_eq!(arg.args.len(), index);
-                                arg.args.push(operand_prev.clone());
+                    for (prev_bid, _) in prevs.clone() {
+                        if let Some(prev_lt) = ctx.lt_map.get(&prev_bid) {
+                            let prev_lt_set = prev_lt.keys().cloned().collect::<Vec<_>>();
+                            if prev_lt_set.contains(classnum) {
+                                let value = prev_lt.get(classnum).unwrap();
+                                let _unused = operands_from_preds.insert(prev_bid, value.clone());
+                                // 이것은 prev_bid에서 온게 아닐수도 있음, 단지 prev_bid의 LT에서 나온 것
+                                continue;
+                            } else {
+                                all_have = false;
+                                break;
                             }
-                        });
+                        }
+                        all_have = false;
+                        break;
                     }
 
-                    /* new phinode 삽입하기 */
-                    let current_lt = ctx.lt_map.entry(*bid).or_default();
-                    let mut current_lt = std::mem::take(current_lt);
-                    let new_operand = OperandVar::Phi((*classnum, *bid));
-                    let _unused = current_lt.insert(*classnum, new_operand);
-                    let _unused = ctx.lt_map.insert(*bid, current_lt);
+                    // println!(
+                    //     "all_have: {} | classnum {} | operand_from_preds {:?} opernad {:?}",
+                    //     all_have, classnum, operands_from_preds, operand
+                    // );
+                    if all_have && prevs.len() > 1 {
+                        /*
+                        지금 보면 aid 가 없는 경우 name을 적지 않음 -> classnum 에 대한 phinode이기 때문에 name 을 적을 필요 X
+
+                        block.phinodes.len(); <- 이 부분은 그 해당 block에 가서 넣어주어야 하기 때문에 지금 이 시점에서는 phinode를 insert하고 그 위치를 기록하고
+                        추후에 다시 block 들에 대해서 traversal해서 해당 부분 채우기, 그런데 문제가 있어 이렇게 되면
+                        아니다 이 loop 내에서 찾고서 하는게 더 낳을 듯, perv block 정보가 필요한데 그부분을 여기서 traversal 하게 하면 매 순간마다 돌려야 하는데
+                        */
+                        let block = code.blocks.get_mut(bid).unwrap();
+                        let index = block.phinodes.len();
+                        block.phinodes.push(Named::new(None, dtype.clone()));
+                        let _unused = phinode_indexes.insert((*classnum, *bid), index);
+                        // println!(
+                        //     "phinode_indexes | (classnum ,bid): {:?} index: {:?}",
+                        //     (*classnum, *bid),
+                        //     index
+                        // );
+
+                        /* prevs block에 대해서 argument 작성해주기 */
+                        /* LT table 값을 사용하기  */
+                        for (prev_bid, _) in &prevs {
+                            let block = code.blocks.get_mut(prev_bid).unwrap();
+                            let prev_block_lt = ctx.lt_map.get(prev_bid).unwrap();
+                            let operandvar_prev = prev_block_lt.get(classnum).unwrap();
+                            let operand_prev = operandvar_prev.lookup(&dtype, &phinode_indexes);
+                            block.exit.walk_jump_args(|arg| {
+                                if &arg.bid == bid {
+                                    assert_eq!(arg.args.len(), index);
+                                    arg.args.push(operand_prev.clone());
+                                }
+                            });
+                        }
+
+                        /* new phinode 삽입하기 */
+                        let current_lt = ctx.lt_map.entry(*bid).or_default();
+                        let mut current_lt = std::mem::take(current_lt);
+                        let new_operand = OperandVar::Phi((*classnum, *bid));
+                        let _unused = current_lt.insert(*classnum, new_operand);
+                        let _unused = ctx.lt_map.insert(*bid, current_lt);
+                    }
                 }
             }
+
             let old_operands = find_operands_in_block(&ctx.rt, *bid);
             let replaces = make_replaces_from_lt(&ctx, *bid, old_operands, &phinode_indexes);
 
             changed |= code.walk(|op| {
                 if let Some(replacement) = replaces.get(op) {
-                    // println!("REPLACES | op : {:?} -> replacement : {:?}", op.clone(), replacement.clone());
+                    println!(
+                        "REPLACES | op : {:?} -> replacement : {:?}",
+                        op.clone(),
+                        replacement.clone()
+                    );
                     *op = replacement.clone();
                     return true;
                 }
                 false
             });
 
-            println!("========== bid | {} ==========", bid);
-            println!("REPLACES | {:?}", replaces);
-            println!("RT | {:?}", ctx.rt);
-            println!("ET | {:?}", ctx.et);
-            println!("LT | {:?}", ctx.lt_map);
-            println!("===============================");
+            // println!("========== bid | {} ==========", bid);
+            // println!("REPLACES | {:?}", replaces);
+            // println!("RT | {:?}", ctx.rt);
+            // println!("ET | {:?}", ctx.et);
+            // println!("LT | {:?}", ctx.lt_map);
+            // println!("Phinode_indexes {:?}", phinode_indexes);
+            // println!("===============================");
         }
 
         // changed를 규합해야 하는 로직
@@ -780,6 +761,7 @@ fn make_replaces_from_lt(
                 &old_op.dtype(), // 실제 dtype 필요시 LT 저장 구조 확장 가능
                 phinode_indexes,
             );
+            println!("new_opvar: {:?} new_op: {:?}", new_opvar, new_op);
             let _unused = replaces.insert(old_op.clone(), new_op.clone());
         }
     }
@@ -787,16 +769,45 @@ fn make_replaces_from_lt(
     replaces
 }
 
+/* 지금 phinode 작성 관련해서 사용되는 것 같음 -그런데 매우 잘못된 함수 */
 fn find_all_keys_by_value_in_block(
     rt: &HashMap<Operand, ClassNum>,
     bid: BlockId,
     classnum: &ClassNum,
 ) -> Vec<Operand> {
+    /* find_operands_in_block 함수도 잘못 되었고,*/
     find_operands_in_block(rt, bid)
         .into_iter()
         .filter(|op| rt.get(op) == Some(classnum))
         .collect()
 }
+
+// fn phi_checker_per_op(operand: &Operand) -> bool {
+//     match operand {
+//         Operand::Constant(..) => false,
+//         Operand::Register { rid, dtype } => match rid {
+//             RegisterId::Arg { bid, aid } => true,
+//             _ => false,
+//         },
+//     }
+// }
+
+// fn phi_checker_in_instr(instr: &Instruction) -> bool {
+//     match instr {
+//         Instruction::BinOp {
+//             op,
+//             lhs,
+//             rhs,
+//             dtype,
+//         } => {
+//             let checker1 = phi_checker_per_op(lhs);
+//             let checker2 = phi_checker_per_op(rhs);
+//             checker1 || checker2
+//         }
+//         Instruction::UnaryOp { op, operand, dtype } => phi_checker_per_op(operand),
+//         _ => false,
+//     }
+// }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 enum ClassNumOrConst {
