@@ -49,12 +49,12 @@ impl OperandVar {
         /*
         OperandVar -> Operand로 알맞게 반환해주는 것이 역할
         */
-        println!("=== OperandVar lookup ===");
-        println!("phinode_indexes keys: {:?}", phinode_indexes.keys());
+        // println!("=== OperandVar lookup ===");
+        // println!("phinode_indexes keys: {:?}", phinode_indexes.keys());
         match self {
             OperandVar::Operand(o) => o.clone(),
             OperandVar::Phi(var) => {
-                println!("LOOKUP PHI {:?} → {:?}", var, phinode_indexes.get(var));
+                // println!("LOOKUP PHI {:?} → {:?}", var, phinode_indexes.get(var));
                 if let Some(index) = phinode_indexes.get(var) {
                     /* ClassNum, blockId -> usize */
                     /* usize가 가지고 있는 의미?? */
@@ -102,11 +102,12 @@ impl Optimize<FunctionDefinition> for GvnInner {
 
         // println!("code {:?}", code);
         // println!("cfg {:?}", cfg);
+
         // println!("reverse_cfg {:?}", reverse_cfg);
-        println!(
-            "domtree.reverse_post_order {:?}",
-            domtree.reverse_post_order
-        );
+        // println!(
+        //     "domtree.reverse_post_order {:?}",
+        //     domtree.reverse_post_order
+        // );
 
         for bid in &domtree.reverse_post_order {
             // 1. LT@B_init = LT@idom(B)_final
@@ -141,41 +142,17 @@ impl Optimize<FunctionDefinition> for GvnInner {
             let mut phi_inputs: HashMap<usize, Vec<(ClassNum, Dtype)>> = HashMap::new(); // aid → [operands from preds]
             // revers_cfg 로도 충분할 듯?? 지금 현재 기준으로 해서
 
-            // let rid = RegisterId::arg(*bid, aid);
-            // let operand = Operand::register(rid, dtype);
-            // if let Some(prev_bid) = reverse_cfg.get(bid) {
-            //     for (bid, jump) in prev_bid {
-            //         println!("bid {:?}, jump {:?}", bid, jump);
-            //         let arg_ops = jump.args.clone();
-            //         let arg_cns = arg_ops.iter().map(|arg_op| ctx.rt.get(arg_op)).collect::<Vec<_>>();
-
-            //     }
-            // }
-
-            // if let Some(prev_bid) = reverse_cfg.get(bid) {
-            //     for (pred_bid, jump) in prev_bid {
-            //         for (aid, arg_op) in jump.args.iter().enumerate() {
-            //             // 여기서 RT로 변환된 대표 operand를 사용하고 싶다면:
-            //             let repr_op = ctx.rt.get(arg_op).unwrap();
-            //             let dtype = arg_op.dtype();
-            //             phi_inputs.entry(aid).or_default().push((repr_op.clone(), dtype));
-            //         }
-            //     }
-            //     /* phi_inpust has the samme classNum => then insert the same number for this phinode */
-            //     /*
-
-            //     for aid in range(0, phi_len()) {
-            //         if phi_inputs.get(aid) has the same values
-            //             let phi_rid = RegisterId::arg(bid, aid)
-            //             let operand = Operand::register(rid, dtype)
-
-            //             ctx.rt.insert(classnum, operand)
-            //     }
-            //     */
-            // }
-
             /*
             Goal: jumparg에서 bid와 arg operand가 나와있으니 할당되지 않았으면 바로바로 추가해주기
+
+            여기서 lt도 추가해주기
+            dominace 순서로 움직이기 때문에 부분적으로
+            A -> B, A 가 B를 dominate함
+            RT table에서 classnum 찾고, 현재 arg operand -> lt가서 찾고
+            만약에 lt에 없으면 lt에 추가해주기
+
+            즉 먼저 lt에 대해서 classnum entry로 파악한 다음에 없으면 추가해주기 // 이 lt는 jump bid에 대한 lt
+            그리고 꺼내서 사용하기
             */
 
             let block = code.blocks.get(bid).unwrap();
@@ -187,59 +164,88 @@ impl Optimize<FunctionDefinition> for GvnInner {
             for aid in 0..phinode_len {
                 let phi_rid = RegisterId::arg(*bid, aid);
                 let dtype = block.phinodes[aid].clone().into_inner(); // phinode의 타입 정보 필요
-                let mut arg_operand = Operand::register(phi_rid, dtype.clone());
+                let mut arg_operand =
+                    OperandVar::Operand(Operand::register(phi_rid, dtype.clone()));
                 // 각 pred 블록에서 해당 aid 위치의 값을 수집
                 let mut cn_list = Vec::new();
                 let mut new_op = true;
                 if let Some(prev_list) = reverse_cfg.get(bid) {
-                    for (_pred_bid, jump) in prev_list {
+                    for (prev_bid, jump) in prev_list {
                         if let Some(arg_op) = jump.args.get(aid) {
-                            // // class_table: HashMap<Operand, ClassNum>
-                            // if arg_op.dtype().is_const() && !ctx.rt.contains_key(arg_op) {
-                            //     let cn = ctx.class_gen.fresh(); // 새 classnum 할당
-                            //     let _unused = ctx.rt.insert(arg_op.clone(), cn);
-                            // }
+                            /*
+                            현재 문제가
+                            LT에서 classnum -> argument 에 대한 정보가 없어서 이 정보를 추가해주어야 함
+                            phinode에 operand 넣어주기 전에
+
+                            const여도 lt_table을 봐야 한다.
+                            */
                             if let Some(classnum) = ctx.rt.get(arg_op) {
+                                /* jump.bid == prev_bid */
                                 cn_list.push(*classnum);
                                 let _unused = mem2reg_cns.insert(*classnum);
-                                arg_operand = arg_op.clone();
+                                // arg_operand = arg_op.clone(); // maybe
+                                let prev_lt = ctx.lt_map.entry(*prev_bid).or_default();
+                                let mut prev_lt = std::mem::take(prev_lt);
+                                let new_operand = OperandVar::Operand(arg_op.clone()); // classnum 은 존재하지만 lt_map에는 존재하지 않는 케이스
+                                let operand_var = prev_lt
+                                    .entry(*classnum)
+                                    .or_insert_with(|| new_operand.clone());
+
+                                cn_list.push(*classnum);
+                                let _unused = mem2reg_cns.insert(*classnum);
+                                arg_operand = operand_var.clone();
+                                // println!(
+                                //     "bid {:?} jumpbid {:?} arg_op {:?} arg_operand {:?}",
+                                //     bid,
+                                //     prev_bid,
+                                //     arg_op.clone(),
+                                //     arg_operand.clone()
+                                // );
+
+                                let _unused = ctx.lt_map.insert(*prev_bid, prev_lt);
                                 new_op = false;
                             } else {
                                 /* classnum을 할당해주는 logic
-                                jump.bid에 해당하는 LT table도 채워주고
+                                prev_bid에 해당하는 LT table도 채워주고
                                 RT table도 채워주고
                                 */
                                 let classnum = *ctx
                                     .rt
                                     .entry(arg_op.clone())
                                     .or_insert_with(|| ctx.class_gen.fresh());
-                                let jump_lt = ctx.lt_map.entry(jump.bid).or_default();
-                                let mut jump_lt = std::mem::take(jump_lt);
+                                let prev_lt = ctx.lt_map.entry(*prev_bid).or_default();
+                                let mut prev_lt = std::mem::take(prev_lt);
                                 let new_operand = OperandVar::Operand(arg_op.clone());
-                                let _unused = jump_lt.insert(classnum, new_operand);
-                                let _unused = ctx.lt_map.insert(jump.bid, jump_lt);
+                                let _unused = prev_lt.insert(classnum, new_operand.clone());
+                                let _unused = ctx.lt_map.insert(*prev_bid, prev_lt);
                                 cn_list.push(classnum);
                                 let _unused = mem2reg_cns.insert(classnum);
-                                arg_operand = arg_op.clone();
+                                arg_operand = new_operand;
                                 // println!("Missing classnum for operand {:?}", arg_op); // maybe
                             }
                         }
                     }
                 }
 
+                /*
+                replace할 때 arg_op를 하는게 아니라 해당 block의 LT로 가서 적절한 op를 받아와야 한다. 단순히 LT로 보는게 아니라
+                */
+
                 // 모든 classnum이 동일하다면
                 if let Some(first_cn) = cn_list.first() {
-                    if cn_list.iter().all(|cn| cn == first_cn) && cn_list.len() > 1 {
+                    // if cn_list.iter().all(|cn| cn == first_cn) && cn_list.len() > 1 { // maybd
+                    if cn_list.iter().all(|cn| cn == first_cn) {
+                        // maybd
                         let phi_op = Operand::register(phi_rid, dtype.clone());
                         let _unused = ctx.rt.insert(phi_op.clone(), *first_cn);
-                        let mut phi_op_var = OperandVar::Operand(arg_operand.clone());
+                        let mut phi_op_var = arg_operand.clone();
                         if new_op {
                             phi_op_var = OperandVar::Operand(phi_op.clone());
                         }
                         let _unused = current_lt.insert(*first_cn, phi_op_var);
                         println!(
-                            "Assigning PHI result {:?} to classnum {:?} (from args)",
-                            phi_op, first_cn
+                            "Assigning PHI result {:?} to classnum {:?} (from args) {:?} new_op",
+                            phi_op, first_cn, new_op
                         );
                         // println!("cn list {:?} all_same_const {:?}", cn_list, all_same_const);
                     } else {
@@ -251,7 +257,7 @@ impl Optimize<FunctionDefinition> for GvnInner {
             }
 
             let mut current_ct: HashSet<ClassNum> = HashSet::new();
-            println!("bid {:?} | current LT {:?}", bid, current_lt);
+            // println!("bid {:?} | current LT {:?}", bid, current_lt);
             // 2. 각 명령어 처리
             for (instr_idx, instr) in code.blocks[bid].instructions.iter().enumerate() {
                 println!();
@@ -658,7 +664,30 @@ impl Optimize<FunctionDefinition> for GvnInner {
     }
 }
 
-fn operand_to_class_call(operand: &Operand, ctx: &mut GvnContext) -> ClassNumOrConst {
+// fn operand_to_class_call(operand: &Operand, ctx: &mut GvnContext) -> ClassNumOrConst {
+//     match operand {
+//         Operand::Register { dtype, .. } => {
+//             println!(
+//                 "dtype ptr: {:?}, dtype cosnt: {:?}",
+//                 dtype.get_pointer_inner(),
+//                 dtype.is_const()
+//             );
+//             if dtype.get_pointer_inner().is_some() {
+//                 // 포인터는 alias 분석 없으므로 보수적으로 매번 fresh
+//                 ClassNumOrConst::ClassNum(ctx.class_gen.fresh())
+//             } else {
+//                 let classnum = ctx
+//                     .rt
+//                     .entry(operand.clone())
+//                     .or_insert_with(|| ctx.class_gen.fresh());
+//                 ClassNumOrConst::ClassNum(*classnum)
+//             }
+//         }
+//         Operand::Constant(c) => ClassNumOrConst::Const(c.clone()),
+//     }
+// }
+
+fn operand_to_class_call(operand: &Operand, ctx: &mut GvnContext) -> ClassNum {
     match operand {
         Operand::Register { dtype, .. } => {
             println!(
@@ -668,30 +697,44 @@ fn operand_to_class_call(operand: &Operand, ctx: &mut GvnContext) -> ClassNumOrC
             );
             if dtype.get_pointer_inner().is_some() {
                 // 포인터는 alias 분석 없으므로 보수적으로 매번 fresh
-                ClassNumOrConst::ClassNum(ctx.class_gen.fresh())
+                ctx.class_gen.fresh()
             } else {
                 let classnum = ctx
                     .rt
                     .entry(operand.clone())
                     .or_insert_with(|| ctx.class_gen.fresh());
-                ClassNumOrConst::ClassNum(*classnum)
+                *classnum
             }
         }
-        Operand::Constant(c) => ClassNumOrConst::Const(c.clone()),
-    }
-}
-
-fn operand_to_class(operand: &Operand, ctx: &mut GvnContext) -> ClassNumOrConst {
-    match operand {
-        Operand::Register { dtype, .. } => {
+        Operand::Constant(c) => {
             let classnum = ctx
                 .rt
                 .entry(operand.clone())
                 .or_insert_with(|| ctx.class_gen.fresh());
-            ClassNumOrConst::ClassNum(*classnum)
+            *classnum
         }
-        Operand::Constant(c) => ClassNumOrConst::Const(c.clone()),
     }
+}
+
+// fn operand_to_class(operand: &Operand, ctx: &mut GvnContext) -> ClassNumOrConst {
+//     match operand {
+//         Operand::Register { dtype, .. } => {
+//             let classnum = ctx
+//                 .rt
+//                 .entry(operand.clone())
+//                 .or_insert_with(|| ctx.class_gen.fresh());
+//             ClassNumOrConst::ClassNum(*classnum)
+//         }
+//         Operand::Constant(c) => ClassNumOrConst::Const(c.clone()),
+//     }
+// }
+
+fn operand_to_class(operand: &Operand, ctx: &mut GvnContext) -> ClassNum {
+    let classnum = ctx
+        .rt
+        .entry(operand.clone())
+        .or_insert_with(|| ctx.class_gen.fresh());
+    *classnum
 }
 
 fn operand_to_class_jump(operand: &Operand, ctx: &mut GvnContext) -> ClassNum {
@@ -761,34 +804,66 @@ enum ClassNumOrConst {
     Const(Constant),
 }
 
+// #[derive(Eq, Hash, PartialEq, Clone, Debug)]
+// enum ExprV {
+//     BinOp {
+//         op: ast::BinaryOperator,
+//         lhs: ClassNumOrConst,
+//         rhs: ClassNumOrConst,
+//         dtype: Dtype,
+//     },
+//     GetElementPtr {
+//         ptr: ClassNumOrConst,
+//         offset: ClassNumOrConst,
+//         dtype: Dtype,
+//     },
+//     Load {
+//         ptr: ClassNumOrConst,
+//     }, // UnaryOp 등 추가 가능
+//     Call {
+//         callee: ClassNumOrConst,
+//         args: Vec<ClassNumOrConst>,
+//         return_type: Dtype,
+//     },
+//     TypeCast {
+//         value: ClassNumOrConst,
+//         target_dtype: Dtype,
+//     },
+//     UnaryOp {
+//         op: ast::UnaryOperator,
+//         operand: ClassNumOrConst,
+//         dtype: Dtype,
+//     },
+// }
+
 #[derive(Eq, Hash, PartialEq, Clone, Debug)]
 enum ExprV {
     BinOp {
         op: ast::BinaryOperator,
-        lhs: ClassNumOrConst,
-        rhs: ClassNumOrConst,
+        lhs: ClassNum,
+        rhs: ClassNum,
         dtype: Dtype,
     },
     GetElementPtr {
-        ptr: ClassNumOrConst,
-        offset: ClassNumOrConst,
+        ptr: ClassNum,
+        offset: ClassNum,
         dtype: Dtype,
     },
     Load {
-        ptr: ClassNumOrConst,
+        ptr: ClassNum,
     }, // UnaryOp 등 추가 가능
     Call {
-        callee: ClassNumOrConst,
-        args: Vec<ClassNumOrConst>,
+        callee: ClassNum,
+        args: Vec<ClassNum>,
         return_type: Dtype,
     },
     TypeCast {
-        value: ClassNumOrConst,
+        value: ClassNum,
         target_dtype: Dtype,
     },
     UnaryOp {
         op: ast::UnaryOperator,
-        operand: ClassNumOrConst,
+        operand: ClassNum,
         dtype: Dtype,
     },
 }
