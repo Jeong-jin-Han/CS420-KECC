@@ -35,6 +35,7 @@ impl Optimize<FunctionDefinition> for DeadcodeInner {
         */
         let cfg = make_cfg(code);
         let reverse_cfg = reverse_cfg(&cfg);
+        println!("reverse_cfg {:?}", reverse_cfg);
         let domtree = Domtree::new(code.bid_init, &cfg, &reverse_cfg);
 
         let mut declare_reg = HashSet::<RegisterId>::new();
@@ -151,9 +152,6 @@ impl Optimize<FunctionDefinition> for DeadcodeInner {
                 }
             }
         }
-        /*
-        phinode에 대해서 usd 여부 적어주기
-        */
 
         let mut changed = false;
         /*
@@ -177,12 +175,6 @@ impl Optimize<FunctionDefinition> for DeadcodeInner {
             .difference(&nop_reg)
             .cloned()
             .collect::<HashSet<_>>();
-
-        for (bid, block) in &code.blocks {
-            for (aid, _) in block.phinodes.iter().enumerate() {
-                let _unused = used_reg.insert(RegisterId::arg(*bid, aid));
-            }
-        }
 
         let mut unused_reg = declare_reg
             .difference(&used_reg)
@@ -209,9 +201,6 @@ impl Optimize<FunctionDefinition> for DeadcodeInner {
                             rhs,
                             dtype,
                         } => {
-                            // lhs.get_register()  // Option(RegisterId)
-                            // rhs.get_register()  // Option(ReigsterId)
-                            // declare_reg에 존재하면 used_reg에 추가
                             insert_register(lhs, &mut unused_reg);
                             insert_register(rhs, &mut unused_reg);
                         }
@@ -219,7 +208,6 @@ impl Optimize<FunctionDefinition> for DeadcodeInner {
                             insert_register(operand, &mut unused_reg);
                         }
                         Instruction::Store { ptr, value } => {
-                            // store의 경우 지금 현재 RegisterId::temp(*bid, iid) 무조건 used로 들어감
                             insert_register(ptr, &mut unused_reg);
                             insert_register(value, &mut unused_reg);
                         }
@@ -283,10 +271,14 @@ impl Optimize<FunctionDefinition> for DeadcodeInner {
             })
             .collect();
 
+        /* bid, aid, init_len */
+        let mut phinode_arg_places = HashSet::<(BlockId, usize, usize)>::new();
+
         for (bid, block) in &mut code.blocks {
             let mut arg_tracker = 0;
             let BlockId(i) = bid; // b0 인 경우에는 phinode 제거 안함
             if *i != 0 {
+                let init_len = block.phinodes.len();
                 block.phinodes = block
                     .phinodes
                     .iter()
@@ -296,6 +288,14 @@ impl Optimize<FunctionDefinition> for DeadcodeInner {
                         if unused_reg.contains(&reg) {
                             arg_tracker += 1;
                             changed = true;
+                            /*
+                            해당 reg와 관련된 JumpArg 수정해주기
+
+                            reveres_cfg.get(bid).unwrap() -> (prev_bid, jumparg)
+                            각각의 prev_bid에 들어가서 jumparg(bid, args) -> args 수정하고 오기
+                            */
+
+                            let _unused = phinode_arg_places.insert((*bid, aid, init_len));
                             None
                         } else {
                             if arg_tracker > 0 {
@@ -308,6 +308,26 @@ impl Optimize<FunctionDefinition> for DeadcodeInner {
                     .collect();
             }
         }
+
+        println!("removed phinode_arg_places {:?}", phinode_arg_places);
+        // -> 어디서 사라지는 확인
+
+        for (bid, aid, phi_len) in phinode_arg_places {
+            // prev_bid
+            for (prev_bid, _phinode_arg_places) in reverse_cfg.get(&bid).unwrap() {
+                println!("prev_bid {:?} aid {:?} bid {:?}", prev_bid, aid, bid);
+                let prev_block = code.blocks.get_mut(prev_bid).unwrap();
+
+                prev_block.exit.walk_jump_args(|arg| {
+                    println!("phi_len {:?} arg.args.len() {:?}", phi_len, arg.args.len());
+                    if phi_len == arg.args.len() {
+                        println!("removed prev_bid {:?}, arg {:?}", prev_bid, arg);
+                        let _unused = arg.args.remove(aid);
+                    }
+                });
+            }
+        }
+
         /*
         앞으로 해야 할 것
         nop operation 지우기 & unused reg 지우기, 그런다음에 RID 수정해주기
