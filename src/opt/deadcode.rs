@@ -248,7 +248,7 @@ impl Optimize<FunctionDefinition> for DeadcodeInner {
 
         // println!("declare_reg {:#?}\n\n", declare_reg);
         // println!("used_reg {:#?}\n\n", used_reg);
-        println!("[opt] unused_reg {:#?}\n\n", unused_reg);
+        // println!("[opt] unused_reg {:#?}\n\n", unused_reg);
 
         // If all register used, bail out
         if unused_reg.is_empty() {
