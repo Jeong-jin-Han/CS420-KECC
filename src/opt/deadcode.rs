@@ -59,7 +59,7 @@ impl Optimize<FunctionDefinition> for DeadcodeInner {
         // println!("size of declare_reg {:?}", declare_reg.len());
 
         /*
-        instruction -> temp reg
+        instruction -> temp reㄷg
         exit -> jumpArg에서 사용함
         */
         let mut nop_reg = HashSet::<RegisterId>::new();
@@ -69,7 +69,7 @@ impl Optimize<FunctionDefinition> for DeadcodeInner {
             //     // prev_bid -> jumparg.bid == bid
             //     // jumparg.args : Vec<Operand>
             // }
-
+            println!("used_insertion");
             for (iid, instr) in block.instructions.iter().enumerate() {
                 match instr.deref() {
                     Instruction::BinOp {
@@ -114,6 +114,7 @@ impl Optimize<FunctionDefinition> for DeadcodeInner {
                     Instruction::GetElementPtr { ptr, offset, dtype } => {
                         insert_register(ptr, &mut used_reg);
                         insert_register(offset, &mut used_reg);
+                        let _unused = used_reg.insert(RegisterId::temp(*bid, iid));
                     }
                     Instruction::Nop => {
                         let nop_rid = RegisterId::temp(*bid, iid);
@@ -121,35 +122,36 @@ impl Optimize<FunctionDefinition> for DeadcodeInner {
                     }
                     _ => {}
                 }
-                match &block.exit {
-                    BlockExit::ConditionalJump {
-                        condition,
-                        arg_then,
-                        arg_else,
-                    } => {
-                        insert_register(condition, &mut used_reg);
-                        insert_registers(&arg_then.args, &mut used_reg);
-                        insert_registers(&arg_else.args, &mut used_reg);
-                    }
-                    BlockExit::Switch {
-                        value,
-                        default,
-                        cases,
-                    } => {
-                        insert_register(value, &mut used_reg);
-                        insert_registers(&default.args, &mut used_reg);
-                        cases.iter().for_each(|(c, jump)| {
-                            insert_registers(&jump.args, &mut used_reg);
-                        })
-                    }
-                    BlockExit::Return { value } => {
-                        insert_register(value, &mut used_reg);
-                    }
-                    BlockExit::Jump { arg } => {
-                        insert_registers(&arg.args, &mut used_reg);
-                    }
-                    BlockExit::Unreachable => {}
+            }
+            match &block.exit {
+                BlockExit::ConditionalJump {
+                    condition,
+                    arg_then,
+                    arg_else,
+                } => {
+                    insert_register(condition, &mut used_reg);
+                    insert_registers(&arg_then.args, &mut used_reg);
+                    insert_registers(&arg_else.args, &mut used_reg);
                 }
+                BlockExit::Switch {
+                    value,
+                    default,
+                    cases,
+                } => {
+                    insert_register(value, &mut used_reg);
+                    insert_registers(&default.args, &mut used_reg);
+                    cases.iter().for_each(|(c, jump)| {
+                        insert_registers(&jump.args, &mut used_reg);
+                    })
+                }
+                BlockExit::Return { value } => {
+                    println!("return value {:?}", value);
+                    insert_register(value, &mut used_reg);
+                }
+                BlockExit::Jump { arg } => {
+                    insert_registers(&arg.args, &mut used_reg);
+                }
+                BlockExit::Unreachable => {}
             }
         }
 
@@ -157,7 +159,7 @@ impl Optimize<FunctionDefinition> for DeadcodeInner {
         /*
         nop을 사용하고 있는 operand를 지워주기
         */
-        // println!("nop_reg {:?}", nop_reg);
+        println!("nop_reg {:?}", nop_reg);
         if !nop_reg.is_empty() {
             changed |= code.walk(|op| {
                 if let Operand::Register { rid, dtype } = op {
@@ -170,17 +172,18 @@ impl Optimize<FunctionDefinition> for DeadcodeInner {
                 }
                 false
             });
+            used_reg = used_reg
+                .difference(&nop_reg)
+                .cloned()
+                .collect::<HashSet<_>>();
         }
-        let mut used_reg = used_reg
-            .difference(&nop_reg)
-            .cloned()
-            .collect::<HashSet<_>>();
 
         let mut unused_reg = declare_reg
             .difference(&used_reg)
             .cloned()
             .collect::<HashSet<_>>();
 
+        println!("unused insertion");
         for (bid, block) in &mut code.blocks {
             for (iid, instr) in block.instructions.iter().enumerate().rev() {
                 let temp = RegisterId::temp(*bid, iid);
@@ -201,37 +204,37 @@ impl Optimize<FunctionDefinition> for DeadcodeInner {
                             rhs,
                             dtype,
                         } => {
-                            insert_register(lhs, &mut unused_reg);
-                            insert_register(rhs, &mut unused_reg);
+                            insert_register_conditional(lhs, &mut unused_reg);
+                            insert_register_conditional(rhs, &mut unused_reg);
                         }
                         Instruction::UnaryOp { op, operand, dtype } => {
-                            insert_register(operand, &mut unused_reg);
+                            insert_register_conditional(operand, &mut unused_reg);
                         }
-                        Instruction::Store { ptr, value } => {
-                            insert_register(ptr, &mut unused_reg);
-                            insert_register(value, &mut unused_reg);
-                        }
+                        // Instruction::Store { ptr, value } => {
+                        //     insert_register(ptr, &mut unused_reg);
+                        //     insert_register(value, &mut unused_reg);
+                        // }
                         Instruction::Load { ptr } => {
-                            insert_register(ptr, &mut unused_reg);
+                            insert_register_conditional(ptr, &mut unused_reg);
                         }
-                        Instruction::Call {
-                            callee,
-                            args,
-                            return_type,
-                        } => {
-                            insert_register(callee, &mut unused_reg);
-                            insert_registers(args, &mut unused_reg);
-                        }
+                        // Instruction::Call {
+                        //     callee,
+                        //     args,
+                        //     return_type,
+                        // } => {
+                        //     insert_register(callee, &mut unused_reg);
+                        //     insert_registers(args, &mut unused_reg);
+                        // }
                         Instruction::TypeCast {
                             value,
                             target_dtype,
                         } => {
-                            insert_register(value, &mut unused_reg);
+                            insert_register_conditional(value, &mut unused_reg);
                         }
-                        Instruction::GetElementPtr { ptr, offset, dtype } => {
-                            insert_register(ptr, &mut unused_reg);
-                            insert_register(offset, &mut unused_reg);
-                        }
+                        // Instruction::GetElementPtr { ptr, offset, dtype } => {
+                        //     insert_register(ptr, &mut unused_reg);
+                        //     insert_register(offset, &mut unused_reg);
+                        // }
                         _ => {}
                     }
                 }
@@ -286,6 +289,7 @@ impl Optimize<FunctionDefinition> for DeadcodeInner {
                     .filter_map(|(aid, phi)| {
                         let reg = RegisterId::arg(*bid, aid);
                         if unused_reg.contains(&reg) {
+                            println!("unused phinodes | reg {:?}", reg);
                             arg_tracker += 1;
                             changed = true;
                             /*
@@ -310,20 +314,31 @@ impl Optimize<FunctionDefinition> for DeadcodeInner {
         }
 
         println!("removed phinode_arg_places {:?}", phinode_arg_places);
-        // -> 어디서 사라지는 확인
 
-        for (bid, aid, phi_len) in phinode_arg_places {
+        let mut sorted_places: Vec<_> = phinode_arg_places.into_iter().collect();
+        sorted_places.sort_by(|(bid1, aid1, _), (bid2, aid2, _)| {
+            bid1.cmp(bid2).then_with(|| aid2.cmp(aid1)) // bid 기준 오름차순, aid 기준 **내림차순**
+        });
+
+        // -> 어디서 사라지는 확인
+        // aid가 큰 것부터 지워주기
+        let mut phi_remover_tracer = HashMap::<&BlockId, usize>::new();
+        for (bid, aid, phi_len) in sorted_places {
             // prev_bid
+            println!("phi_remover_tracer {:?}", phi_remover_tracer);
             for (prev_bid, _phinode_arg_places) in reverse_cfg.get(&bid).unwrap() {
                 println!("prev_bid {:?} aid {:?} bid {:?}", prev_bid, aid, bid);
                 let prev_block = code.blocks.get_mut(prev_bid).unwrap();
-
                 prev_block.exit.walk_jump_args(|arg| {
-                    println!("phi_len {:?} arg.args.len() {:?}", phi_len, arg.args.len());
-                    if phi_len == arg.args.len() {
-                        println!("removed prev_bid {:?}, arg {:?}", prev_bid, arg);
+                    // println!("phi_len {:?} arg.args.len() {:?}", phi_len, arg.args.len());
+                    let tracer = phi_remover_tracer.entry(prev_bid).or_insert(0);
+                    if phi_len == (arg.args.len() + *tracer) && !arg.args.is_empty() {
+                        println!("phi_len == arg.args.len()");
+                        // println!("removed prev_bid {:?}, arg {:?}", prev_bid, arg);
                         let _unused = arg.args.remove(aid);
+                        *phi_remover_tracer.entry(prev_bid).or_insert(0) += 1;
                     }
+                    println!("phi_len {:?} arg.args.len() {:?}", phi_len, arg.args.len());
                 });
             }
         }
@@ -393,6 +408,7 @@ impl Optimize<FunctionDefinition> for DeadcodeInner {
 
 fn insert_register(op: &Operand, used_reg: &mut HashSet<RegisterId>) {
     if let Some(reg) = op.get_register() {
+        println!("op: {:?}, reg.0: {:?}", op, *reg.0);
         let _unused = used_reg.insert(*reg.0);
     }
 }
@@ -401,4 +417,22 @@ fn insert_registers(ops: &[Operand], used_reg: &mut HashSet<RegisterId>) {
     ops.iter().for_each(|reg| {
         insert_register(reg, used_reg);
     });
+}
+
+fn should_add_to_unused(reg: &RegisterId) -> bool {
+    // Local이나 Arg는 제거하면 안 됨
+    match reg {
+        RegisterId::Local { .. } | RegisterId::Arg { .. } => false,
+        RegisterId::Temp { .. } => true, // 임시 레지스터만 제거 가능
+        _ => false,
+    }
+}
+
+fn insert_register_conditional(op: &Operand, used_reg: &mut HashSet<RegisterId>) {
+    if let Some(reg) = op.get_register() {
+        println!("op: {:?}, reg.0: {:?}", op, *reg.0);
+        if should_add_to_unused(reg.0) {
+            let _unused = used_reg.insert(*reg.0);
+        }
+    }
 }
