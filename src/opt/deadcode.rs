@@ -33,6 +33,7 @@ impl Optimize<FunctionDefinition> for DeadcodeInner {
         phinode의 경우 단순히 block안에서만 사용여부를 판단할 수 없음
         reverse_cfg가 필요하다.
         */
+        // println!("code {:?}", code);
         let cfg = make_cfg(code);
         let reverse_cfg = reverse_cfg(&cfg);
         println!("reverse_cfg {:?}", reverse_cfg);
@@ -59,16 +60,14 @@ impl Optimize<FunctionDefinition> for DeadcodeInner {
         // println!("size of declare_reg {:?}", declare_reg.len());
 
         /*
-        instruction -> temp reㄷg
+        instruction -> temp reg
         exit -> jumpArg에서 사용함
         */
         let mut nop_reg = HashSet::<RegisterId>::new();
         let mut used_reg = HashSet::<RegisterId>::new();
+        let mut call_reg = HashSet::<RegisterId>::new();
+        /* call에서만 예외적으로 unused_reg에서 제외 */
         for (bid, block) in &code.blocks {
-            // for (prev_bid, jumparg) in reverse_cfg.get(bid).unwrap() {
-            //     // prev_bid -> jumparg.bid == bid
-            //     // jumparg.args : Vec<Operand>
-            // }
             println!("used_insertion");
             for (iid, instr) in block.instructions.iter().enumerate() {
                 match instr.deref() {
@@ -104,6 +103,7 @@ impl Optimize<FunctionDefinition> for DeadcodeInner {
                         insert_register(callee, &mut used_reg);
                         insert_registers(args, &mut used_reg);
                         let _unused = used_reg.insert(RegisterId::temp(*bid, iid));
+                        let _unused = call_reg.insert(RegisterId::temp(*bid, iid));
                     }
                     Instruction::TypeCast {
                         value,
@@ -240,6 +240,11 @@ impl Optimize<FunctionDefinition> for DeadcodeInner {
                 }
             }
         }
+
+        let mut unused_reg = unused_reg
+            .difference(&call_reg)
+            .cloned()
+            .collect::<HashSet<_>>();
 
         // println!("declare_reg {:#?}\n\n", declare_reg);
         // println!("used_reg {:#?}\n\n", used_reg);
