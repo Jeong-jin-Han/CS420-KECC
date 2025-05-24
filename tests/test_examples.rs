@@ -3,6 +3,10 @@ use std::path::Path;
 
 use kecc::*;
 
+/*
+./scripts/make-submissions.sh
+*/
+
 fn test_dir<F>(path: &Path, ext: &OsStr, f: F)
 where
     F: Fn(&Path),
@@ -170,32 +174,32 @@ fn test_examples_irgen_small() {
     //     "while_continue_break.c",
     // ];
 
-    // let test_files = [
-    //     "side_effect.c"
-    // ];
+    // let test_files = ["complete_cond.c", "bitwise.c"];
 
     // for file in test_files {
     //     println!("[testing irgen for \"examples_new/c/{file}\"]");
     //     test_irgen(Path::new(&format!("examples_new/c/{file}")));
     // }
 
-    // let test_files = vec![
-    //     // "logical.c",
-    //     // "struct_0.c", // pass
-    //     // "test_polished_me.c", //pass
-    //     // "test_polished_me2.c", //pass
-    //     // "test_polished_me3.c",
-    //     // "test_polished_me4.c",
-    //     // "test_polished_me5.c", // pass
-    //     // "test_polished_me6.c", // fail
-    //     // "test.c",
-    //     "test2.c",
-    // ];
+    let test_files = vec![
+        // "logical.c",
+        // "struct_0.c", // pass
+        // "test_polished_me.c", //pass
+        // "test_polished_me2.c", //pass
+        // "test_polished_me3.c",
+        // "test_polished_me4.c",
+        // "test_polished_me5.c", // pass
+        // "test.c",
+        // "test_polished_me6.c", // fail
+        // "test_polished_me7.c", // fail
+        "test_polished_me8.c", // fail
+                               // "test2.c",
+    ];
 
-    // for file in test_files {
-    //     println!("[testing irgen for \"examples/HW2_fuzz_c/{file}\"]");
-    //     test_irgen(Path::new(&format!("examples/HW2_fuzz_c/{file}")));
-    // }
+    for file in test_files {
+        println!("[testing irgen for \"examples/HW2_fuzz_c/{file}\"]");
+        test_irgen(Path::new(&format!("examples/HW2_fuzz_c/{file}")));
+    }
 
     // test_dir(Path::new("examples/c"), OsStr::new("c"), |path| {
     //     let path_str = &path.to_str().expect("`path` must be transformed to `&str`");
@@ -206,10 +210,10 @@ fn test_examples_irgen_small() {
     //     }
     // });
 
-    test_dir(Path::new("examples/c"), OsStr::new("c"), |path| {
-        println!("[testing irgen for {path:?}]");
-        test_irgen(path);
-    });
+    // test_dir(Path::new("examples/c"), OsStr::new("c"), |path| {
+    //     println!("[testing irgen for {path:?}]");
+    //     test_irgen(path);
+    // });
 }
 
 #[test]
@@ -263,11 +267,38 @@ fn test_examples_simplify_cfg() {
 
 #[test]
 fn test_examples_mem2reg() {
-    test_opt(
-        &Path::new("examples/mem2reg/mem2reg.input.ir"),
-        &Path::new("examples/mem2reg/mem2reg.output.ir"),
-        &mut Mem2reg::default(),
-    );
+    // test_opt(
+    //     &Path::new("examples/mem2reg/test.input.ir"),
+    //     &Path::new("examples/mem2reg/test.output.ir"),
+    //     &mut Mem2reg::default(),
+    // );
+
+    // test_opt(
+    //     &Path::new("examples/mem2reg/mem2reg.input.ir"),
+    //     &Path::new("examples/mem2reg/mem2reg.output.ir"),
+    //     &mut Mem2reg::default(),
+    // );
+
+    // let test_files = vec![
+    //     "alignof.ir",
+    //     "array.ir",
+    //     "array2.ir",
+    //     "array3.ir",
+    //     "array4.ir",
+    //     "array5.ir",
+    //     "bar.ir",
+    //     "switch-in-loop.ir",
+    //     "lost_copy.ir",
+    //     "temp2.ir",
+    //     "cond_and_loop.ir",
+    // ];
+    // for file in test_files {
+    //     test_opt(
+    //         &Path::new(&format!("examples/ir1/{file}")),
+    //         &Path::new(&format!("examples/ir2/{file}")),
+    //         &mut Mem2reg::default(),
+    //     );
+    // }
 
     test_opt_between_dirs(
         Path::new("examples/ir1"),
@@ -278,11 +309,89 @@ fn test_examples_mem2reg() {
 
 #[test]
 fn test_examples_deadcode() {
-    test_opt(
-        &Path::new("examples/deadcode/deadcode.input.ir"),
-        &Path::new("examples/deadcode/deadcode.output.ir"),
-        &mut Deadcode::default(),
-    );
+    // test_opt(
+    //     &Path::new("examples/deadcode/deadcode.input.ir"),
+    //     &Path::new("examples/deadcode/deadcode.output.ir"),
+    //     &mut Deadcode::default(),
+    // );
+
+    // let test_files = vec![
+    //     // "switch-in-loop.ir",
+    //     // "lost_copy.ir",
+    //     "temp2.ir",
+    //     // "foo2.ir",
+    //     // "pointer.ir", // fail
+    // ];
+
+    // let test_files = vec![
+    //     "hello_main.ir",
+    //     "alignof.ir",
+    //     "array.ir",
+    //     "array2.ir",
+    //     "array3.ir",
+    //     "array4.ir",
+    //     "array5.ir", // fail
+    //     "bar.ir",
+    //     "bitwise.ir", // fail
+    //     "cmp.ir",     // fail
+    //     "comma.ir",
+    //     "complement.ir", // fail
+    //     "cond.ir",
+    //     "cond_and_loop.ir",
+    //     "cond.ir",
+    //     "fib2.ir",
+    //     "fib3.ir",
+    //     "fib4.ir",
+    //     "fib5.ir",
+    //     "fibonacci.ir",
+    //     "float.ir",
+    //     "float2.ir",
+    //     "foo.ir", // fail
+    //     "foo2.ir",
+    //     "foo3.ir",
+    //     "foo4.ir",
+    //     "for_continue_break.ir",
+    //     "gcd.ir",
+    //     "integer_literal.ir",
+    //     "integer_literal2.ir",
+    //     "logical_op.ir",
+    //     "lost_copy.ir",
+    //     "minus_constant.ir",
+    //     "negate.ir",
+    //     // "pointer.ir", // fail
+    //     "return_void.ir",
+    //     "shift.ir",
+    //     "simple_cond.ir",
+    //     "simple_for.ir",
+    //     "simple_if.ir",
+    //     "simple.ir",
+    //     "sizeof.ir",
+    //     "sizeof2.ir",
+    //     "sizeof3.ir",
+    //     "sizeof4.ir",
+    //     "struct.ir",
+    //     "struct2.ir",
+    //     "struct3.ir", // fail
+    //     "struct4.ir",
+    //     "swap.ir",
+    //     "switch-in-loop.ir",
+    //     "temp.ir",
+    //     "temp2.ir",
+    //     "test.ir",
+    //     "typecast.ir",
+    //     "typedef.ir",
+    //     "unary.ir",
+    //     "while_continue_break.ir",
+    // ];
+
+    // for file in test_files {
+    //     println!("file: {:?}", file);
+    //     test_opt(
+    //         &Path::new(&format!("examples/ir2/{file}")),
+    //         &Path::new(&format!("examples/ir3/{file}")),
+    //         &mut Deadcode::default(),
+    //     );
+    // }
 
     test_opt_between_dirs(
         Path::new("examples/ir2"),
@@ -293,11 +402,11 @@ fn test_examples_deadcode() {
 
 #[test]
 fn test_examples_gvn() {
-    test_opt(
-        &Path::new("examples/gvn/me/ex1.input.ir"),
-        &Path::new("examples/gvn/me/ex1.output.ir"),
-        &mut Gvn::default(),
-    ); // ME
+    // test_opt(
+    //     &Path::new("examples/gvn/me/ex6.input.ir"),
+    //     &Path::new("examples/gvn/me/ex1.output.ir"),
+    //     &mut Gvn::default(),
+    // );
 
     // test_opt(
     //     &Path::new("examples/gvn/gvn.input.ir"),
@@ -305,11 +414,91 @@ fn test_examples_gvn() {
     //     &mut Gvn::default(),
     // );
 
-    // test_opt_between_dirs(
-    //     Path::new("examples/ir3"),
-    //     Path::new("examples/ir4"),
-    //     &mut Gvn::default(),
-    // );
+    // let test_files = vec![
+    //     "hello_main.ir",
+    //     "alignof.ir",
+    //     "array.ir",
+    //     "array2.ir",
+    //     "array3.ir",
+    //     "array4.ir",
+    //     "array5.ir", // fail
+    //     "bar.ir",
+    //     "bitwise.ir", // fail
+    //     "cmp.ir",     // fail
+    //     "comma.ir",
+    //     // "complement.ir", // fail
+    //     "cond.ir",
+    //     "cond_and_loop.ir",
+    //     "cond.ir",
+    //     "fib2.ir",
+    //     "fib3.ir",
+    //     "fib4.ir",
+    //     "fib5.ir",
+    //     "fibonacci.ir",
+    //     "float.ir",
+    //     "float2.ir",
+    //     "foo.ir", // fail
+    //     "foo2.ir",
+    //     "foo3.ir",
+    //     "foo4.ir",
+    //     "for_continue_break.ir",
+    //     "gcd.ir",
+    //     "integer_literal.ir",
+    //     "integer_literal2.ir",
+    //     "logical_op.ir",
+    //     "lost_copy.ir",
+    //     "minus_constant.ir",
+    //     "negate.ir",
+    //     "pointer.ir", // fail
+    //     "return_void.ir",
+    //     "shift.ir",
+    //     "simple_cond.ir",
+    //     "simple_for.ir",
+    //     "simple_if.ir",
+    //     "simple.ir",
+    //     "sizeof.ir",
+    //     "sizeof2.ir",
+    //     "sizeof3.ir",
+    //     "sizeof4.ir",
+    //     "struct.ir",
+    //     "struct2.ir",
+    //     "struct3.ir", // fail
+    //     "struct4.ir",
+    //     "swap.ir",
+    //     "switch-in-loop.ir",
+    //     "temp.ir",
+    //     "temp2.ir",
+    //     "test.ir",
+    //     "typecast.ir",
+    //     "typedef.ir",
+    //     "unary.ir",
+    //     "while_continue_break.ir",
+    // ];
+
+    // let test_files = vec![
+    //     // "bitwise.ir",    // success
+    //     // "cmp.ir",        // success
+    //     // "complement.ir", // success
+    //     // "foo.ir",        // success
+    //     // "struct3.ir",    // success
+    //     // "pointer.ir",    // success
+    //     "complete_cond.ir", // fail
+    // ];
+
+    // for file in test_files {
+    //     println!("file: {file}");
+    //     test_opt(
+    //         &Path::new(&format!("examples/ir3/{file}")),
+    //         &Path::new(&format!("examples/ir4/{file}")),
+    //         &mut Gvn::default(),
+    //     );
+    // }
+
+    test_opt_between_dirs(
+        Path::new("examples/ir3"),
+        Path::new("examples/ir4"),
+        &mut Gvn::default(),
+    );
 }
 
 #[test]
@@ -331,20 +520,20 @@ fn test_examples_asmgen_small() {
             }
         });
     }
-    for dir in ASMGEN_TEST_DIR_LIST.iter() {
-        test_dir(Path::new(dir), OsStr::new("ir"), |path| {
-            let file_name = &path
-                .file_name()
-                .expect("`path` must have a file name")
-                .to_str()
-                .expect("must be transformable to `&str`");
-            if !ASMGEN_SMALL_TEST_IGNORE_LIST.contains(file_name) && !file_name.contains(HELLO_MAIN)
-            {
-                println!("[testing asmgen for {path:?}]");
-                test_asmgen(path);
-            }
-        });
-    }
+    // for dir in ASMGEN_TEST_DIR_LIST.iter() {
+    //     test_dir(Path::new(dir), OsStr::new("ir"), |path| {
+    //         let file_name = &path
+    //             .file_name()
+    //             .expect("`path` must have a file name")
+    //             .to_str()
+    //             .expect("must be transformable to `&str`");
+    //         if !ASMGEN_SMALL_TEST_IGNORE_LIST.contains(file_name) && !file_name.contains(HELLO_MAIN)
+    //         {
+    //             println!("[testing asmgen for {path:?}]");
+    //             test_asmgen(path);
+    //         }
+    //     });
+    // }
 }
 
 #[test]

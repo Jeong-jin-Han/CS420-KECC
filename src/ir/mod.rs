@@ -297,6 +297,15 @@ impl WriteOp for ast::BinaryOperator {
             Self::BitwiseAnd => "and",
             Self::BitwiseXor => "xor",
             Self::BitwiseOr => "or",
+            // ME
+            Self::Index => "[]",
+            Self::Assign => "store",
+            Self::AssignPlus => "assign+",
+            Self::AssignMinus => "assign-",
+            Self::BitwiseAnd => "bit &",
+            Self::BitwiseXor => "bit ^",
+            Self::BitwiseOr => "bit |",
+            Self::LogicalAnd => "Log &&",
             _ => todo!(
                 "ast::BinaryOperator::WriteOp: write operation for {:?} is needed",
                 self
@@ -312,6 +321,8 @@ impl WriteOp for ast::UnaryOperator {
             Self::Plus => "plus",
             Self::Minus => "minus",
             Self::Negate => "negate",
+            // ME
+            // Self::PostIncrement => "postincrement",
             _ => todo!(
                 "ast::UnaryOperator::WriteOp: write operation for {:?} is needed",
                 self
@@ -784,6 +795,8 @@ impl Constant {
 
     #[inline]
     pub fn int(value: u128, dtype: Dtype) -> Self {
+        // println!("Constant | value {} dtype {}", value, dtype);
+
         let width = dtype.get_int_width().expect("`dtype` must be `Dtype::Int`");
         let is_signed = dtype.is_int_signed();
 

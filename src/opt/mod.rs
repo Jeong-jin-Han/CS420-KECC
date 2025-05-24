@@ -51,7 +51,7 @@ impl<T, O: Optimize<T>> Optimize<T> for Repeat<O> {
             return false;
         }
 
-        while self.inner.optimize(code) {}
+        while self.inner.optimize(code) {} // later fix
         true
     }
 }

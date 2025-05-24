@@ -1,0 +1,60 @@
+digraph G {
+subgraph "cluster.deadcode" {
+subgraph "cluster.deadcode.b0" {
+style=filled;
+color=lightgrey;
+node [shape=record];
+label="b0";
+"deadcode:b0:i0" [label="add 100:i32 200:i32"]
+"deadcode:b0:i1" [label="add %b0:i0:i32 300:i32"]
+"deadcode:b0:i2" [label="add %b0:i1:i32 400:i32"]
+"deadcode:b0:i3" [label="store %b0:i0:i32 %l1:i32*"]
+"deadcode:b0:exit" [label="br undef:i1, b1(), b2()"]
+"deadcode:b0:i0" -> "deadcode:b0:i1" -> "deadcode:b0:i2" -> "deadcode:b0:i3" -> "deadcode:b0:exit"
+}
+subgraph "cluster.deadcode.b1" {
+style=filled;
+color=lightgrey;
+node [shape=record];
+label="b1";
+"deadcode:b1:i0" [label="nop"]
+"deadcode:b1:i1" [label="call @sink:[ret:unit params:(unit)]*(%b1:i0:unit)"]
+"deadcode:b1:exit" [label="j b3()"]
+"deadcode:b1:i0" -> "deadcode:b1:i1" -> "deadcode:b1:exit"
+}
+subgraph "cluster.deadcode.b2" {
+style=filled;
+color=lightgrey;
+node [shape=record];
+label="b2";
+"deadcode:b2:i0" [label="store 42:i32 %l1:i32*"]
+"deadcode:b2:exit" [label="j b3()"]
+"deadcode:b2:i0" -> "deadcode:b2:exit"
+}
+subgraph "cluster.deadcode.b3" {
+style=filled;
+color=lightgrey;
+node [shape=record];
+label="b3";
+"deadcode:b3:exit" [label="ret 0:i32"]
+"deadcode:b3:exit"
+}
+label="fun i32 @deadcode ()";
+"deadcode:b0:exit" -> "deadcode:b1:i0" [label="true"];
+"deadcode:b0:exit" -> "deadcode:b2:i0" [label="false"];
+"deadcode:b1:exit" -> "deadcode:b3:exit";
+"deadcode:b2:exit" -> "deadcode:b3:exit";
+}
+subgraph "cluster.sink" {
+subgraph "cluster.sink.b0" {
+style=filled;
+color=lightgrey;
+node [shape=record];
+label="b0";
+"sink:b0:exit" [label="ret unit:unit"]
+"sink:b0:exit"
+}
+label="fun unit @sink (unit)";
+}
+"deadcode:b1:i1" -> "sink:b0:exit";
+}
