@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 use lang_c::ast;
 
-use crate::ir::HasDtype;
+use crate::ir::{BlockExit, HasDtype};
 use crate::opt::opt_utils;
 use crate::{Translate, asm, ir};
 
@@ -28,13 +28,32 @@ impl Translate<ir::TranslationUnit> for Asmgen {
         let mut functions = Vec::new();
         let mut variables = Vec::new();
 
+        let mut function_name_lists = HashMap::<&str, usize>::new();
+        for (idx, (name, decl)) in source.decls.iter().enumerate() {
+            // match decl {
+            //     ir::Declaration::Function {
+            //         signature,
+            //         definition,
+            //     } => {
+            //         let _unused = function_name_lists.insert(name, idx);
+            //     }
+            //     _ => {}
+            // }
+            if let ir::Declaration::Function { .. } = decl {
+                let _unused = function_name_lists.insert(name, idx);
+            }
+        }
+
+        println!("function_name_lists | {:?}", function_name_lists);
+
         for (name, decl) in &source.decls {
             match decl {
                 ir::Declaration::Function {
                     signature,
                     definition: Some(defn),
                 } => {
-                    let func = self.translate_function(name, signature, defn)?;
+                    let func =
+                        self.translate_function(name, signature, defn, &function_name_lists)?;
 
                     let header = vec![
                         asm::Directive::Globl(asm::Label(name.clone())),
@@ -69,9 +88,14 @@ impl Asmgen {
         name: &str,
         sig: &ir::FunctionSignature,
         defn: &ir::FunctionDefinition,
+        function_name_list: &HashMap<&str, usize>,
     ) -> Result<asm::Function, ()> {
         let mut asm_blocks = Vec::new();
         let bid_init = &defn.bid_init;
+
+        // 스택 오프셋 계산 초기화
+        // stack pointer offset, 해당 function에 대해서는 stack_offset 동일함.
+        let stack_offset = self.calculate_stack_offset(name, defn, function_name_list);
 
         for (bid, block) in &defn.blocks {
             let label = if (bid == bid_init) {
@@ -82,8 +106,9 @@ impl Asmgen {
             let mut instructions = Vec::new();
 
             // body
-            for instr in &block.instructions {
-                instructions.extend(self.translate_instruction(instr));
+            for (iid, instr) in block.instructions.iter().enumerate() {
+                let dest_rid = ir::RegisterId::temp(*bid, iid);
+                instructions.extend(self.translate_instruction(&dest_rid, &block.exit, instr));
             }
 
             // exit
@@ -95,7 +120,52 @@ impl Asmgen {
         Ok(asm::Function::new(asm_blocks))
     }
 
-    fn translate_instruction(&self, instr: &ir::Named<ir::Instruction>) -> Vec<asm::Instruction> {
+    fn calculate_stack_offset(
+        &mut self,
+        name: &str,
+        defn: &ir::FunctionDefinition,
+        function_name_list: &HashMap<&str, usize>,
+    ) -> i32 {
+        let mut stack_offset = 0;
+
+        // 일단 먼저 call이 존재하는지 판단하기 -> 모든 block들을 보면서 call이 있는지 call이 사용되는 시점과 define되는 시점
+        // 함수 이름 -> bid 수준이 아니라 function 수준이기 때문에 다른 전략이 필요해
+        let current_idx = function_name_list.get(name).unwrap();
+        // println!("current_idx {:?}", current_idx);
+        // CALL, JALR
+        let tmp: Vec<(ir::BlockId, CallType)> = defn
+            .blocks
+            .iter()
+            .flat_map(|(bid, block)| {
+                let (is_call_present, call_name) = is_call(block.instructions.clone()); // is_call 호출
+                if is_call_present {
+                    let call_idx = function_name_list.get(call_name.deref()).unwrap();
+                    // current_idx가 call_idx보다 작은 경우는 정적 호출
+                    if call_idx < current_idx {
+                        Some((*bid, CallType::Call)) // 정적 호출
+                    } else {
+                        Some((*bid, CallType::Jalr)) // 동적 호출
+                    }
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        println!("calculate_stack_offset | {:?}", tmp);
+
+        // ra, s0 (frame pointer)
+        stack_offset += 2;
+
+        stack_offset
+    }
+
+    fn translate_instruction(
+        &self,
+        dest_rid: &ir::RegisterId,
+        exit: &ir::BlockExit,
+        instr: &ir::Named<ir::Instruction>,
+    ) -> Vec<asm::Instruction> {
         use ir::Instruction::*;
 
         let mut instructions = Vec::<asm::Instruction>::new();
@@ -107,9 +177,24 @@ impl Asmgen {
                 rhs,
                 dtype,
             } => {
-                let lhs_reg = asm::Register::T0;
-                let rhs_reg = asm::Register::T1;
-                let dest_reg = asm::Register::T2;
+                let mut lhs_reg = asm::Register::Zero;
+                let mut rhs_reg = asm::Register::Zero;
+                let mut dest_rid = dest_rid;
+                if let Some((lhs_rid, dtype)) = lhs.get_register() {
+                    lhs_reg = map_reg_ir_to_asm(lhs_rid);
+                }
+                if let Some((rhs_rid, dtype)) = rhs.get_register() {
+                    rhs_reg = map_reg_ir_to_asm(rhs_rid);
+                }
+                if let Some((lhs_rid, dtype)) = lhs.get_register() {
+                    lhs_reg = map_reg_ir_to_asm(lhs_rid);
+                }
+
+                let dest_reg = if is_return_value(dest_rid, exit) {
+                    asm::Register::A0
+                } else {
+                    map_reg_ir_to_asm(dest_rid)
+                };
 
                 // 먼저 상수 operand를 li로 처리
                 translate_operand_if_constant(lhs, lhs_reg, &mut instructions);
@@ -130,7 +215,36 @@ impl Asmgen {
                 callee,
                 args,
                 return_type,
-            } => vec![],
+            } => {
+                // Call 처리
+                let mut reg = asm::Register::Zero;
+                for (i, arg) in args.iter().enumerate() {
+                    // call 의 경우 무조건 변환 Constant여도
+                    let reg = match i {
+                        0 => asm::Register::A0,
+                        1 => asm::Register::A1,
+                        2 => asm::Register::A2,
+                        3 => asm::Register::A3,
+                        4 => asm::Register::A4,
+                        5 => asm::Register::A5,
+                        6 => asm::Register::A6,
+                        7 => asm::Register::A7,
+                        _ => panic!("Too many args"),
+                    };
+
+                    // 이 부분을 무조건 호출하게:
+                    translate_operand_if_constant(arg, reg, &mut instructions);
+                }
+
+                if let ir::Operand::Constant(ir::Constant::GlobalVariable { name, .. }) = callee {
+                    instructions.push(asm::Instruction::Pseudo(asm::Pseudo::Call {
+                        offset: asm::Label(name.clone()),
+                    }));
+                } else {
+                    panic!("Function call must be to global label");
+                }
+                instructions
+            }
             GetElementPtr { ptr, offset, dtype } => vec![],
             Load { ptr } => vec![],
             Nop => vec![],
@@ -190,7 +304,7 @@ fn translate_operand_if_constant(
             }
         } else {
             // TODO: float 상수 등 추가 처리
-            todo!("non-integer constants not yet handled");
+            // todo!("non-integer constants not yet handled");
         }
     }
 }
@@ -250,56 +364,59 @@ fn translate_binop_instr(
     });
 }
 
-// fn translate_function(
-//     &mut self,
-//     name: &str, // 함수 이름은 여기서 받는다!,
-//     sig: &ir::FunctionSignature,
-//     defn: &ir::FunctionDefinition,
-// ) -> Result<asm::Function, ()> {
-//     // Prologue + Body + Epilogue
-//     use std::ops::Deref;
-//     use asm::{Block, Function, Instruction, Label, Pseudo, Register};
-//     println!("defn | allocations {:?}", defn.allocations);
-//     println!("defn | blocks {:?}", defn.blocks);
-//     println!("defn | init_bid {:?}", defn.bid_init);
+fn map_reg_ir_to_asm(rid: &ir::RegisterId) -> asm::Register {
+    match rid {
+        ir::RegisterId::Arg { aid, .. } => match aid {
+            0 => asm::Register::A0,
+            1 => asm::Register::A1,
+            2 => asm::Register::A2,
+            3 => asm::Register::A3,
+            4 => asm::Register::A4,
+            5 => asm::Register::A5,
+            6 => asm::Register::A6,
+            7 => asm::Register::A7,
+            _ => panic!("Too many args for RISC-V calling convention"),
+        },
+        ir::RegisterId::Temp { .. } => asm::Register::T2, // 예시
+        _ => todo!("Support for locals/others"),
+    }
+}
 
-//     let mut asm_blocks = Vec::new();
-//     for (bid, block) in &defn.blocks {
-//         let label = Some(Label(name.to_string()));
-//         let mut instructions = Vec::new();
-//         for instr in &block.instructions {
-//             let tmp = &block.phinodes;
+fn is_return_value(tmp_rid: &ir::RegisterId, exit: &ir::BlockExit) -> bool {
+    /*
+    현재 iid에 해당하는 값이 return이 되는지를 체크하는 것
+    map_reg_ir_to_asm을 할 때 rid가 필요하기 때문에
 
-//             match instr.deref() {
-//                 _ => {},
-//             }
-//         }
-//         match &block.exit {
-//             _ => {}
-//         }
+    만약에 반환되는 값이라면 바로 a0 사용 가능??
+    */
+    if let ir::BlockExit::Return { value } = exit {
+        if let Some((rid, _)) = value.get_register() {
+            if rid == tmp_rid {
+                return true;
+            }
+        }
+    }
+    false
+}
 
-//         let asm_block = Block::new(label, instructions);
-//         asm_blocks.push(asm_block);
-//     }
+fn is_call(instructions: Vec<ir::Named<ir::Instruction>>) -> (bool, String) {
+    for instr in instructions.clone().iter() {
+        // println!("is_call | instruction {:?}", instr.clone());
+        if let ir::Instruction::Call {
+            callee: ir::Operand::Constant(ir::Constant::GlobalVariable { name, dtype }),
+            args,
+            return_type,
+        } = instr.deref()
+        {
+            // println!("is_call | true | name {:?}", name.clone());
+            return (true, name.clone());
+        }
+    }
+    (false, String::new()) // call 명령어가 없다면 false와 빈 문자열 반환
+}
 
-//     return Ok(Function::new(asm_blocks));
-
-//     // 임의의 라벨 (함수 이름 기준으로 생성)
-//     // let label = Some(Label(format!("{}", name)));
-//     let label = Some(Label(name.to_string()));
-
-//     // 임의의 명령어들: li a0, 1; ret
-//     let instructions = vec![
-//         Instruction::Pseudo(Pseudo::Li {
-//             rd: Register::A0,
-//             imm: 1,
-//         }),
-//         Instruction::Pseudo(Pseudo::Ret),
-//     ];
-
-//     // 블록으로 묶기
-//     let block = Block::new(label, instructions);
-
-//     // 함수로 묶기
-//     Ok(Function::new(vec![block]))
-// }
+#[derive(Debug)]
+enum CallType {
+    Call, // 정적 호출
+    Jalr, // 동적 호출
+}
