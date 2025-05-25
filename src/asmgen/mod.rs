@@ -126,19 +126,30 @@ impl Asmgen {
         defn: &ir::FunctionDefinition,
         function_name_list: &HashMap<&str, usize>,
     ) -> i32 {
+        let ra = 1;
+        let s0 = 1;
         let mut stack_offset = 0;
+        stack_offset += s0;
 
         // 일단 먼저 call이 존재하는지 판단하기 -> 모든 block들을 보면서 call이 있는지 call이 사용되는 시점과 define되는 시점
         // 함수 이름 -> bid 수준이 아니라 function 수준이기 때문에 다른 전략이 필요해
         let current_idx = function_name_list.get(name).unwrap();
         // println!("current_idx {:?}", current_idx);
         // CALL, JALR
+
+        // let allocations = defn.allocations.clone();
+        // for allocation in allocations {
+        //     is_long_data(allocation)
+        // }
+
+
         let tmp: Vec<(ir::BlockId, CallType)> = defn
             .blocks
             .iter()
             .flat_map(|(bid, block)| {
                 let (is_call_present, call_name) = is_call(block.instructions.clone()); // is_call 호출
                 if is_call_present {
+                    stack_offset += ra;
                     let call_idx = function_name_list.get(call_name.deref()).unwrap();
                     // current_idx가 call_idx보다 작은 경우는 정적 호출
                     if call_idx < current_idx {
@@ -146,16 +157,49 @@ impl Asmgen {
                     } else {
                         Some((*bid, CallType::Jalr)) // 동적 호출
                     }
+
                 } else {
                     None
                 }
             })
             .collect();
 
+        /*
+        동적 호출 개수 계산 -> + 8, 개수만큼 그리고 각각에 대해서 saved register 할당해주기 
+        s1 ~ s11까지 일단 우리는 무조건 s1으로 할당해주게 하기
+        개수 계산과 동시에 register 할당
+        
+        반환도 단순히 stack offset을 하기 보다는
+        stackoffset, HashMap<bid, saved_reg로 사용하기> -> 
+        이 saved reg는 동적호출 시에 사용될 reg
+        */
+        
+        /*
+        그 다음에 해야할 것은 stack 크기 할당 어떤 식으로 해야할지 고민하기
+        (allocations) + (backup for calculations) + (parameters 개수가 많은 경우, 또는 struct를 넣어주는 경우)
+        */
+
+        /*
+        caller - calllee 관계 hashmap 필요함
+        */
+
+        /*
+        paramter 
+        backup  
+        allocation
+        S0 X
+        RA X
+        Saved register for Jalr X
+        */
+
         println!("calculate_stack_offset | {:?}", tmp);
 
-        // ra, s0 (frame pointer)
-        stack_offset += 2;
+  
+
+        // 56, 40 도 가능해서 일단 보류
+        // if stack_offset % 2 == 1 {
+        //     stack_offset += 1; // stack padding (multiple of 16)
+        // }
 
         stack_offset
     }
