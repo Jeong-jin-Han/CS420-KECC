@@ -1,5 +1,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::hash::Hash;
 
+use itertools::all;
 use lang_c::ast;
 
 use crate::ir::{BlockExit, HasDtype};
@@ -8,14 +10,51 @@ use crate::{Translate, asm, ir};
 
 use std::ops::Deref;
 
+/*
+int square(int x) {
+    return x * x;
+}
+
+int foo() {
+    return square(2);
+}
+
+int bar() {
+    return square(3);
+}
+한 Callee에 대해서 multiple caller 존재가능함
+*/
+
 #[derive(Debug)]
-pub struct Asmgen {}
+pub struct Asmgen {
+    /* Call bid는 Caller측 bid */
+    caller_to_callee: HashMap<String, Vec<(ir::BlockId, String)>>, /* Caller, [(Call bid, Callee), ...] */
+    caller_to_call_type: HashMap<String, HashMap<ir::BlockId, CallType>>,
+    caller_to_alloc_to_off_b: HashMap<String, HashMap<String, (i32, i32)>>,
+    function_name_to_offset: HashMap<String, i32>,
+
+    callee_to_caller: HashMap<String, Vec<(ir::BlockId, String)>>, /* Callee, [(Call bid, Caller), ...] */
+
+    function_name_list: HashMap<String, (usize, ir::FunctionSignature)>,
+    variable_name_list: HashMap<String, ir::Dtype>,
+    struct_list: HashMap<String, Option<ir::Dtype>>,
+    // callee_to_offset: HashMap<String, i32>,
+}
 
 #[allow(clippy::derivable_impls)]
 impl Default for Asmgen {
     fn default() -> Self {
         // todo!()
-        Asmgen {}
+        Asmgen {
+            caller_to_callee: HashMap::new(),
+            caller_to_call_type: HashMap::new(),
+            caller_to_alloc_to_off_b: HashMap::new(),
+            function_name_to_offset: HashMap::new(),
+            callee_to_caller: HashMap::new(),
+            function_name_list: HashMap::new(),
+            variable_name_list: HashMap::new(),
+            struct_list: HashMap::new(),
+        }
     }
 }
 
@@ -28,23 +67,51 @@ impl Translate<ir::TranslationUnit> for Asmgen {
         let mut functions = Vec::new();
         let mut variables = Vec::new();
 
-        let mut function_name_lists = HashMap::<&str, usize>::new();
+        self.struct_list = source.structs.clone();
         for (idx, (name, decl)) in source.decls.iter().enumerate() {
-            // match decl {
-            //     ir::Declaration::Function {
-            //         signature,
-            //         definition,
-            //     } => {
-            //         let _unused = function_name_lists.insert(name, idx);
-            //     }
-            //     _ => {}
-            // }
-            if let ir::Declaration::Function { .. } = decl {
-                let _unused = function_name_lists.insert(name, idx);
+            match decl {
+                ir::Declaration::Function {
+                    signature,
+                    definition,
+                } => {
+                    let _unused = self
+                        .function_name_list
+                        .insert(name.clone(), (idx, signature.clone())); // 
+                }
+                ir::Declaration::Variable { dtype, initializer } => {
+                    let _unused = self.variable_name_list.insert(name.clone(), dtype.clone()); // 
+                }
+                _ => {}
             }
         }
 
-        println!("function_name_lists | {:?}", function_name_lists);
+        let _unused = source.decls.iter().all(|(name, decl)| {
+            if let ir::Declaration::Function {
+                signature,
+                definition: Some(defn),
+            } = decl
+            {
+                self.init(name, defn);
+            }
+            true
+        });
+
+        println!(
+            "translate | caller_callee \n {:?} \n",
+            self.caller_to_callee
+        );
+        println!(
+            "translate | callee_caller \n {:?} \n",
+            self.callee_to_caller
+        );
+        println!(
+            "translate | callee_to_call_type \n {:?} \n",
+            self.caller_to_call_type
+        );
+
+        println!("function_name_lists | {:?}", self.function_name_list);
+        println!("variable_name_lists | {:?}", self.variable_name_list);
+        println!("struct | {:?}", self.struct_list);
 
         for (name, decl) in &source.decls {
             match decl {
@@ -52,8 +119,7 @@ impl Translate<ir::TranslationUnit> for Asmgen {
                     signature,
                     definition: Some(defn),
                 } => {
-                    let func =
-                        self.translate_function(name, signature, defn, &function_name_lists)?;
+                    let func = self.translate_function(name, signature, defn)?;
 
                     let header = vec![
                         asm::Directive::Globl(asm::Label(name.clone())),
@@ -72,6 +138,10 @@ impl Translate<ir::TranslationUnit> for Asmgen {
                 _ => {} // 함수 정의가 없는 선언 (prototype) 무시
             }
         }
+        println!(
+            "translate | stack_offset \n {:?} \n",
+            self.function_name_to_offset
+        );
 
         let asm_unit = asm::TranslationUnit {
             functions,
@@ -88,14 +158,16 @@ impl Asmgen {
         name: &str,
         sig: &ir::FunctionSignature,
         defn: &ir::FunctionDefinition,
-        function_name_list: &HashMap<&str, usize>,
     ) -> Result<asm::Function, ()> {
+        // let function_name_list = &self.function_name_list.clone();
+        // let struct_list = &self.struct_list.clone();
+
         let mut asm_blocks = Vec::new();
         let bid_init = &defn.bid_init;
 
         // 스택 오프셋 계산 초기화
         // stack pointer offset, 해당 function에 대해서는 stack_offset 동일함.
-        let stack_offset = self.calculate_stack_offset(name, defn, function_name_list);
+        self.stack_offset_defn(name, defn);
 
         for (bid, block) in &defn.blocks {
             let label = if (bid == bid_init) {
@@ -120,87 +192,253 @@ impl Asmgen {
         Ok(asm::Function::new(asm_blocks))
     }
 
-    fn calculate_stack_offset(
-        &mut self,
-        name: &str,
-        defn: &ir::FunctionDefinition,
-        function_name_list: &HashMap<&str, usize>,
-    ) -> i32 {
-        let ra = 1;
-        let s0 = 1;
-        let mut stack_offset = 0;
-        stack_offset += s0;
+    /*
+    함수를 나누어서 구현하기 -> caller-callee map, calllee-caller map 구하기, CallType 정보 저장해주기
+    caller, callee 정보만 제대로 저장이 된다면 스택에 어떤 식으로 값을 할당할지 구할 수 있음
 
-        // 일단 먼저 call이 존재하는지 판단하기 -> 모든 block들을 보면서 call이 있는지 call이 사용되는 시점과 define되는 시점
-        // 함수 이름 -> bid 수준이 아니라 function 수준이기 때문에 다른 전략이 필요해
-        let current_idx = function_name_list.get(name).unwrap();
-        // println!("current_idx {:?}", current_idx);
-        // CALL, JALR
-
-        // let allocations = defn.allocations.clone();
-        // for allocation in allocations {
-        //     is_long_data(allocation)
-        // }
+    caller, callee 둘 다 해당하는 경우도 물론 존재할 수 있음
+    그래서
+    callee 경우 ->
+    caller 경우 -> stack offset 계산해주기
 
 
-        let tmp: Vec<(ir::BlockId, CallType)> = defn
+    그리고 함수 인자로 계속 전달하는게 불편함 차라리
+    function_name_list
+    stack_list
+    */
+    fn init(&mut self, name: &str, defn: &ir::FunctionDefinition) {
+        // HashMap<String, HashMap<ir::BlockId, CallType>>
+        let current_idx = self.function_name_list.get(name).unwrap();
+        let tmp: HashMap<ir::BlockId, CallType> = defn
             .blocks
             .iter()
             .flat_map(|(bid, block)| {
-                let (is_call_present, call_name) = is_call(block.instructions.clone()); // is_call 호출
-                if is_call_present {
-                    stack_offset += ra;
-                    let call_idx = function_name_list.get(call_name.deref()).unwrap();
-                    // current_idx가 call_idx보다 작은 경우는 정적 호출
-                    if call_idx < current_idx {
-                        Some((*bid, CallType::Call)) // 정적 호출
-                    } else {
-                        Some((*bid, CallType::Jalr)) // 동적 호출
+                let mut is_call_present = false;
+                let mut call_name = String::new();
+                for instr in block.instructions.clone().iter() {
+                    if let ir::Instruction::Call {
+                        callee: ir::Operand::Constant(ir::Constant::GlobalVariable { name, dtype }),
+                        args,
+                        return_type,
+                    } = instr.deref()
+                    {
+                        is_call_present = true;
+                        call_name = name.clone();
                     }
+                }
+                if is_call_present {
+                    // Call 정보 업데이트
+                    let entry_from_caller =
+                        self.caller_to_callee.entry(name.to_string()).or_default();
+                    entry_from_caller.push((*bid, call_name.clone())); // 해당 블록에 대한 call 정보를 추가
+                    let entry_from_callee =
+                        self.callee_to_caller.entry(call_name.clone()).or_default();
+                    entry_from_callee.push((*bid, name.to_string()));
 
+                    // 함수 호출 인덱스 추적
+                    let call_idx = self.function_name_list.get(call_name.deref()).unwrap();
+
+                    // 현재 함수 인덱스(current_idx)가 호출된 함수(call_idx)보다 작은 경우는 정적 호출
+                    if call_idx.0 < current_idx.0 {
+                        Some((*bid, CallType::Call(call_name))) // 정적 호출
+                    } else {
+                        let saved_reg = asm::Register::S1;
+                        Some((*bid, CallType::Jalr(call_name, saved_reg))) // 동적 호출
+                    }
                 } else {
-                    None
+                    None // 호출이 없으면 None 반환
                 }
             })
             .collect();
 
+        let caller_to_calltype_entry = self
+            .caller_to_call_type
+            .entry(name.to_string())
+            .or_default();
+        caller_to_calltype_entry.extend(tmp);
+    }
+
+    fn stack_offset_defn(&mut self, name: &str, defn: &ir::FunctionDefinition) {
+        let ra = 1;
+        let s0 = 1;
+        let stack_offset_ptr = self
+            .function_name_to_offset
+            .entry(name.to_string())
+            .or_default();
+        let mut stack_offset = *stack_offset_ptr;
+
+        // 일단 먼저 call이 존재하는지 판단하기 -> 모든 block들을 보면서 call이 있는지 call이 사용되는 시점과 define되는 시점
+        // 함수 이름 -> bid 수준이 아니라 function 수준이기 때문에 다른 전략이 필요해
+
+        let mut allocation_offset = 0;
+        let mut local_allocation_to_offset_and_bytes = HashMap::<String, (i32, i32)>::new();
+        for allocation in defn.allocations.clone() {
+            /* is_long_data i32반환 */
+            // let bytes = get_dtype_size(allocation.deref(), struct_list);
+            // let offset = align_to_8(bytes) / 8;
+            let (offset, bytes) = is_long_data(allocation.deref(), &self.struct_list); // (stack_offset, originalsize)
+            if let Some(name) = allocation.name() {
+                let _unused =
+                    local_allocation_to_offset_and_bytes.insert(name.clone(), (offset, bytes));
+            }
+            allocation_offset += offset;
+        }
+        stack_offset += allocation_offset;
+
+        let caller_to_alloc_to_off_b_entry = self
+            .caller_to_alloc_to_off_b
+            .entry(name.to_string())
+            .or_default();
+        caller_to_alloc_to_off_b_entry.extend(local_allocation_to_offset_and_bytes);
+
+        println!(
+            "stack_offset_defn | caller_to_alloc_to_off_b \n {:?} \n",
+            self.caller_to_alloc_to_off_b
+        );
+
+        let mut ra_offset = 0;
+        let mut saved_reg_offset = 0;
+        if let Some(tmp) = self.caller_to_call_type.get(name) {
+            if !tmp.is_empty() {
+                ra_offset += ra;
+            }
+            let jalr_count = tmp
+                .values()
+                .filter(|calltype| matches!(calltype, CallType::Jalr(_, _)))
+                .count();
+            saved_reg_offset += jalr_count as i32;
+        }
+        stack_offset += ra_offset;
+        stack_offset += saved_reg_offset;
+
         /*
-        동적 호출 개수 계산 -> + 8, 개수만큼 그리고 각각에 대해서 saved register 할당해주기 
+        동적 호출 개수 계산 -> + 8, 개수만큼 그리고 각각에 대해서 saved register 할당해주기
         s1 ~ s11까지 일단 우리는 무조건 s1으로 할당해주게 하기
         개수 계산과 동시에 register 할당
-        
+
         반환도 단순히 stack offset을 하기 보다는
-        stackoffset, HashMap<bid, saved_reg로 사용하기> -> 
+        stackoffset, HashMap<bid, saved_reg로 사용하기> ->
         이 saved reg는 동적호출 시에 사용될 reg
         */
-        
+
         /*
         그 다음에 해야할 것은 stack 크기 할당 어떤 식으로 해야할지 고민하기
         (allocations) + (backup for calculations) + (parameters 개수가 많은 경우, 또는 struct를 넣어주는 경우)
         */
 
         /*
-        caller - calllee 관계 hashmap 필요함
-        */
-
-        /*
-        paramter 
-        backup  
+        paramter
+        backup
         allocation
         S0 X
         RA X
-        Saved register for Jalr X
+        Saved register for Jalr X -> # of Jalr 개수를 계산해야 함. X
         */
 
-        println!("calculate_stack_offset | {:?}", tmp);
+        /* caller */
+        let mut caller_offset = 0;
+        let _unused = defn.blocks.iter().all(|(bid, block)| {
+            let offset = self.stack_caller_offset_instrs(block.instructions.clone());
+            caller_offset += offset;
+            true
+        });
+        stack_offset += caller_offset;
 
-  
+        /* callee */
+        let mut callee_offset = 0;
+        let mut transfer_offset = 0;
+        if let Some(tmp) = self.callee_to_caller.get(name) {
+            // is callee?
+            let mut param_long = false;
+            let (_, signature) = self.function_name_list.get(name).unwrap();
+            let ret_type = signature.ret.clone();
+            let arg_types = signature.params.clone();
+
+            param_long = arg_types.iter().any(|arg| {
+                let (offset, bytes) = is_long_data(arg, &self.struct_list);
+                // let arg_offset = align_to_8(bytes) / 8;
+                let filter = offset > 0;
+                transfer_offset += offset;
+                filter
+            });
+            let mut parameter_offset = 0;
+            if param_long {
+                let _unused = arg_types.iter().all(|arg| {
+                    let bytes = get_dtype_size(arg, &self.struct_list);
+                    let offset = align_to_8(bytes) / 8;
+                    parameter_offset += offset;
+                    true
+                });
+            }
+            stack_offset += parameter_offset;
+            println!("parameter_offset {:?}", parameter_offset);
+
+            let (return_offset, bytes) = is_long_data(&ret_type, &self.struct_list);
+            callee_offset += return_offset;
+
+            /* transfer offset */
+            if return_offset > 2 {
+                /* a0, a1 reg에 자리가 다 찰 경우 */
+                // caller side에서 미리 지정해줌, tmp caller에 대해서 모두 할당해주기
+                transfer_offset += return_offset;
+            }
+            for (bid, caller_name) in tmp {
+                let caller_name_entry = self
+                    .function_name_to_offset
+                    .entry(caller_name.to_string())
+                    .or_default();
+                *caller_name_entry += transfer_offset;
+            }
+        }
+
+        stack_offset += callee_offset;
 
         // 56, 40 도 가능해서 일단 보류
         // if stack_offset % 2 == 1 {
         //     stack_offset += 1; // stack padding (multiple of 16)
         // }
 
+        if stack_offset > 0 {
+            println!("name {}, {:?}", name, stack_offset);
+            stack_offset += s0;
+        }
+        println!(
+            "{:?}",
+            (
+                allocation_offset,
+                caller_offset,
+                callee_offset,
+                saved_reg_offset,
+                transfer_offset,
+            )
+        );
+        println!("stack_offset_defn | stack_offset {:?}", stack_offset);
+
+        let stack_offset_ptr = self
+            .function_name_to_offset
+            .entry(name.to_string())
+            .or_default();
+        *stack_offset_ptr += stack_offset;
+    }
+
+    fn stack_caller_offset_instrs(&mut self, instrs: Vec<ir::Named<ir::Instruction>>) -> i32 {
+        let mut stack_offset = 0;
+        let mut caller_offset = 0;
+        for instr in instrs.clone().iter() {
+            if let ir::Instruction::Call {
+                callee: ir::Operand::Constant(ir::Constant::GlobalVariable { name, dtype }),
+                args,
+                return_type,
+            } = instr.deref()
+            {
+                /* return 값을 두 번 copy ??*/
+                /*caller*/
+                let (return_offset, bytes) = is_long_data(return_type, &self.struct_list);
+                // caller_offset += return_offset;
+                caller_offset += return_offset;
+            }
+        }
+        stack_offset += caller_offset;
         stack_offset
     }
 
@@ -221,6 +459,7 @@ impl Asmgen {
                 rhs,
                 dtype,
             } => {
+                println!("translate_instruction | binop | {}", instr);
                 let mut lhs_reg = asm::Register::Zero;
                 let mut rhs_reg = asm::Register::Zero;
                 let mut dest_rid = dest_rid;
@@ -364,7 +603,8 @@ fn map_binop_to_rtype(op: &ast::BinaryOperator, dtype: &ir::Dtype) -> asm::RType
             16 => DataSize::Half,
             32 => DataSize::Word,
             64 => DataSize::Double,
-            _ => panic!("Unsupported int width: {}", width),
+            // _ => panic!("Unsupported int width: {}", width),
+            _ => DataSize::Byte,
         },
         _ => panic!("Non-integer types not yet supported in BinOp"),
     };
@@ -443,7 +683,11 @@ fn is_return_value(tmp_rid: &ir::RegisterId, exit: &ir::BlockExit) -> bool {
     false
 }
 
-fn is_call(instructions: Vec<ir::Named<ir::Instruction>>) -> (bool, String) {
+fn is_call(
+    instructions: Vec<ir::Named<ir::Instruction>>,
+    struct_list: &HashMap<String, Option<ir::Dtype>>,
+    asmgen: &mut Asmgen,
+) -> (bool, String, i32) {
     for instr in instructions.clone().iter() {
         // println!("is_call | instruction {:?}", instr.clone());
         if let ir::Instruction::Call {
@@ -453,14 +697,138 @@ fn is_call(instructions: Vec<ir::Named<ir::Instruction>>) -> (bool, String) {
         } = instr.deref()
         {
             // println!("is_call | true | name {:?}", name.clone());
-            return (true, name.clone());
+            /*
+            caller 입장 parmeter <- is_long_data
+            callee 입장 argument <- 하나라도 is_long_data존재시 무조건 다 stack 에 넣어쥐
+
+            return type is_long_data 의 경우
+            caller
+            callee
+
+            지금 현재 우리는 caller만 다룸
+            callee를 위한다면
+            callee만을 위한 stack할당량을 기입해야하는가?
+            callee -> (stackoffset 얼마만큼 할당해야하는지)
+            */
+            let mut caller_stack_offset = 0;
+            let mut callee_stack_offset = 0;
+            let mut param_exist_long = false;
+            let mut offset_from_caller_parameter = 0;
+            let mut offset_from_callee_argument = 0;
+            let mut offset_from_caller_return = 0;
+            let mut offset_from_callee_return = 0;
+
+            param_exist_long = args.iter().any(|arg| {
+                let (offset, bytes) = is_long_data(&arg.dtype(), struct_list);
+                let filter = offset > 0;
+                offset_from_caller_parameter += offset;
+                filter
+            });
+
+            if param_exist_long {
+                for arg in args {
+                    let bytes = get_dtype_size(&arg.dtype(), struct_list);
+                    let offset = align_to_8(bytes) / 8;
+                    offset_from_callee_argument += offset;
+                }
+            }
+
+            let (mut offset, bytes) = is_long_data(return_type, struct_list);
+
+            if offset > 2 {
+                /* a0, a1에 담기지 않는 경우 */
+                offset *= 2;
+            }
+            offset_from_caller_return += offset;
+            offset_from_callee_return += offset;
+
+            caller_stack_offset += offset_from_caller_parameter + offset_from_caller_return;
+            callee_stack_offset += offset_from_callee_argument + offset_from_callee_return;
+
+            // let _unused = asmgen
+            //     .callee_to_offset
+            //     .insert(name.clone(), callee_stack_offset);
+            return (true, name.clone(), caller_stack_offset);
         }
     }
-    (false, String::new()) // call 명령어가 없다면 false와 빈 문자열 반환
+    (false, String::new(), 0) // call 명령어가 없다면 false와 빈 문자열 반환
+}
+
+fn is_long_data(
+    allocation: &ir::Dtype, // Named -> Dtype로 수정
+    struct_list: &HashMap<String, Option<ir::Dtype>>,
+) -> (i32, i32) {
+    match allocation {
+        ir::Dtype::Array { inner, size } => {
+            /*
+            short [3][5] -> size: 3
+            */
+            // let tmp = *size as i32;
+            // println!("is_long_data | size {:?}", size);
+            // tmp
+            let bytes = get_dtype_size(allocation, struct_list);
+            let stack_offset = align_to_8(bytes) / 8;
+            (stack_offset, bytes)
+        }
+        ir::Dtype::Struct {
+            name: Some(struct_name),
+            ..
+        } => {
+            if let Some(Some(dtype)) = struct_list.get(struct_name) {
+                if let Some(Some((size, ..))) = dtype.clone().get_struct_size_align_offsets() {
+                    let bytes: i32 = *size as i32;
+                    let stack_offset: i32 = align_to_8(bytes) / 8;
+                    return (stack_offset, bytes);
+                };
+            }
+            (0, 0)
+        }
+        _ => {
+            // get_dtype_size(dtype, struct_list)
+            let bytes = get_dtype_size(allocation, struct_list);
+            (0, bytes)
+        }
+    }
+}
+
+fn get_dtype_size(dtype: &ir::Dtype, struct_list: &HashMap<String, Option<ir::Dtype>>) -> i32 {
+    match dtype {
+        ir::Dtype::Int { width, .. } => (width / 8) as i32, // bit -> byte
+        ir::Dtype::Float { width, is_const } => (width / 8) as i32,
+        ir::Dtype::Unit { is_const } => todo!(),
+        ir::Dtype::Function { ret, params } => todo!(), // assume 64-bit pointer
+        ir::Dtype::Struct {
+            size_align_offsets: Some((usize, ..)),
+            ..
+        } => *usize as i32,
+        ir::Dtype::Struct {
+            name: Some(struct_name),
+            ..
+        } => {
+            // 존재하는 이유는 Array[Struct] 구조 때문에
+            if let Some(Some(dtype)) = struct_list.get(struct_name) {
+                if let Some(Some((size, ..))) = dtype.clone().get_struct_size_align_offsets() {
+                    let bytes: i32 = *size as i32;
+                    println!("is_long_data | total bytes = {} ", bytes);
+                    return bytes;
+                };
+            }
+            0
+        }
+        ir::Dtype::Array { inner, size } => {
+            let inner_size = get_dtype_size(inner, struct_list);
+            inner_size * (*size as i32)
+        }
+        _ => 0,
+    }
+}
+
+fn align_to_8(n: i32) -> i32 {
+    if n % 8 == 0 { n } else { n + (8 - (n % 8)) }
 }
 
 #[derive(Debug)]
 enum CallType {
-    Call, // 정적 호출
-    Jalr, // 동적 호출
+    Call(String),                // 정적 호출
+    Jalr(String, asm::Register), // 동적 호출
 }
