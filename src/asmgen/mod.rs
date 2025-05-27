@@ -261,11 +261,7 @@ impl Asmgen {
     fn stack_offset_defn(&mut self, name: &str, defn: &ir::FunctionDefinition) {
         let ra = 1;
         let s0 = 1;
-        let stack_offset_ptr = self
-            .function_name_to_offset
-            .entry(name.to_string())
-            .or_default();
-        let mut stack_offset = *stack_offset_ptr;
+        let mut stack_offset = 0;
 
         // 일단 먼저 call이 존재하는지 판단하기 -> 모든 block들을 보면서 call이 있는지 call이 사용되는 시점과 define되는 시점
         // 함수 이름 -> bid 수준이 아니라 function 수준이기 때문에 다른 전략이 필요해
@@ -356,32 +352,52 @@ impl Asmgen {
 
             param_long = arg_types.iter().any(|arg| {
                 let (offset, bytes) = is_long_data(arg, &self.struct_list);
-                // let arg_offset = align_to_8(bytes) / 8;
-                let filter = offset > 0;
-                transfer_offset += offset;
-                filter
+                offset > 0
             });
             let mut parameter_offset = 0;
+            let mut args_offset = 0;
             if param_long {
                 let _unused = arg_types.iter().all(|arg| {
+                    let (arg_offset, bytes) = is_long_data(arg, &self.struct_list);
+                    args_offset += arg_offset;
+
                     let bytes = get_dtype_size(arg, &self.struct_list);
                     let offset = align_to_8(bytes) / 8;
                     parameter_offset += offset;
                     true
                 });
             }
-            stack_offset += parameter_offset;
+            callee_offset += parameter_offset;
+            transfer_offset += args_offset;
             println!("parameter_offset {:?}", parameter_offset);
+            println!("args_offset; {:?}", args_offset);
 
             let (return_offset, bytes) = is_long_data(&ret_type, &self.struct_list);
             callee_offset += return_offset;
+            // allocation -> return 값, return copy값
 
             /* transfer offset */
+            // if return_offset > 2 {
+            //     /* a0, a1 reg에 자리가 다 찰 경우 */
+            //     // caller side에서 미리 지정해줌, tmp caller에 대해서 모두 할당해주기
+            //     transfer_offset += return_offset;
+            //     // caller 자리 하나
+            // }
+            // a0, a1 자리가 다 차지 않은 경우에도 불구하고
+            // long_data인 경우에는 return_offset을 고려하지 않을까?
+            // transfer_offset += return_offset; // 이미 caller side에서 return에 대해서 고려해줌
+            // 여기서 우리가 해주어야 할 것은
             if return_offset > 2 {
                 /* a0, a1 reg에 자리가 다 찰 경우 */
                 // caller side에서 미리 지정해줌, tmp caller에 대해서 모두 할당해주기
-                transfer_offset += return_offset;
+                transfer_offset += return_offset; // callee쪽에서 caller로 복사
+                // caller 자리 하나
             }
+            if !param_long {
+                // arg과 stack에 저장되지 않은 경우
+                callee_offset += return_offset; // callee쪽에서 caller로 복사 전에 copy
+            }
+
             for (bid, caller_name) in tmp {
                 let caller_name_entry = self
                     .function_name_to_offset
@@ -398,27 +414,39 @@ impl Asmgen {
         //     stack_offset += 1; // stack padding (multiple of 16)
         // }
 
-        if stack_offset > 0 {
-            println!("name {}, {:?}", name, stack_offset);
-            stack_offset += s0;
-        }
-        println!(
-            "{:?}",
-            (
-                allocation_offset,
-                caller_offset,
-                callee_offset,
-                saved_reg_offset,
-                transfer_offset,
-            )
-        );
-        println!("stack_offset_defn | stack_offset {:?}", stack_offset);
-
         let stack_offset_ptr = self
             .function_name_to_offset
             .entry(name.to_string())
             .or_default();
         *stack_offset_ptr += stack_offset;
+
+        let mut frame_offset = 0;
+
+        if *stack_offset_ptr > 0 {
+            println!("name {}", name);
+            frame_offset += s0;
+        }
+        *stack_offset_ptr += frame_offset;
+
+        println!(
+            "
+            (   
+                ra_offset: {},
+                frame_offset: {},
+                allocation_offset: {},
+                caller_offset: {},
+                callee_offset: {},
+                saved_reg_offset: {},
+                transfer_offset: {},
+            )",
+            ra_offset,
+            frame_offset,
+            allocation_offset,
+            caller_offset,
+            callee_offset,
+            saved_reg_offset,
+            transfer_offset,
+        );
     }
 
     fn stack_caller_offset_instrs(&mut self, instrs: Vec<ir::Named<ir::Instruction>>) -> i32 {
@@ -627,6 +655,7 @@ fn map_binop_to_rtype(op: &ast::BinaryOperator, dtype: &ir::Dtype) -> asm::RType
         BitwiseAnd => RType::And,
         BitwiseOr => RType::Or,
         BitwiseXor => RType::Xor,
+        Equals => RType::Xor, // temp
         _ => todo!("Binary op {:?} not yet supported", op),
     }
 }
