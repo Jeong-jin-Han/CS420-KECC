@@ -203,7 +203,8 @@ impl Asmgen {
         let mut asm_blocks = vec![];
         let mut total_stack_offset: i32 = 0; // epilogue용 추후 사용
 
-        let function_has_call = has_call(func); // 🔍 call 존재 여부
+        let call_info = has_call_and_return_types(func); // 🔍 call 존재 여부
+        let function_has_call = !call_info.is_empty();
 
         for (iid, (bid, block)) in func.blocks.iter().enumerate() {
             println!(
@@ -214,8 +215,94 @@ impl Asmgen {
             let mut body_instrs: Vec<asm::Instruction> = vec![];
 
             // 1️⃣ Prologue → bid_init 에만 적용
+            // if bid.0 == func.bid_init.0 {
+            //     // (1) addi sp, sp, 0 (placeholder)
+            //     body_instrs.push(asm::Instruction::IType {
+            //         instr: asm::IType::Addi(asm::DataSize::Double),
+            //         rd: asm::Register::Sp,
+            //         rs1: asm::Register::Sp,
+            //         imm: asm::Immediate::Value(0), // placeholder
+            //     });
+
+            //     // (2) sd ra, -8(sp)
+            //     if function_has_call {
+            //         self.next_stack_offset -= 8;
+            //         body_instrs.push(asm::Instruction::SType {
+            //             instr: asm::SType::Store(asm::DataSize::Double),
+            //             rs1: asm::Register::Sp,
+            //             rs2: asm::Register::Ra,
+            //             imm: asm::Immediate::Value(self.next_stack_offset as u64),
+            //         });
+            //     }
+
+            //     /*
+            //     지금 내가 하고 싶은 것은
+            //     phinodes에 해당하는 reg들을 모두 t0 reg 이용해서 stack에 저장해주기
+            //     stack에 저장할 때 해당 ir의 rid와 stack 맵핑을 이용해서
+            //     추후 ir -> asm 변환에 고려해주기
+            //     그리고 마지막으로
+            //     instruction마다 t0, t1, t2 이용해서 stack에 저장된 값에 접근해주기
+
+            //     로직은 아래 caller에서의 call ir instruction에서 stack에 저장한 것을 이제는 callee에서 저장해주느 꼴로
+            //     크게 다를 것은 없을 듯
+            //                     // argument stack 에 다 저장 후 → call
+            //                     for (i, arg) in args.iter().enumerate() {
+            //                         println!("translate function | Call | arg operand {}", arg);
+            //                         let arg_reg = asm::Register::T0;
+
+            //                         if let Some(c) = arg.get_constant() {
+            //                             // Constant → li t0, imm
+            //                             body_instrs.push(asm::Instruction::Pseudo(
+            //                                 asm::Pseudo::Li {
+            //                                     rd: arg_reg,
+            //                                     imm: c.get_int().unwrap().0 as u64,
+            //                                 },
+            //                             ));
+            //                         } else {
+            //                             // Register → translate_operand + mv t0, reg + free
+            //                             let tmp_reg = self.translate_operand(arg, &mut body_instrs);
+
+            //                             body_instrs.push(asm::Instruction::Pseudo(
+            //                                 asm::Pseudo::Mv {
+            //                                     rd: arg_reg,
+            //                                     rs: tmp_reg,
+            //                                 },
+            //                             ));
+
+            //                             self.reg_allocator.free(tmp_reg);
+            //                         }
+            //     */
+            //     let mut current_offset = 0;
+
+            //     for (i, named) in block.phinodes.iter().enumerate() {
+            //         let dtype = named.deref().clone();
+            //         let size = get_dtype_size(&dtype);
+
+            //         current_offset += size;
+
+            //         // offset은 sp - current_offset
+            //         let fixed_offset = -current_offset;
+
+            //         let reg_id = ir::RegisterId::arg(func.bid_init, i);
+            //         let phi_operand = ir::Operand::register(reg_id, dtype.clone());
+
+            //         let src_reg = asm::Register::T0;
+
+            //         body_instrs.push(asm::Instruction::SType {
+            //             instr: asm::SType::Store(asm::DataSize::from_dtype(&dtype)),
+            //             rs1: asm::Register::Sp,
+            //             rs2: src_reg,
+            //             imm: asm::Immediate::Value(fixed_offset as u64), // u64지만 음수 offset로 저장됨
+            //         });
+
+            //         let _unused = self
+            //             .var_locations
+            //             .insert(phi_operand, VarLocation::Stack(fixed_offset));
+            //     }
+            // }
+
             if bid.0 == func.bid_init.0 {
-                // (1) addi sp, sp, 0 (placeholder)
+                // (1) addi sp, sp, 0 ← placeholder
                 body_instrs.push(asm::Instruction::IType {
                     instr: asm::IType::Addi(asm::DataSize::Double),
                     rd: asm::Register::Sp,
@@ -223,7 +310,15 @@ impl Asmgen {
                     imm: asm::Immediate::Value(0), // placeholder
                 });
 
-                // (2) sd ra, -8(sp)
+                // (2) sw s0, -8(sp) ← 항상 프레임 포인터 백업
+                self.next_stack_offset -= 8;
+                body_instrs.push(asm::Instruction::SType {
+                    instr: asm::SType::Store(asm::DataSize::Double),
+                    rs1: asm::Register::Sp,
+                    rs2: asm::Register::S0,
+                    imm: asm::Immediate::Value(self.next_stack_offset as u64),
+                });
+
                 if function_has_call {
                     self.next_stack_offset -= 8;
                     body_instrs.push(asm::Instruction::SType {
@@ -234,69 +329,46 @@ impl Asmgen {
                     });
                 }
 
-                /*
-                지금 내가 하고 싶은 것은
-                phinodes에 해당하는 reg들을 모두 t0 reg 이용해서 stack에 저장해주기
-                stack에 저장할 때 해당 ir의 rid와 stack 맵핑을 이용해서
-                추후 ir -> asm 변환에 고려해주기
-                그리고 마지막으로
-                instruction마다 t0, t1, t2 이용해서 stack에 저장된 값에 접근해주기
+                // (3) addi s0, sp, -stack_size
+                body_instrs.push(asm::Instruction::IType {
+                    instr: asm::IType::Addi(asm::DataSize::Double),
+                    rd: asm::Register::S0,
+                    rs1: asm::Register::Sp,
+                    imm: asm::Immediate::Value(self.next_stack_offset as u64), // 임시로 넣지만 실제로 맞음
+                });
 
-                로직은 아래 caller에서의 call ir instruction에서 stack에 저장한 것을 이제는 callee에서 저장해주느 꼴로
-                크게 다를 것은 없을 듯
-                                // argument stack 에 다 저장 후 → call
-                                for (i, arg) in args.iter().enumerate() {
-                                    println!("translate function | Call | arg operand {}", arg);
-                                    let arg_reg = asm::Register::T0;
-
-                                    if let Some(c) = arg.get_constant() {
-                                        // Constant → li t0, imm
-                                        body_instrs.push(asm::Instruction::Pseudo(
-                                            asm::Pseudo::Li {
-                                                rd: arg_reg,
-                                                imm: c.get_int().unwrap().0 as u64,
-                                            },
-                                        ));
-                                    } else {
-                                        // Register → translate_operand + mv t0, reg + free
-                                        let tmp_reg = self.translate_operand(arg, &mut body_instrs);
-
-                                        body_instrs.push(asm::Instruction::Pseudo(
-                                            asm::Pseudo::Mv {
-                                                rd: arg_reg,
-                                                rs: tmp_reg,
-                                            },
-                                        ));
-
-                                        self.reg_allocator.free(tmp_reg);
-                                    }
-                */
-                let mut current_offset = 0;
-
+                // (4) phinodes 처리 (callee에 대한 것)
                 for (i, named) in block.phinodes.iter().enumerate() {
                     let dtype = named.deref().clone();
-                    let size = get_dtype_size(&dtype);
-
-                    current_offset += size;
-
-                    // offset은 sp - current_offset
-                    let fixed_offset = -current_offset;
-
                     let reg_id = ir::RegisterId::arg(func.bid_init, i);
                     let phi_operand = ir::Operand::register(reg_id, dtype.clone());
 
-                    let src_reg = asm::Register::T0;
+                    // caller의 stack에서 t0로 로드: lw t0, -offset(s0)
+                    let caller_offset = (-(i as i32) * get_dtype_size(&dtype)); // 예: -4, -8 등
+
+                    body_instrs.push(asm::Instruction::IType {
+                        instr: asm::IType::Load {
+                            data_size: asm::DataSize::from_dtype(&dtype),
+                            is_signed: true,
+                        },
+                        rd: asm::Register::T0,
+                        rs1: asm::Register::S1,
+                        imm: asm::Immediate::Value(caller_offset as u64),
+                    });
+                    // callee 자신의 stack에 저장: sw t0, offset(sp)
+                    self.next_stack_offset -= get_dtype_size(&dtype);
+                    let callee_offset = self.next_stack_offset;
 
                     body_instrs.push(asm::Instruction::SType {
                         instr: asm::SType::Store(asm::DataSize::from_dtype(&dtype)),
                         rs1: asm::Register::Sp,
-                        rs2: src_reg,
-                        imm: asm::Immediate::Value(fixed_offset as u64), // u64지만 음수 offset로 저장됨
+                        rs2: asm::Register::T0,
+                        imm: asm::Immediate::Value(callee_offset as u64),
                     });
 
                     let _unused = self
                         .var_locations
-                        .insert(phi_operand, VarLocation::Stack(fixed_offset));
+                        .insert(phi_operand, VarLocation::Stack(callee_offset));
                 }
             }
 
@@ -431,6 +503,17 @@ impl Asmgen {
                                         rs2: arg_reg,
                                         imm: asm::Immediate::Value(offset as u64),
                                     };
+
+                                    if i == 0 {
+                                        body_instrs.push(asm::Instruction::IType {
+                                            instr: asm::IType::Addi(asm::DataSize::Double),
+                                            rd: asm::Register::S1,
+                                            rs1: asm::Register::Sp,
+                                            imm: asm::Immediate::Value(
+                                                self.next_stack_offset as u64,
+                                            ), // 임시로 넣지만 실제로 맞음
+                                        });
+                                    }
                                     println!("translate_function | body_instr {:?}", body_instr);
                                     body_instrs.push(body_instr);
                                 }
@@ -443,26 +526,26 @@ impl Asmgen {
                                 // call 결과는 a0 에 들어온다고 가정 (ref style 따라감)
                                 // 결과를 t0 에 옮기고 stack 에 저장
                                 body_instrs.push(asm::Instruction::Pseudo(asm::Pseudo::Mv {
-                                    rd: asm::Register::T0,
-                                    rs: asm::Register::A0,
+                                    rd: asm::Register::A0,
+                                    rs: asm::Register::T0,
                                 }));
 
-                                // 결과 stack 에 저장
-                                let dummy_ret_operand = ir::Operand::constant(ir::Constant::int(
-                                    9999,
-                                    ir::Dtype::int(32),
-                                ));
-                                let ret_offset = self.stack_allocator.allocate_stack_slot(
-                                    &dummy_ret_operand,
-                                    &mut self.next_stack_offset,
-                                );
+                                // // 결과 stack 에 저장
+                                // let dummy_ret_operand = ir::Operand::constant(ir::Constant::int(
+                                //     9999,
+                                //     ir::Dtype::int(32),
+                                // ));
+                                // let ret_offset = self.stack_allocator.allocate_stack_slot(
+                                //     &dummy_ret_operand,
+                                //     &mut self.next_stack_offset,
+                                // );
 
-                                body_instrs.push(asm::Instruction::SType {
-                                    instr: asm::SType::store(ir::Dtype::int(32)), // int 32 가 대부분임
-                                    rs1: asm::Register::Sp,
-                                    rs2: asm::Register::T0,
-                                    imm: asm::Immediate::Value(ret_offset as u64),
-                                });
+                                // body_instrs.push(asm::Instruction::SType {
+                                //     instr: asm::SType::store(ir::Dtype::int(32)), // int 32 가 대부분임
+                                //     rs1: asm::Register::Sp,
+                                //     rs2: asm::Register::T0,
+                                //     imm: asm::Immediate::Value(ret_offset as u64),
+                                // });
                             } else {
                                 unimplemented!("Indirect call not supported");
                             }
@@ -506,17 +589,17 @@ impl Asmgen {
                         }));
                     } else {
                         // Register → translate_operand + mv t0, reg
-                        let ret_reg = self.translate_operand(value, &mut body_instrs);
-                        body_instrs.push(asm::Instruction::Pseudo(asm::Pseudo::Mv {
-                            rd: asm::Register::T0,
-                            rs: ret_reg,
-                        }));
+                        // let ret_reg = self.translate_operand(value, &mut body_instrs);
+                        // body_instrs.push(asm::Instruction::Pseudo(asm::Pseudo::Mv {
+                        //     rd: asm::Register::T0,
+                        //     rs: ret_reg,
+                        // }));
                     }
 
                     // 4️⃣ Epilogue → Return 시점에 항상 넣어줌
 
                     if function_has_call {
-                        // ld ra, -8(sp)
+                        // ld ra, -16(sp)
                         body_instrs.push(asm::Instruction::IType {
                             instr: asm::IType::Load {
                                 data_size: asm::DataSize::Double,
@@ -524,12 +607,22 @@ impl Asmgen {
                             },
                             rd: asm::Register::Ra,
                             rs1: asm::Register::Sp,
-                            imm: asm::Immediate::Value((-8i64) as u64),
+                            imm: asm::Immediate::Value((-16i64) as u64),
                         });
                     }
 
+                    body_instrs.push(asm::Instruction::IType {
+                        instr: asm::IType::Load {
+                            data_size: asm::DataSize::Double,
+                            is_signed: true,
+                        },
+                        rd: asm::Register::S0,
+                        rs1: asm::Register::Sp,
+                        imm: asm::Immediate::Value((-8i64) as u64),
+                    });
+
                     // addi sp, sp, MN
-                    let total_offset = (-self.next_stack_offset) as u64;
+                    let total_offset = (self.next_stack_offset) as u64;
                     body_instrs.push(asm::Instruction::IType {
                         instr: asm::IType::Addi(asm::DataSize::Double),
                         rd: asm::Register::Sp,
@@ -568,11 +661,26 @@ impl Asmgen {
 
         // 6️⃣ 마지막에 bid_init block의 sp placeholder patch (필수)
 
+        // if let Some(block_init) = asm_blocks.first_mut() {
+        //     println!(
+        //         "translate_function | block_init.instructions {:?}",
+        //         block_init.instructions
+        //     );
+        //     if let Some(asm::Instruction::IType {
+        //         instr: asm::IType::Addi(asm::DataSize::Double),
+        //         rd,
+        //         rs1,
+        //         imm,
+        //     }) = block_init.instructions.first_mut()
+        //     {
+        //         *imm = asm::Immediate::Value((-self.next_stack_offset) as u64);
+        //         println!(
+        //             "Patched initial sp offset to {}",
+        //             (-self.next_stack_offset) as u64
+        //         );
+        //     }
+        // }
         if let Some(block_init) = asm_blocks.first_mut() {
-            println!(
-                "translate_function | block_init.instructions {:?}",
-                block_init.instructions
-            );
             if let Some(asm::Instruction::IType {
                 instr: asm::IType::Addi(asm::DataSize::Double),
                 rd,
@@ -585,6 +693,22 @@ impl Asmgen {
                     "Patched initial sp offset to {}",
                     (-self.next_stack_offset) as u64
                 );
+            }
+            for instr in block_init.instructions.iter_mut() {
+                match instr {
+                    asm::Instruction::IType {
+                        instr: asm::IType::Addi(asm::DataSize::Double),
+                        rd: asm::Register::S0,
+                        rs1: asm::Register::Sp,
+                        imm,
+                    } => {
+                        // Prologue용 s0 설정 patch
+                        *imm = asm::Immediate::Value(self.next_stack_offset as u64);
+                    }
+                    _ => {
+                        println!();
+                    }
+                }
             }
         }
 
@@ -682,15 +806,16 @@ impl ir::Operand {
     }
 }
 
-fn has_call(func: &ir::FunctionDefinition) -> bool {
-    for block in func.blocks.values() {
+fn has_call_and_return_types(func: &ir::FunctionDefinition) -> Vec<(ir::BlockId, ir::Dtype)> {
+    let mut result = vec![];
+    for (bid, block) in &func.blocks {
         for instr in &block.instructions {
-            if matches!(instr.deref(), ir::Instruction::Call { .. }) {
-                return true;
+            if let ir::Instruction::Call { return_type, .. } = instr.deref() {
+                result.push((*bid, return_type.clone()));
             }
         }
     }
-    false
+    result
 }
 
 impl asm::DataSize {
