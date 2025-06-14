@@ -1,60 +1,594 @@
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
-use std::hash::Hash;
-
-use itertools::all;
-use lang_c::ast;
-
-use crate::ir::{BlockExit, HasDtype};
-use crate::opt::opt_utils;
-use crate::{Translate, asm, ir};
-
+use std::collections::{HashMap, VecDeque};
 use std::ops::Deref;
 
-/*
-int square(int x) {
-    return x * x;
-}
+use lang_c::ast;
 
-int foo() {
-    return square(2);
-}
-
-int bar() {
-    return square(3);
-}
-한 Callee에 대해서 multiple caller 존재가능함
-*/
+use crate::ir::HasDtype;
+use crate::{Translate, asm, ir};
 
 #[derive(Debug)]
 pub struct Asmgen {
-    /* Call bid는 Caller측 bid */
-    caller_to_callee: HashMap<String, Vec<(ir::BlockId, String, CallType)>>, /* Caller, [(Call bid, Callee), ...] */
-    // caller_to_call_type: HashMap<String, HashMap<ir::BlockId, CallType>>,
-    caller_to_alloc_to_off_b: HashMap<String, HashMap<String, (i32, i32)>>,
-    function_name_to_offset: HashMap<String, i32>,
-
-    callee_to_caller: HashMap<String, Vec<(ir::BlockId, String)>>, /* Callee, [(Call bid, Caller), ...] */
-
+    reg_allocator: RegAllocator,
+    stack_allocator: StackAllocator,
+    var_locations: HashMap<ir::Operand, VarLocation>,
+    next_stack_offset: i32,
     function_name_list: HashMap<String, (usize, ir::FunctionSignature)>,
     variable_name_list: HashMap<String, ir::Dtype>,
-    struct_list: HashMap<String, Option<ir::Dtype>>,
-    // callee_to_offset: HashMap<String, i32>,
 }
 
-#[allow(clippy::derivable_impls)]
+#[derive(Debug)]
+struct RegAllocator {
+    available_regs: VecDeque<asm::Register>,
+    reg_usage: HashMap<asm::Register, ir::Operand>,
+}
+
+#[derive(Debug)]
+struct StackAllocator {
+    stack_map: HashMap<ir::Operand, i32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum VarLocation {
+    Reg(asm::Register),
+    Stack(i32),
+}
+
 impl Default for Asmgen {
     fn default() -> Self {
-        // todo!()
-        Asmgen {
-            caller_to_callee: HashMap::new(),
-            // caller_to_call_type: HashMap::new(),
-            caller_to_alloc_to_off_b: HashMap::new(),
-            function_name_to_offset: HashMap::new(),
-            callee_to_caller: HashMap::new(),
+        Self {
+            reg_allocator: RegAllocator::new(),
+            stack_allocator: StackAllocator::new(),
+            var_locations: HashMap::new(),
             function_name_list: HashMap::new(),
             variable_name_list: HashMap::new(),
-            struct_list: HashMap::new(),
+            next_stack_offset: 0,
         }
+    }
+}
+
+impl RegAllocator {
+    fn new() -> Self {
+        Self {
+            available_regs: VecDeque::from(vec![
+                asm::Register::T0,
+                asm::Register::T1,
+                asm::Register::T2,
+            ]),
+            reg_usage: HashMap::new(),
+        }
+    }
+
+    fn allocate(
+        &mut self,
+        operand: &ir::Operand,
+        stack_allocator: &mut StackAllocator,
+        next_stack_offset: &mut i32,
+        var_locations: &mut HashMap<ir::Operand, VarLocation>,
+        asm_instrs: &mut Vec<asm::Instruction>,
+    ) -> asm::Register {
+        if let Some((&reg, _)) = self.reg_usage.iter().find(|(_, op)| *op == operand) {
+            return reg;
+        }
+
+        if let Some(reg) = self.available_regs.pop_front() {
+            let _unused = self.reg_usage.insert(reg, operand.clone());
+            reg
+        } else {
+            // Spill 발생
+            self.spill(
+                stack_allocator,
+                next_stack_offset,
+                var_locations,
+                asm_instrs,
+            );
+
+            // spill 후에는 무조건 reg 하나 생김 → pop_front 가능
+            let reg = self
+                .available_regs
+                .pop_front()
+                .expect("Expected reg after spill");
+            let _unused = self.reg_usage.insert(reg, operand.clone());
+            reg
+        }
+    }
+
+    fn free(&mut self, reg: asm::Register) {
+        let _unused = self.reg_usage.remove(&reg);
+        self.available_regs.push_back(reg);
+    }
+
+    fn spill(
+        &mut self,
+        stack_allocator: &mut StackAllocator,
+        next_stack_offset: &mut i32,
+        var_locations: &mut HashMap<ir::Operand, VarLocation>,
+        asm_instrs: &mut Vec<asm::Instruction>,
+    ) {
+        // 어떤 reg 를 spill 할지 고름 (여기서는 그냥 첫 번째 선택)
+        if let Some((&reg, operand)) = self.reg_usage.iter().next() {
+            println!("Spilling {:?} => {:?}", reg, operand);
+
+            // stack 위치 할당
+            let offset = stack_allocator.allocate_stack_slot(operand, next_stack_offset);
+
+            // store reg → stack
+            asm_instrs.push(asm::Instruction::SType {
+                instr: asm::SType::store(operand.dtype()),
+                rs1: asm::Register::Sp,
+                rs2: reg,
+                imm: asm::Immediate::Value(offset as u64),
+            });
+
+            // var_locations 업데이트 → operand 는 stack 에 위치한다고 기록
+            let _unused = var_locations.insert(operand.clone(), VarLocation::Stack(offset));
+
+            // reg free
+            let _unused = self.reg_usage.remove(&reg);
+            self.available_regs.push_back(reg);
+        } else {
+            panic!("No register available to spill");
+        }
+    }
+}
+
+impl StackAllocator {
+    fn new() -> Self {
+        Self {
+            stack_map: HashMap::new(),
+        }
+    }
+
+    fn allocate_stack_slot(&mut self, operand: &ir::Operand, next_offset: &mut i32) -> i32 {
+        if let Some(&offset) = self.stack_map.get(operand) {
+            offset
+        } else {
+            *next_offset -= 4; // 4-byte stack slot
+            let _unused = self.stack_map.insert(operand.clone(), *next_offset);
+            *next_offset
+        }
+    }
+}
+
+impl Asmgen {
+    fn translate_operand(
+        &mut self,
+        operand: &ir::Operand,
+        asm_instrs: &mut Vec<asm::Instruction>,
+    ) -> asm::Register {
+        let location = self.var_locations.get(operand).cloned();
+
+        if let Some(VarLocation::Reg(reg)) = location {
+            return reg;
+        }
+
+        if let Some(VarLocation::Stack(offset)) = location {
+            let reg = self.reg_allocator.allocate(
+                operand,
+                &mut self.stack_allocator,
+                &mut self.next_stack_offset,
+                &mut self.var_locations,
+                asm_instrs,
+            );
+            asm_instrs.push(asm::Instruction::IType {
+                instr: asm::IType::load(operand.dtype()),
+                rd: reg,
+                rs1: asm::Register::Sp,
+                imm: asm::Immediate::Value(offset as u64),
+            });
+            let _unused = self
+                .var_locations
+                .insert(operand.clone(), VarLocation::Reg(reg));
+            return reg;
+        }
+
+        // None case
+        let reg = self.reg_allocator.allocate(
+            operand,
+            &mut self.stack_allocator,
+            &mut self.next_stack_offset,
+            &mut self.var_locations,
+            asm_instrs,
+        );
+        let _unused = self
+            .var_locations
+            .insert(operand.clone(), VarLocation::Reg(reg));
+        reg
+    }
+
+    fn translate_function(&mut self, name: &str, func: &ir::FunctionDefinition) -> asm::Function {
+        println!("translate_function | allocation: {:?}", func.allocations); // allocation 은 local value에 대한 것이고
+        // argument의 경우 allocation이 아닌 phinode에 존재함
+
+        self.next_stack_offset = 0;
+        let mut asm_blocks = vec![];
+        let mut total_stack_offset: i32 = 0; // epilogue용 추후 사용
+
+        let function_has_call = has_call(func); // 🔍 call 존재 여부
+
+        for (iid, (bid, block)) in func.blocks.iter().enumerate() {
+            println!(
+                "translate_function | bid {}, phinodes {:?}",
+                bid, block.phinodes
+            );
+
+            let mut body_instrs: Vec<asm::Instruction> = vec![];
+
+            // 1️⃣ Prologue → bid_init 에만 적용
+            if bid.0 == func.bid_init.0 {
+                // (1) addi sp, sp, 0 (placeholder)
+                body_instrs.push(asm::Instruction::IType {
+                    instr: asm::IType::Addi(asm::DataSize::Double),
+                    rd: asm::Register::Sp,
+                    rs1: asm::Register::Sp,
+                    imm: asm::Immediate::Value(0), // placeholder
+                });
+
+                // (2) sd ra, -8(sp)
+                if function_has_call {
+                    self.next_stack_offset -= 8;
+                    body_instrs.push(asm::Instruction::SType {
+                        instr: asm::SType::Store(asm::DataSize::Double),
+                        rs1: asm::Register::Sp,
+                        rs2: asm::Register::Ra,
+                        imm: asm::Immediate::Value(self.next_stack_offset as u64),
+                    });
+                }
+
+                /*
+                지금 내가 하고 싶은 것은
+                phinodes에 해당하는 reg들을 모두 t0 reg 이용해서 stack에 저장해주기
+                stack에 저장할 때 해당 ir의 rid와 stack 맵핑을 이용해서
+                추후 ir -> asm 변환에 고려해주기
+                그리고 마지막으로
+                instruction마다 t0, t1, t2 이용해서 stack에 저장된 값에 접근해주기
+
+                로직은 아래 caller에서의 call ir instruction에서 stack에 저장한 것을 이제는 callee에서 저장해주느 꼴로
+                크게 다를 것은 없을 듯
+                                // argument stack 에 다 저장 후 → call
+                                for (i, arg) in args.iter().enumerate() {
+                                    println!("translate function | Call | arg operand {}", arg);
+                                    let arg_reg = asm::Register::T0;
+
+                                    if let Some(c) = arg.get_constant() {
+                                        // Constant → li t0, imm
+                                        body_instrs.push(asm::Instruction::Pseudo(
+                                            asm::Pseudo::Li {
+                                                rd: arg_reg,
+                                                imm: c.get_int().unwrap().0 as u64,
+                                            },
+                                        ));
+                                    } else {
+                                        // Register → translate_operand + mv t0, reg + free
+                                        let tmp_reg = self.translate_operand(arg, &mut body_instrs);
+
+                                        body_instrs.push(asm::Instruction::Pseudo(
+                                            asm::Pseudo::Mv {
+                                                rd: arg_reg,
+                                                rs: tmp_reg,
+                                            },
+                                        ));
+
+                                        self.reg_allocator.free(tmp_reg);
+                                    }
+                */
+                let mut current_offset = 0;
+
+                for (i, named) in block.phinodes.iter().enumerate() {
+                    let dtype = named.deref().clone();
+                    let size = get_dtype_size(&dtype);
+
+                    current_offset += size;
+
+                    // offset은 sp - current_offset
+                    let fixed_offset = -current_offset;
+
+                    let reg_id = ir::RegisterId::arg(func.bid_init, i);
+                    let phi_operand = ir::Operand::register(reg_id, dtype.clone());
+
+                    let src_reg = asm::Register::T0;
+
+                    body_instrs.push(asm::Instruction::SType {
+                        instr: asm::SType::Store(asm::DataSize::from_dtype(&dtype)),
+                        rs1: asm::Register::Sp,
+                        rs2: src_reg,
+                        imm: asm::Immediate::Value(fixed_offset as u64), // u64지만 음수 offset로 저장됨
+                    });
+
+                    let _unused = self
+                        .var_locations
+                        .insert(phi_operand, VarLocation::Stack(fixed_offset));
+                }
+            }
+
+            // 2️⃣ Block instructions 처리
+            for (iid, (bid, block)) in func.blocks.iter().enumerate() {
+                for instr in &block.instructions {
+                    println!(
+                        "translate_function | name {} | instr {} | self.next_stack_offset {}",
+                        name, instr, self.next_stack_offset
+                    );
+                    match instr.deref() {
+                        ir::Instruction::BinOp {
+                            op,
+                            lhs,
+                            rhs,
+                            dtype,
+                        } => {
+                            let rd = self.reg_allocator.allocate(
+                                &ir::Operand::register(
+                                    ir::RegisterId::temp(*bid, iid), // ⭐ 여기서 iid 사용으로 고치면 spill 문제도 같이 해결
+                                    dtype.clone(),
+                                ),
+                                &mut self.stack_allocator,
+                                &mut self.next_stack_offset,
+                                &mut self.var_locations,
+                                &mut body_instrs,
+                            );
+                            let rs1 = self.translate_operand(lhs, &mut body_instrs);
+                            let rs2 = self.translate_operand(rhs, &mut body_instrs);
+
+                            if let Some(rtype) = map_binop_to_rtype(op) {
+                                body_instrs.push(asm::Instruction::RType {
+                                    instr: rtype,
+                                    rd,
+                                    rs1,
+                                    rs2: Some(rs2),
+                                });
+                            } else {
+                                unimplemented!("BinOp {:?} not implemented yet", op);
+                            }
+                        }
+
+                        ir::Instruction::Load { ptr } => {
+                            let dtype = ptr.dtype().get_pointer_inner().unwrap().clone();
+                            let rd = self.reg_allocator.allocate(
+                                &ir::Operand::register(
+                                    ir::RegisterId::temp(*bid, iid), // ⭐ 여기서 iid 사용으로 고치면 spill 문제도 같이 해결
+                                    dtype.clone(),
+                                ),
+                                &mut self.stack_allocator,
+                                &mut self.next_stack_offset,
+                                &mut self.var_locations,
+                                &mut body_instrs,
+                            );
+                            let rs1 = self.translate_operand(ptr, &mut body_instrs);
+
+                            body_instrs.push(asm::Instruction::IType {
+                                instr: asm::IType::load(ptr.dtype()),
+                                rd,
+                                rs1,
+                                imm: asm::Immediate::Value(0),
+                            });
+                        }
+
+                        ir::Instruction::Store { ptr, value } => {
+                            let rs1 = self.translate_operand(ptr, &mut body_instrs);
+                            let rs2 = self.translate_operand(value, &mut body_instrs);
+
+                            body_instrs.push(asm::Instruction::SType {
+                                instr: asm::SType::store(value.dtype()),
+                                rs1,
+                                rs2,
+                                imm: asm::Immediate::Value(0),
+                            });
+                        }
+                        ir::Instruction::Call {
+                            callee,
+                            args,
+                            return_type,
+                        } => {
+                            if let ir::Instruction::Call {
+                                callee:
+                                    ir::Operand::Constant(ir::Constant::GlobalVariable {
+                                        name: call_name,
+                                        dtype: _,
+                                    }),
+                                args,
+                                return_type: _,
+                            } = instr.deref()
+                            {
+                                // argument stack 에 다 저장 후 → call
+                                for (i, arg) in args.iter().enumerate() {
+                                    println!("translate function | Call | arg operand {}", arg);
+                                    let arg_reg = asm::Register::T0;
+
+                                    if let Some(c) = arg.get_constant() {
+                                        // Constant → li t0, imm
+                                        body_instrs.push(asm::Instruction::Pseudo(
+                                            asm::Pseudo::Li {
+                                                rd: arg_reg,
+                                                imm: c.get_int().unwrap().0 as u64,
+                                            },
+                                        ));
+                                    } else {
+                                        // Register → translate_operand + mv t0, reg + free
+                                        let tmp_reg = self.translate_operand(arg, &mut body_instrs);
+
+                                        body_instrs.push(asm::Instruction::Pseudo(
+                                            asm::Pseudo::Mv {
+                                                rd: arg_reg,
+                                                rs: tmp_reg,
+                                            },
+                                        ));
+
+                                        self.reg_allocator.free(tmp_reg);
+                                    }
+
+                                    // sw t0, offset(sp)
+                                    // 여기서 dummy_operand 를 써서 slot 을 따로 만들면 좋음
+                                    let dummy_operand = ir::Operand::constant(ir::Constant::int(
+                                        i as u128,
+                                        ir::Dtype::int(32),
+                                    ));
+                                    let offset = self.stack_allocator.allocate_stack_slot(
+                                        &dummy_operand,
+                                        &mut self.next_stack_offset,
+                                    );
+
+                                    let body_instr = asm::Instruction::SType {
+                                        instr: asm::SType::store(arg.dtype()),
+                                        rs1: asm::Register::Sp,
+                                        rs2: arg_reg,
+                                        imm: asm::Immediate::Value(offset as u64),
+                                    };
+                                    println!("translate_function | body_instr {:?}", body_instr);
+                                    body_instrs.push(body_instr);
+                                }
+
+                                // call
+                                body_instrs.push(asm::Instruction::Pseudo(asm::Pseudo::Call {
+                                    offset: asm::Label(call_name.clone()),
+                                }));
+
+                                // call 결과는 a0 에 들어온다고 가정 (ref style 따라감)
+                                // 결과를 t0 에 옮기고 stack 에 저장
+                                body_instrs.push(asm::Instruction::Pseudo(asm::Pseudo::Mv {
+                                    rd: asm::Register::T0,
+                                    rs: asm::Register::A0,
+                                }));
+
+                                // 결과 stack 에 저장
+                                let dummy_ret_operand = ir::Operand::constant(ir::Constant::int(
+                                    9999,
+                                    ir::Dtype::int(32),
+                                ));
+                                let ret_offset = self.stack_allocator.allocate_stack_slot(
+                                    &dummy_ret_operand,
+                                    &mut self.next_stack_offset,
+                                );
+
+                                body_instrs.push(asm::Instruction::SType {
+                                    instr: asm::SType::store(ir::Dtype::int(32)), // int 32 가 대부분임
+                                    rs1: asm::Register::Sp,
+                                    rs2: asm::Register::T0,
+                                    imm: asm::Immediate::Value(ret_offset as u64),
+                                });
+                            } else {
+                                unimplemented!("Indirect call not supported");
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            // 3️⃣ Block exit 처리
+            match &block.exit {
+                ir::BlockExit::Jump { arg } => {
+                    body_instrs.push(asm::Instruction::Pseudo(asm::Pseudo::J {
+                        offset: asm::Label::new(name, arg.bid),
+                    }));
+                }
+                ir::BlockExit::ConditionalJump {
+                    condition,
+                    arg_then,
+                    arg_else,
+                } => {
+                    let cond_reg = self.translate_operand(condition, &mut body_instrs);
+
+                    body_instrs.push(asm::Instruction::BType {
+                        instr: asm::BType::Beq,
+                        rs1: cond_reg,
+                        rs2: asm::Register::Zero,
+                        imm: asm::Label::new(name, arg_else.bid),
+                    });
+
+                    body_instrs.push(asm::Instruction::Pseudo(asm::Pseudo::J {
+                        offset: asm::Label::new(name, arg_then.bid),
+                    }));
+                }
+                ir::BlockExit::Return { value } => {
+                    if let Some(c) = value.get_constant() {
+                        // Constant → li t0
+                        body_instrs.push(asm::Instruction::Pseudo(asm::Pseudo::Li {
+                            rd: asm::Register::T0,
+                            imm: c.get_int().unwrap().0 as u64,
+                        }));
+                    } else {
+                        // Register → translate_operand + mv t0, reg
+                        let ret_reg = self.translate_operand(value, &mut body_instrs);
+                        body_instrs.push(asm::Instruction::Pseudo(asm::Pseudo::Mv {
+                            rd: asm::Register::T0,
+                            rs: ret_reg,
+                        }));
+                    }
+
+                    // 4️⃣ Epilogue → Return 시점에 항상 넣어줌
+
+                    if function_has_call {
+                        // ld ra, -8(sp)
+                        body_instrs.push(asm::Instruction::IType {
+                            instr: asm::IType::Load {
+                                data_size: asm::DataSize::Double,
+                                is_signed: true,
+                            },
+                            rd: asm::Register::Ra,
+                            rs1: asm::Register::Sp,
+                            imm: asm::Immediate::Value((-8i64) as u64),
+                        });
+                    }
+
+                    // addi sp, sp, MN
+                    let total_offset = (-self.next_stack_offset) as u64;
+                    body_instrs.push(asm::Instruction::IType {
+                        instr: asm::IType::Addi(asm::DataSize::Double),
+                        rd: asm::Register::Sp,
+                        rs1: asm::Register::Sp,
+                        imm: asm::Immediate::Value(total_offset),
+                    });
+
+                    // ret
+                    body_instrs.push(asm::Instruction::Pseudo(asm::Pseudo::Ret));
+                }
+                ir::BlockExit::Unreachable => {
+                    // No-op
+                }
+                _ => unimplemented!("BlockExit type not yet handled"),
+            }
+
+            // 5️⃣ Block label 설정
+            let mut label = asm::Label(String::new());
+            if bid.0 == func.bid_init.0 {
+                label = asm::Label(name.to_string());
+            } else {
+                label = asm::Label::new(name, *bid);
+            }
+
+            let block_label = Some(label.clone());
+            println!("Label {:?}", label.clone());
+
+            println!("translate_function | body_instrs {:?}", body_instrs);
+
+            // Block 저장
+            asm_blocks.push(asm::Block {
+                label: block_label,
+                instructions: body_instrs,
+            });
+        }
+
+        // 6️⃣ 마지막에 bid_init block의 sp placeholder patch (필수)
+
+        if let Some(block_init) = asm_blocks.first_mut() {
+            println!(
+                "translate_function | block_init.instructions {:?}",
+                block_init.instructions
+            );
+            if let Some(asm::Instruction::IType {
+                instr: asm::IType::Addi(asm::DataSize::Double),
+                rd,
+                rs1,
+                imm,
+            }) = block_init.instructions.first_mut()
+            {
+                *imm = asm::Immediate::Value((-self.next_stack_offset) as u64);
+                println!(
+                    "Patched initial sp offset to {}",
+                    (-self.next_stack_offset) as u64
+                );
+            }
+        }
+
+        asm::Function::new(asm_blocks)
     }
 }
 
@@ -66,8 +600,6 @@ impl Translate<ir::TranslationUnit> for Asmgen {
     fn translate(&mut self, source: &ir::TranslationUnit) -> Result<Self::Target, Self::Error> {
         let mut functions = Vec::new();
         let mut variables = Vec::new();
-
-        self.struct_list = source.structs.clone();
         for (idx, (name, decl)) in source.decls.iter().enumerate() {
             match decl {
                 ir::Declaration::Function {
@@ -90,28 +622,9 @@ impl Translate<ir::TranslationUnit> for Asmgen {
                 signature,
                 definition: Some(defn),
             } = decl
-            {
-                self.init(name, defn);
-            }
+            {}
             true
         });
-
-        println!(
-            "translate | caller_callee \n {:?} \n",
-            self.caller_to_callee
-        );
-        println!(
-            "translate | callee_caller \n {:?} \n",
-            self.callee_to_caller
-        );
-        // println!(
-        //     "translate | callee_to_call_type \n {:?} \n",
-        //     self.caller_to_call_type
-        // );
-
-        println!("function_name_lists | {:?}", self.function_name_list);
-        println!("variable_name_lists | {:?}", self.variable_name_list);
-        println!("struct | {:?}", self.struct_list);
 
         for (name, decl) in &source.decls {
             match decl {
@@ -119,7 +632,7 @@ impl Translate<ir::TranslationUnit> for Asmgen {
                     signature,
                     definition: Some(defn),
                 } => {
-                    let func = self.translate_function(name, signature, defn)?;
+                    let func = self.translate_function(name, defn);
 
                     let header = vec![
                         asm::Directive::Globl(asm::Label(name.clone())),
@@ -138,10 +651,6 @@ impl Translate<ir::TranslationUnit> for Asmgen {
                 _ => {} // 함수 정의가 없는 선언 (prototype) 무시
             }
         }
-        println!(
-            "translate | stack_offset \n {:?} \n",
-            self.function_name_to_offset
-        );
 
         let asm_unit = asm::TranslationUnit {
             functions,
@@ -152,688 +661,31 @@ impl Translate<ir::TranslationUnit> for Asmgen {
     }
 }
 
-impl Asmgen {
-    fn translate_function(
-        &mut self,
-        name: &str,
-        sig: &ir::FunctionSignature,
-        defn: &ir::FunctionDefinition,
-    ) -> Result<asm::Function, ()> {
-        // let function_name_list = &self.function_name_list.clone();
-        // let struct_list = &self.struct_list.clone();
-
-        let mut asm_blocks = Vec::new();
-        let bid_init = &defn.bid_init;
-
-        // 스택 오프셋 계산 초기화
-        // stack pointer offset, 해당 function에 대해서는 stack_offset 동일함.
-        self.stack_offset_defn(name, defn);
-
-        for (bid, block) in &defn.blocks {
-            let label = if (bid == bid_init) {
-                Some(asm::Label(name.to_string()))
-            } else {
-                Some(asm::Label(format!(".{}_L{}", name, bid.0)))
-            };
-            let mut instructions = Vec::new();
-
-            // body
-            for (iid, instr) in block.instructions.iter().enumerate() {
-                let dest_rid = ir::RegisterId::temp(*bid, iid);
-                instructions.extend(self.translate_instruction(&dest_rid, &block.exit, instr));
-            }
-
-            // exit
-            instructions.extend(self.translate_block_exit(&block.exit));
-
-            asm_blocks.push(asm::Block::new(label, instructions));
-        }
-
-        Ok(asm::Function::new(asm_blocks))
-    }
-
-    /*
-    함수를 나누어서 구현하기 -> caller-callee map, calllee-caller map 구하기, CallType 정보 저장해주기
-    caller, callee 정보만 제대로 저장이 된다면 스택에 어떤 식으로 값을 할당할지 구할 수 있음
-
-    caller, callee 둘 다 해당하는 경우도 물론 존재할 수 있음
-    그래서
-    callee 경우 ->
-    caller 경우 -> stack offset 계산해주기
-
-
-    그리고 함수 인자로 계속 전달하는게 불편함 차라리
-    function_name_list
-    stack_list
-    */
-    fn init(&mut self, name: &str, defn: &ir::FunctionDefinition) {
-        // HashMap<String, HashMap<ir::BlockId, CallType>>
-        let current_idx = self.function_name_list.get(name).unwrap();
-        let tmp: HashMap<ir::BlockId, CallType> = defn
-            .blocks
-            .iter()
-            .flat_map(|(bid, block)| {
-                let mut tmp_elt = Vec::new();
-                for instr in block.instructions.clone().iter() {
-                    if let ir::Instruction::Call {
-                        callee:
-                            ir::Operand::Constant(ir::Constant::GlobalVariable {
-                                name: call_name,
-                                dtype,
-                            }),
-                        args,
-                        return_type,
-                    } = instr.deref()
-                    {
-                        let call_idx = self.function_name_list.get(call_name.deref()).unwrap();
-                        // 현재 함수 인덱스(current_idx)가 호출된 함수(call_idx)보다 작은 경우는 정적 호출
-                        let calltype = if call_idx.0 < current_idx.0 {
-                            CallType::Call(call_name.clone()) // 정적 호출
-                        } else {
-                            let saved_reg = asm::Register::S1;
-                            CallType::Jalr(call_name.clone(), saved_reg) // 동적 호출
-                        };
-
-                        let entry_from_caller =
-                            self.caller_to_callee.entry(name.to_string()).or_default();
-                        entry_from_caller.push((*bid, call_name.clone(), calltype)); // 해당 블록에 대한 call 정보를 추가
-                        let entry_from_callee =
-                            self.callee_to_caller.entry(call_name.clone()).or_default();
-                        entry_from_callee.push((*bid, name.to_string()));
-                    }
-                }
-                tmp_elt
-            })
-            .collect();
-    }
-
-    fn stack_offset_defn(&mut self, name: &str, defn: &ir::FunctionDefinition) {
-        let ra = 1;
-        let s0 = 1;
-        let mut stack_offset = 0;
-
-        // 일단 먼저 call이 존재하는지 판단하기 -> 모든 block들을 보면서 call이 있는지 call이 사용되는 시점과 define되는 시점
-        // 함수 이름 -> bid 수준이 아니라 function 수준이기 때문에 다른 전략이 필요해
-
-        let mut allocation_offset = 0;
-        let mut local_allocation_to_offset_and_bytes = HashMap::<String, (i32, i32)>::new();
-        for allocation in defn.allocations.clone() {
-            /* is_long_data i32반환 */
-            // let bytes = get_dtype_size(allocation.deref(), struct_list);
-            // let offset = align_to_8(bytes) / 8;
-            let (offset, bytes) = is_long_data(allocation.deref(), &self.struct_list); // (stack_offset, originalsize)
-            if let Some(name) = allocation.name() {
-                let _unused =
-                    local_allocation_to_offset_and_bytes.insert(name.clone(), (offset, bytes));
-            }
-            allocation_offset += offset;
-        }
-        stack_offset += allocation_offset;
-
-        let caller_to_alloc_to_off_b_entry = self
-            .caller_to_alloc_to_off_b
-            .entry(name.to_string())
-            .or_default();
-        caller_to_alloc_to_off_b_entry.extend(local_allocation_to_offset_and_bytes);
-
-        println!(
-            "stack_offset_defn | caller_to_alloc_to_off_b \n {:?} \n",
-            self.caller_to_alloc_to_off_b
-        );
-
-        let mut ra_offset = 0;
-        let mut saved_reg_offset = 0;
-        if let Some(tmp) = self.caller_to_callee.get(name) {
-            if !tmp.is_empty() {
-                ra_offset += ra * tmp.len() as i32;
-            }
-            let jalr_count = tmp
-                .iter()
-                .filter(|(_, _, calltype)| matches!(calltype, CallType::Jalr(_, _)))
-                .count();
-            saved_reg_offset += jalr_count as i32;
-        }
-        stack_offset += ra_offset;
-        stack_offset += saved_reg_offset;
-
-        /*
-        동적 호출 개수 계산 -> + 8, 개수만큼 그리고 각각에 대해서 saved register 할당해주기
-        s1 ~ s11까지 일단 우리는 무조건 s1으로 할당해주게 하기
-        개수 계산과 동시에 register 할당
-
-        반환도 단순히 stack offset을 하기 보다는
-        stackoffset, HashMap<bid, saved_reg로 사용하기> ->
-        이 saved reg는 동적호출 시에 사용될 reg
-        */
-
-        /*
-        그 다음에 해야할 것은 stack 크기 할당 어떤 식으로 해야할지 고민하기
-        (allocations) + (backup for calculations) + (parameters 개수가 많은 경우, 또는 struct를 넣어주는 경우)
-        */
-
-        /*
-        paramter
-        backup
-        allocation
-        S0 X
-        RA X
-        Saved register for Jalr X -> # of Jalr 개수를 계산해야 함. X
-        */
-
-        /* caller */
-        let mut caller_offset = 0;
-        let _unused = defn.blocks.iter().all(|(bid, block)| {
-            let offset = self
-                .stack_caller_offset_instrs(defn.allocations.clone(), block.instructions.clone());
-            caller_offset += offset;
-            true
-        });
-        stack_offset += caller_offset;
-        let mut param_long = false;
-        if let Some(tmp) = self.caller_to_callee.get(name) {
-            for (_, callee_name, _) in tmp {
-                let (_, signature) = self.function_name_list.get(callee_name).unwrap();
-                let ret_type = signature.ret.clone();
-                let arg_types = signature.params.clone();
-                let (ret_offset, bytes) = is_long_data(&ret_type, &self.struct_list);
-
-                println!("name {} tmp {:?} ret_offset {:?}", name, tmp, ret_offset);
-
-                param_long = arg_types.iter().any(|arg| {
-                    let (offset, bytes) = is_long_data(arg, &self.struct_list);
-                    offset > 0
-                });
-                let mut parameter_offset = 0;
-                let mut args_offset = 0;
-                if param_long || arg_types.len() > 2 {
-                    let _unused = arg_types.iter().all(|arg| {
-                        let (param_offset, bytes) = is_long_data(arg, &self.struct_list);
-                        parameter_offset += param_offset;
-
-                        let bytes = get_dtype_size(arg, &self.struct_list);
-                        let offset = align_to_8(bytes) / 8;
-
-                        args_offset += offset;
-                        true
-                    });
-                }
-                /*
-                이미 load가 되는 부분 다 고려되고 있기 때문에 이를 제외하기 위해서
-                다 고려되는 것은 아님
-
-                param_offset = 0인 경우만을 고려함.
-                */
-                // stack_offset += parameter_offset;
-
-                let callee_name_entry = self
-                    .function_name_to_offset
-                    .entry(callee_name.to_string())
-                    .or_default();
-                println!("name {} arg_types.len() {}", name, arg_types.len());
-                if param_long {
-                    *callee_name_entry += args_offset;
-                } else {
-                    *callee_name_entry += ret_offset;
-                }
-
-                if arg_types.len() > 2 && !param_long {
-                    *callee_name_entry += args_offset;
-                }
-
-                if ret_offset > 2 {
-                    /*
-                    callee 를 위한 자리
-                    return 을 위한 자리
-                    */
-                    if param_long {
-                        stack_offset += 2 * ret_offset;
-                    } else {
-                        stack_offset += ret_offset;
-                    }
-                }
-
-                println!(
-                    "stack_offset_defn | caller name {} | callee name {} | \n param_long {}, parameter_offset {}, args_offset {}, ret_offset {} \n",
-                    name, callee_name, param_long, parameter_offset, args_offset, ret_offset
-                )
-            }
-        }
-
-        // /* callee */
-        // let mut callee_offset = 0;
-        // let mut transfer_offset = 0;
-        // if let Some(tmp) = self.callee_to_caller.get(name) {
-        //     // is callee?
-        //     let mut param_long = false;
-        //     let (_, signature) = self.function_name_list.get(name).unwrap();
-        //     let ret_type = signature.ret.clone();
-        //     let arg_types = signature.params.clone();
-
-        //     param_long = arg_types.iter().any(|arg| {
-        //         let (offset, bytes) = is_long_data(arg, &self.struct_list);
-        //         offset > 0
-        //     });
-        //     let mut parameter_offset = 0;
-        //     let mut args_offset = 0;
-        //     if param_long {
-        //         let _unused = arg_types.iter().all(|arg| {
-        //             let (arg_offset, bytes) = is_long_data(arg, &self.struct_list);
-        //             args_offset += arg_offset;
-
-        //             let bytes = get_dtype_size(arg, &self.struct_list);
-        //             let offset = align_to_8(bytes) / 8;
-        //             parameter_offset += offset;
-        //             true
-        //         });
-        //     }
-        //     callee_offset += parameter_offset;
-        //     transfer_offset += args_offset;
-        //     println!("parameter_offset {:?}", parameter_offset);
-        //     println!("args_offset; {:?}", args_offset);
-
-        //     let (return_offset, bytes) = is_long_data(&ret_type, &self.struct_list);
-        //     callee_offset += return_offset;
-        //     // allocation -> return 값, return copy값
-
-        //     /* transfer offset */
-        //     // if return_offset > 2 {
-        //     //     /* a0, a1 reg에 자리가 다 찰 경우 */
-        //     //     // caller side에서 미리 지정해줌, tmp caller에 대해서 모두 할당해주기
-        //     //     transfer_offset += return_offset;
-        //     //     // caller 자리 하나
-        //     // }
-        //     // a0, a1 자리가 다 차지 않은 경우에도 불구하고
-        //     // long_data인 경우에는 return_offset을 고려하지 않을까?
-        //     // transfer_offset += return_offset; // 이미 caller side에서 return에 대해서 고려해줌
-        //     // 여기서 우리가 해주어야 할 것은
-        //     if return_offset > 2 {
-        //         /* a0, a1 reg에 자리가 다 찰 경우 */
-        //         // caller side에서 미리 지정해줌, tmp caller에 대해서 모두 할당해주기
-        //         transfer_offset += return_offset; // callee쪽에서 caller로 복사
-        //         // caller 자리 하나
-        //     }
-        //     if !param_long {
-        //         // arg과 stack에 저장되지 않은 경우
-        //         callee_offset += return_offset; // callee쪽에서 caller로 복사 전에 copy
-        //     }
-
-        //     for (bid, caller_name) in tmp {
-        //         let caller_name_entry = self
-        //             .function_name_to_offset
-        //             .entry(caller_name.to_string())
-        //             .or_default();
-        //         *caller_name_entry += transfer_offset;
-        //     }
-        // }
-
-        // stack_offset += callee_offset;
-
-        // 56, 40 도 가능해서 일단 보류
-        // if stack_offset % 2 == 1 {
-        //     stack_offset += 1; // stack padding (multiple of 16)
-        // }
-
-        let stack_offset_ptr = self
-            .function_name_to_offset
-            .entry(name.to_string())
-            .or_default();
-        println!("before updating | stack ptr {}", stack_offset_ptr);
-        *stack_offset_ptr += stack_offset;
-
-        let mut frame_offset = 0;
-
-        if *stack_offset_ptr > 0 {
-            println!("name {}", name);
-            frame_offset += s0;
-        }
-        *stack_offset_ptr += frame_offset;
-
-        println!(
-            "
-            (
-                param_long: {},
-                ra_offset: {},
-                frame_offset: {},
-                allocation_offset: {},
-                caller_offset: {},
-                saved_reg_offset: {},
-            )",
-            param_long, ra_offset, frame_offset, allocation_offset, caller_offset, saved_reg_offset,
-        );
-    }
-
-    fn stack_caller_offset_instrs(
-        &mut self,
-        allocations: Vec<ir::Named<ir::Dtype>>,
-        instrs: Vec<ir::Named<ir::Instruction>>,
-    ) -> i32 {
-        let mut caller_offset = 0;
-        // let mut load_count_small_data = HashMap::<String, (i32, i32)>::new();
-        // for instr in instrs.clone().iter() {
-        //     let (offset, bytes) = is_long_data(&instr.deref().dtype(), &self.struct_list);
-        //     if offset == 0 {
-        //         match instr.deref() {
-        //             ir::Instruction::Store { ptr, value } => {
-        //                 if let Some((ir::RegisterId::Local { aid }, dtype)) = ptr.get_register() {
-        //                     let key = allocations[*aid].name().unwrap();
-        //                     let (entry1, entry2) =
-        //                         load_count_small_data.entry(key.clone()).or_default();
-        //                     *entry1 += 1;
-        //                 }
-        //             }
-        //             ir::Instruction::Load { ptr } => {
-        //                 if let Some((ir::RegisterId::Local { aid }, dtype)) = ptr.get_register() {
-        //                     let key = allocations[*aid].name().unwrap();
-        //                     let (entry1, entry2) =
-        //                         load_count_small_data.entry(key.clone()).or_default();
-        //                     *entry2 += 1;
-        //                 }
-        //             }
-        //             _ => {}
-        //         }
-        //     }
-        //     caller_offset += offset;
-        // }
-        // println!(
-        //     "stack_caller_offset_instrs | load_count_small_data \n {:?} \n",
-        //     load_count_small_data
-        // );
-
-        // // small_data 여서 count 만 세는 것으로도 충분함
-        // // 1. 2회 이상 로드된 변수만 필터링
-        // let filtered: HashMap<String, (i32, i32)> = load_count_small_data
-        //     .iter()
-        //     .filter(|(_, (sct, lct))| *sct * *lct > 0)
-        //     .map(|(key, (sct, lct))| (key.clone(), (*sct, *lct)))
-        //     .collect();
-
-        // // 2. count의 총합 계산
-        // let total_count: i32 = filtered.len() as i32;
-
-        // println!("2회 이상 로드된 변수들: {:?}", filtered);
-        // println!("이들의 총 로드 횟수 합계: {}", total_count);
-
-        // caller_offset += total_count;
-
-        // caller_offset
-
-        let mut caller_offset = 0;
-        let mut load_after_store_count: HashMap<String, i32> = HashMap::new();
-        let mut in_store_phase: HashMap<String, bool> = HashMap::new();
-
-        for instr in instrs.iter() {
-            let (offset, _) = is_long_data(&instr.deref().dtype(), &self.struct_list);
-            if offset == 0 {
-                match instr.deref() {
-                    ir::Instruction::Store { ptr, .. } => {
-                        if let Some((ir::RegisterId::Local { aid }, _)) = ptr.get_register() {
-                            let key = allocations[*aid].name().unwrap();
-                            let _unused = in_store_phase.insert(key.clone(), true);
-                        }
-                    }
-                    ir::Instruction::Load { ptr } => {
-                        if let Some((ir::RegisterId::Local { aid }, _)) = ptr.get_register() {
-                            let key = allocations[*aid].name().unwrap();
-                            if let Some(true) = in_store_phase.get(key) {
-                                // store 다음 load 등장 → 카운트 증가
-                                *load_after_store_count.entry(key.clone()).or_default() += 1;
-                                let _unused = in_store_phase.insert(key.clone(), false); // 이후 load는 무시
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            caller_offset += offset;
-        }
-
-        println!(
-            "store → load 패턴이 발견된 변수들 및 개수: {:?}",
-            load_after_store_count
-        );
-
-        let total_count: i32 = load_after_store_count.values().sum();
-        println!("총 store → load 패턴 개수: {}", total_count);
-
-        caller_offset += total_count;
-        caller_offset
-    }
-
-    fn translate_instruction(
-        &self,
-        dest_rid: &ir::RegisterId,
-        exit: &ir::BlockExit,
-        instr: &ir::Named<ir::Instruction>,
-    ) -> Vec<asm::Instruction> {
-        use ir::Instruction::*;
-
-        let mut instructions = Vec::<asm::Instruction>::new();
-
-        match instr.deref() {
-            BinOp {
-                op,
-                lhs,
-                rhs,
-                dtype,
-            } => {
-                println!("translate_instruction | binop | {}", instr);
-                let mut lhs_reg = asm::Register::Zero;
-                let mut rhs_reg = asm::Register::Zero;
-                let mut dest_rid = dest_rid;
-                if let Some((lhs_rid, dtype)) = lhs.get_register() {
-                    lhs_reg = map_reg_ir_to_asm(lhs_rid);
-                }
-                if let Some((rhs_rid, dtype)) = rhs.get_register() {
-                    rhs_reg = map_reg_ir_to_asm(rhs_rid);
-                }
-                if let Some((lhs_rid, dtype)) = lhs.get_register() {
-                    lhs_reg = map_reg_ir_to_asm(lhs_rid);
-                }
-
-                let dest_reg = if is_return_value(dest_rid, exit) {
-                    asm::Register::A0
-                } else {
-                    map_reg_ir_to_asm(dest_rid)
-                };
-
-                // 먼저 상수 operand를 li로 처리
-                translate_operand_if_constant(lhs, lhs_reg, &mut instructions);
-                translate_operand_if_constant(rhs, rhs_reg, &mut instructions);
-
-                // 그 다음 실제 연산
-                translate_binop_instr(
-                    op,
-                    dtype.clone(),
-                    dest_reg,
-                    lhs_reg,
-                    rhs_reg,
-                    &mut instructions,
-                );
-                instructions
-            }
-            Call {
-                callee,
-                args,
-                return_type,
-            } => {
-                // Call 처리
-                let mut reg = asm::Register::Zero;
-                for (i, arg) in args.iter().enumerate() {
-                    // call 의 경우 무조건 변환 Constant여도
-                    let reg = match i {
-                        0 => asm::Register::A0,
-                        1 => asm::Register::A1,
-                        2 => asm::Register::A2,
-                        3 => asm::Register::A3,
-                        4 => asm::Register::A4,
-                        5 => asm::Register::A5,
-                        6 => asm::Register::A6,
-                        7 => asm::Register::A7,
-                        _ => panic!("Too many args"),
-                    };
-
-                    // 이 부분을 무조건 호출하게:
-                    translate_operand_if_constant(arg, reg, &mut instructions);
-                }
-
-                if let ir::Operand::Constant(ir::Constant::GlobalVariable { name, .. }) = callee {
-                    instructions.push(asm::Instruction::Pseudo(asm::Pseudo::Call {
-                        offset: asm::Label(name.clone()),
-                    }));
-                } else {
-                    panic!("Function call must be to global label");
-                }
-                instructions
-            }
-            GetElementPtr { ptr, offset, dtype } => vec![],
-            Load { ptr } => vec![],
-            Nop => vec![],
-            Store { ptr, value } => vec![],
-            TypeCast {
-                value,
-                target_dtype,
-            } => vec![],
-            UnaryOp { op, operand, dtype } => vec![],
-            Value { value } => vec![],
-        }
-    }
-
-    fn translate_block_exit(&self, exit: &ir::BlockExit) -> Vec<asm::Instruction> {
-        use ir::BlockExit::*;
-        let mut instructions = Vec::<asm::Instruction>::new();
-        match exit {
-            Return { value } => {
-                let reg = asm::Register::A0;
-                translate_operand_if_constant(value, reg, &mut instructions);
-                instructions.push(asm::Instruction::Pseudo(asm::Pseudo::Ret));
-                instructions
-            }
-            Jump { arg } => vec![],
-            ConditionalJump {
-                condition,
-                arg_then,
-                arg_else,
-            } => vec![],
-            Switch {
-                value,
-                default,
-                cases,
-            } => vec![],
-            Unreachable => vec![],
-        }
-    }
-}
-
-fn translate_operand_if_constant(
-    operand: &ir::Operand,
-    reg: asm::Register,
-    instrs: &mut Vec<asm::Instruction>,
-) {
-    if let ir::Operand::Constant(c) = operand {
-        if let Some((value, _, _)) = c.get_int() {
-            if value <= u64::MAX as u128 {
-                instrs.push(asm::Instruction::Pseudo(asm::Pseudo::Li {
-                    rd: reg,
-                    imm: value as u64,
-                }));
-            } else {
-                panic!(
-                    "Constant value too large for 64-bit architecture: {}",
-                    value
-                );
-            }
-        } else {
-            // TODO: float 상수 등 추가 처리
-            // todo!("non-integer constants not yet handled");
-        }
-    }
-}
-
-fn map_binop_to_rtype(op: &ast::BinaryOperator, dtype: &ir::Dtype) -> asm::RType {
-    use asm::{DataSize, RType};
-    use ast::BinaryOperator::*;
-
-    // 현재는 정수만 고려, float은 추후 처리
-    let data_size = match dtype {
-        ir::Dtype::Int { width, .. } => match width {
-            8 => DataSize::Byte,
-            16 => DataSize::Half,
-            32 => DataSize::Word,
-            64 => DataSize::Double,
-            // _ => panic!("Unsupported int width: {}", width),
-            _ => DataSize::Byte,
-        },
-        _ => panic!("Non-integer types not yet supported in BinOp"),
-    };
-
-    let is_signed = dtype.is_int_signed();
-
+fn map_binop_to_rtype(op: &ast::BinaryOperator) -> Option<asm::RType> {
     match op {
-        Plus => RType::Add(data_size),
-        Minus => RType::Sub(data_size),
-        Multiply => RType::Mul(data_size),
-        Divide => RType::Div {
-            data_size,
-            is_signed,
-        },
-        Modulo => RType::Rem {
-            data_size,
-            is_signed,
-        },
-        Less => RType::Slt { is_signed },
-        BitwiseAnd => RType::And,
-        BitwiseOr => RType::Or,
-        BitwiseXor => RType::Xor,
-        Equals => RType::Xor, // temp
-        _ => todo!("Binary op {:?} not yet supported", op),
+        ast::BinaryOperator::Plus => Some(asm::RType::Add(asm::DataSize::Byte)),
+        ast::BinaryOperator::Minus => Some(asm::RType::Sub(asm::DataSize::Byte)),
+        ast::BinaryOperator::BitwiseXor => Some(asm::RType::Xor),
+        ast::BinaryOperator::BitwiseOr => Some(asm::RType::Or),
+        ast::BinaryOperator::BitwiseAnd => Some(asm::RType::And),
+        _ => None,
     }
 }
 
-fn translate_binop_instr(
-    op: &ast::BinaryOperator,
-    dtype: ir::Dtype,
-    dest: asm::Register,
-    lhs: asm::Register,
-    rhs: asm::Register,
-    instrs: &mut Vec<asm::Instruction>,
-) {
-    let rtype = map_binop_to_rtype(op, &dtype);
-    instrs.push(asm::Instruction::RType {
-        instr: rtype,
-        rd: dest,
-        rs1: lhs,
-        rs2: Some(rhs),
-    });
-}
-
-fn map_reg_ir_to_asm(rid: &ir::RegisterId) -> asm::Register {
-    match rid {
-        ir::RegisterId::Arg { aid, .. } => match aid {
-            0 => asm::Register::A0,
-            1 => asm::Register::A1,
-            2 => asm::Register::A2,
-            3 => asm::Register::A3,
-            4 => asm::Register::A4,
-            5 => asm::Register::A5,
-            6 => asm::Register::A6,
-            7 => asm::Register::A7,
-            _ => panic!("Too many args for RISC-V calling convention"),
-        },
-        ir::RegisterId::Temp { .. } => asm::Register::T2, // 예시
-        _ => todo!("Support for locals/others"),
+impl ir::Operand {
+    pub fn get_global_variable_name(&self) -> Option<String> {
+        if let ir::Operand::Constant(ir::Constant::GlobalVariable { name, .. }) = self {
+            Some(name.clone())
+        } else {
+            None
+        }
     }
 }
 
-fn is_return_value(tmp_rid: &ir::RegisterId, exit: &ir::BlockExit) -> bool {
-    /*
-    현재 iid에 해당하는 값이 return이 되는지를 체크하는 것
-    map_reg_ir_to_asm을 할 때 rid가 필요하기 때문에
-
-    만약에 반환되는 값이라면 바로 a0 사용 가능??
-    */
-    if let ir::BlockExit::Return { value } = exit {
-        if let Some((rid, _)) = value.get_register() {
-            if rid == tmp_rid {
+fn has_call(func: &ir::FunctionDefinition) -> bool {
+    for block in func.blocks.values() {
+        for instr in &block.instructions {
+            if matches!(instr.deref(), ir::Instruction::Call { .. }) {
                 return true;
             }
         }
@@ -841,153 +693,28 @@ fn is_return_value(tmp_rid: &ir::RegisterId, exit: &ir::BlockExit) -> bool {
     false
 }
 
-fn is_call(
-    instructions: Vec<ir::Named<ir::Instruction>>,
-    struct_list: &HashMap<String, Option<ir::Dtype>>,
-    asmgen: &mut Asmgen,
-) -> (bool, String, i32) {
-    for instr in instructions.clone().iter() {
-        // println!("is_call | instruction {:?}", instr.clone());
-        if let ir::Instruction::Call {
-            callee: ir::Operand::Constant(ir::Constant::GlobalVariable { name, dtype }),
-            args,
-            return_type,
-        } = instr.deref()
-        {
-            // println!("is_call | true | name {:?}", name.clone());
-            /*
-            caller 입장 parmeter <- is_long_data
-            callee 입장 argument <- 하나라도 is_long_data존재시 무조건 다 stack 에 넣어쥐
-
-            return type is_long_data 의 경우
-            caller
-            callee
-
-            지금 현재 우리는 caller만 다룸
-            callee를 위한다면
-            callee만을 위한 stack할당량을 기입해야하는가?
-            callee -> (stackoffset 얼마만큼 할당해야하는지)
-            */
-            let mut caller_stack_offset = 0;
-            let mut callee_stack_offset = 0;
-            let mut param_exist_long = false;
-            let mut offset_from_caller_parameter = 0;
-            let mut offset_from_callee_argument = 0;
-            let mut offset_from_caller_return = 0;
-            let mut offset_from_callee_return = 0;
-
-            param_exist_long = args.iter().any(|arg| {
-                let (offset, bytes) = is_long_data(&arg.dtype(), struct_list);
-                let filter = offset > 0;
-                offset_from_caller_parameter += offset;
-                filter
-            });
-
-            if param_exist_long {
-                for arg in args {
-                    let bytes = get_dtype_size(&arg.dtype(), struct_list);
-                    let offset = align_to_8(bytes) / 8;
-                    offset_from_callee_argument += offset;
-                }
-            }
-
-            let (mut offset, bytes) = is_long_data(return_type, struct_list);
-
-            if offset > 2 {
-                /* a0, a1에 담기지 않는 경우 */
-                offset *= 2;
-            }
-            offset_from_caller_return += offset;
-            offset_from_callee_return += offset;
-
-            caller_stack_offset += offset_from_caller_parameter + offset_from_caller_return;
-            callee_stack_offset += offset_from_callee_argument + offset_from_callee_return;
-
-            // let _unused = asmgen
-            //     .callee_to_offset
-            //     .insert(name.clone(), callee_stack_offset);
-            return (true, name.clone(), caller_stack_offset);
-        }
-    }
-    (false, String::new(), 0) // call 명령어가 없다면 false와 빈 문자열 반환
-}
-
-fn is_long_data(
-    allocation: &ir::Dtype, // Named -> Dtype로 수정
-    struct_list: &HashMap<String, Option<ir::Dtype>>,
-) -> (i32, i32) {
-    match allocation {
-        ir::Dtype::Array { inner, size } => {
-            /*
-            short [3][5] -> size: 3
-            */
-            // let tmp = *size as i32;
-            // println!("is_long_data | size {:?}", size);
-            // tmp
-            let bytes = get_dtype_size(allocation, struct_list);
-            let stack_offset = align_to_8(bytes) / 8;
-            (stack_offset, bytes)
-        }
-        ir::Dtype::Struct {
-            name: Some(struct_name),
-            ..
-        } => {
-            if let Some(Some(dtype)) = struct_list.get(struct_name) {
-                if let Some(Some((size, ..))) = dtype.clone().get_struct_size_align_offsets() {
-                    let bytes: i32 = *size as i32;
-                    let stack_offset: i32 = align_to_8(bytes) / 8;
-                    return (stack_offset, bytes);
-                };
-            }
-            (0, 0)
-        }
-        _ => {
-            // get_dtype_size(dtype, struct_list)
-            let bytes = get_dtype_size(allocation, struct_list);
-            (0, bytes)
+impl asm::DataSize {
+    pub fn from_dtype(dtype: &ir::Dtype) -> Self {
+        match dtype {
+            ir::Dtype::Int { width, .. } => match width {
+                8 => asm::DataSize::Byte,
+                16 => asm::DataSize::Half,
+                32 => asm::DataSize::Word,
+                64 => asm::DataSize::Double,
+                _ => panic!("Unsupported int width: {}", width),
+            },
+            // ir::Dtype::Float => asm::DataSize::SinglePrecision,
+            // ir::Dtype::Double => asm::DataSize::DoublePrecision,
+            _ => panic!("Unsupported dtype for DataSize conversion: {:?}", dtype),
         }
     }
 }
 
-fn get_dtype_size(dtype: &ir::Dtype, struct_list: &HashMap<String, Option<ir::Dtype>>) -> i32 {
-    println!("get_dtype_size {:?}", dtype);
+fn get_dtype_size(dtype: &ir::Dtype) -> i32 {
     match dtype {
-        ir::Dtype::Int { width, .. } => (width / 8) as i32, // bit -> byte
-        ir::Dtype::Float { width, is_const } => (width / 8) as i32,
-        ir::Dtype::Unit { is_const } => 0,
-        ir::Dtype::Function { ret, params } => todo!(), // assume 64-bit pointer
-        ir::Dtype::Struct {
-            size_align_offsets: Some((usize, ..)),
-            ..
-        } => *usize as i32,
-        ir::Dtype::Struct {
-            name: Some(struct_name),
-            ..
-        } => {
-            // 존재하는 이유는 Array[Struct] 구조 때문에
-            if let Some(Some(dtype)) = struct_list.get(struct_name) {
-                if let Some(Some((size, ..))) = dtype.clone().get_struct_size_align_offsets() {
-                    let bytes: i32 = *size as i32;
-                    println!("is_long_data | total bytes = {} ", bytes);
-                    return bytes;
-                };
-            }
-            0
-        }
-        ir::Dtype::Array { inner, size } => {
-            let inner_size = get_dtype_size(inner, struct_list);
-            inner_size * (*size as i32)
-        }
-        _ => 0,
+        ir::Dtype::Int { width, .. } => (width / 8) as i32,
+        // ir::Dtype::Float => 4,
+        // ir::Dtype::Double => 8,
+        _ => panic!("Unsupported argument type: {:?}", dtype),
     }
-}
-
-fn align_to_8(n: i32) -> i32 {
-    if n % 8 == 0 { n } else { n + (8 - (n % 8)) }
-}
-
-#[derive(Debug)]
-enum CallType {
-    Call(String),                // 정적 호출
-    Jalr(String, asm::Register), // 동적 호출
 }
