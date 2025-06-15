@@ -150,6 +150,75 @@ impl StackAllocator {
 }
 
 impl Asmgen {
+    fn translate_operand_for_instr(
+        &mut self,
+        operand: &ir::Operand,
+        reg: asm::Register,
+        dtype: &ir::Dtype,
+        asm_instrs: &mut Vec<asm::Instruction>,
+    ) {
+        // let offset = self
+        //     .stack_allocator
+        //     .allocate_stack_slot(operand, &mut self.next_stack_offset);
+        let offset = self
+            .stack_allocator
+            .allocate_stack_slot(operand, &mut self.next_stack_offset);
+
+        // ✅ 반드시 두 map 모두 업데이트
+        let _ = self
+            .stack_allocator
+            .stack_map
+            .insert(operand.clone(), offset);
+        let _ = self
+            .var_locations
+            .insert(operand.clone(), VarLocation::Stack(offset));
+
+        asm_instrs.push(asm::Instruction::IType {
+            instr: asm::IType::load(dtype.clone()),
+            rd: reg,
+            rs1: asm::Register::Sp,
+            imm: asm::Immediate::Value(offset as u64),
+        });
+    }
+
+    fn translate_binop_instruction_style(
+        &mut self,
+        dst_rid: ir::RegisterId,
+        lhs: &ir::Operand,
+        rhs: &ir::Operand,
+        dtype: &ir::Dtype,
+        op: &ast::BinaryOperator,
+        asm_instrs: &mut Vec<asm::Instruction>,
+    ) {
+        // t1 ← lhs, t2 ← rhs
+        self.translate_operand_for_instr(lhs, asm::Register::T1, dtype, asm_instrs);
+        self.translate_operand_for_instr(rhs, asm::Register::T2, dtype, asm_instrs);
+
+        // t0 ← t1 op t2
+        if let Some(rtype) = map_binop_to_rtype(op, dtype.clone(), dtype.is_int_signed()) {
+            asm_instrs.push(asm::Instruction::RType {
+                instr: rtype,
+                rd: asm::Register::T0,
+                rs1: asm::Register::T1,
+                rs2: Some(asm::Register::T2),
+            });
+        }
+
+        // t0 → dst
+        let dst_op = ir::Operand::register(dst_rid, dtype.clone());
+        let offset = self
+            .stack_allocator
+            .allocate_stack_slot(&dst_op, &mut self.next_stack_offset);
+        asm_instrs.push(asm::Instruction::SType {
+            instr: asm::SType::store(dtype.clone()),
+            rs1: asm::Register::Sp,
+            rs2: asm::Register::T0,
+            imm: asm::Immediate::Value(offset as u64),
+        });
+        let _unused = self
+            .var_locations
+            .insert(dst_op, VarLocation::Stack(offset));
+    }
 
     fn translate_operand_force_store(
         &mut self,
@@ -157,6 +226,11 @@ impl Asmgen {
         dtype: &ir::Dtype,
         asm_instrs: &mut Vec<asm::Instruction>,
     ) {
+        // 이미 stack_map에 등록된 경우 저장 생략
+        if self.stack_allocator.stack_map.contains_key(operand) {
+            return;
+        }
+
         let reg = asm::Register::T0; // 항상 T0 사용하여 store
 
         match operand {
@@ -167,20 +241,22 @@ impl Asmgen {
                 }));
             }
             _ => {
+                // 이미 translate_operand 내부에서 load 되므로 mv 불필요
                 let tmp = self.translate_operand(operand, asm_instrs);
-                asm_instrs.push(asm::Instruction::Pseudo(asm::Pseudo::Mv {
-                    rd: reg,
-                    rs: tmp,
-                }));
-                self.reg_allocator.free(tmp);
+                if tmp != reg {
+                    asm_instrs.push(asm::Instruction::Pseudo(asm::Pseudo::Mv {
+                        rd: reg,
+                        rs: tmp,
+                    }));
+                    self.reg_allocator.free(tmp);
+                }
             }
         }
 
-        // stack에 무조건 저장
-        let offset = self.stack_allocator.allocate_stack_slot(
-            operand,
-            &mut self.next_stack_offset,
-        );
+        // stack에 저장
+        let offset = self
+            .stack_allocator
+            .allocate_stack_slot(operand, &mut self.next_stack_offset);
         asm_instrs.push(asm::Instruction::SType {
             instr: asm::SType::store(dtype.clone()),
             rs1: asm::Register::Sp,
@@ -199,31 +275,36 @@ impl Asmgen {
         lhs: &ir::Operand,
         rhs: &ir::Operand,
         dtype: &ir::Dtype,
+        op: &ast::BinaryOperator,
         asm_instrs: &mut Vec<asm::Instruction>,
     ) {
-        // STEP 1. 무조건 lhs, rhs stack-store 강제
+        // STEP 1. 무조건 lhs, rhs stack-store 강제 (단, 중복 저장 방지)
         self.translate_operand_force_store(lhs, dtype, asm_instrs);
         self.translate_operand_force_store(rhs, dtype, asm_instrs);
 
         // STEP 2. stack → load
-        let lhs_offset = self.stack_allocator.allocate_stack_slot(lhs, &mut self.next_stack_offset);
-        let rhs_offset = self.stack_allocator.allocate_stack_slot(rhs, &mut self.next_stack_offset);
+        let lhs_offset = self
+            .stack_allocator
+            .allocate_stack_slot(lhs, &mut self.next_stack_offset);
+        let rhs_offset = self
+            .stack_allocator
+            .allocate_stack_slot(rhs, &mut self.next_stack_offset);
 
         asm_instrs.push(asm::Instruction::IType {
-            instr: asm::IType::load(dtype),
+            instr: asm::IType::load(dtype.clone()),
             rd: asm::Register::T0,
             rs1: asm::Register::Sp,
             imm: asm::Immediate::Value(lhs_offset as u64),
         });
         asm_instrs.push(asm::Instruction::IType {
-            instr: asm::IType::load(dtype),
+            instr: asm::IType::load(dtype.clone()),
             rd: asm::Register::T1,
             rs1: asm::Register::Sp,
             imm: asm::Immediate::Value(rhs_offset as u64),
         });
 
         // STEP 3. 연산
-        if let Some(rtype) = map_binop_to_rtype(&ast::BinaryOperator::Plus, dtype.clone(), dtype.is_int_signed()) {
+        if let Some(rtype) = map_binop_to_rtype(op, dtype.clone(), dtype.is_int_signed()) {
             asm_instrs.push(asm::Instruction::RType {
                 instr: rtype,
                 rd: asm::Register::T2,
@@ -248,7 +329,6 @@ impl Asmgen {
             .var_locations
             .insert(dst_operand, VarLocation::Stack(dst_offset));
     }
-
 
     fn translate_operand(
         &mut self,
@@ -300,6 +380,8 @@ impl Asmgen {
         // argument의 경우 allocation이 아닌 phinode에 존재함
 
         self.next_stack_offset = 0;
+        self.var_locations.clear();
+        self.stack_allocator.stack_map.clear();
         let mut asm_blocks = vec![];
         let mut total_stack_offset: i32 = 0; // epilogue용 추후 사용
 
@@ -466,6 +548,11 @@ impl Asmgen {
                         imm: asm::Immediate::Value(callee_offset as u64),
                     });
 
+                    let _ = self
+                        .stack_allocator
+                        .stack_map
+                        .insert(phi_operand.clone(), callee_offset);
+
                     let _unused = self
                         .var_locations
                         .insert(phi_operand, VarLocation::Stack(callee_offset));
@@ -486,36 +573,61 @@ impl Asmgen {
                         rhs,
                         dtype,
                     } => {
-                        let rd = self.reg_allocator.allocate(
-                            &ir::Operand::register(
-                                ir::RegisterId::temp(*bid, iid), // ⭐ 여기서 iid 사용으로 고치면 spill 문제도 같이 해결
-                                dtype.clone(),
-                            ),
-                            &mut self.stack_allocator,
-                            &mut self.next_stack_offset,
-                            &mut self.var_locations,
+                        // let dst_rid = ir::RegisterId::temp(*bid, iid);
+                        // self.translate_binop_with_forced_stack(
+                        //     dst_rid,
+                        //     rhs,
+                        //     lhs,
+                        //     dtype,
+                        //     op,
+                        //     &mut body_instrs,
+                        // );
+                        let dst_rid = ir::RegisterId::temp(*bid, iid);
+                        self.translate_binop_instruction_style(
+                            dst_rid,
+                            lhs,
+                            rhs,
+                            dtype,
+                            op,
                             &mut body_instrs,
                         );
-                        let rs1 = self.translate_operand(lhs, &mut body_instrs);
-                        let rs2 = self.translate_operand(rhs, &mut body_instrs);
-
-                        println!("==============");
-                        println!("rs1 {}, rs2 {}", rs1, rs2);
-                        println!("==============");
-
-                        let is_signed = dtype.is_int_signed();
-                        if let Some(rtype) = map_binop_to_rtype(op, dtype.clone(), is_signed) {
-                            body_instrs.push(asm::Instruction::RType {
-                                instr: rtype,
-                                rd,
-                                rs1,
-                                rs2: Some(rs2),
-                            });
-                        } else {
-                            unimplemented!("BinOp {:?} not implemented yet", op);
-                        }
                     }
 
+                    // ir::Instruction::BinOp {
+                    //     op,
+                    //     lhs,
+                    //     rhs,
+                    //     dtype,
+                    // } => {
+                    //     let rd = self.reg_allocator.allocate(
+                    //         &ir::Operand::register(
+                    //             ir::RegisterId::temp(*bid, iid), // ⭐ 여기서 iid 사용으로 고치면 spill 문제도 같이 해결
+                    //             dtype.clone(),
+                    //         ),
+                    //         &mut self.stack_allocator,
+                    //         &mut self.next_stack_offset,
+                    //         &mut self.var_locations,
+                    //         &mut body_instrs,
+                    //     );
+                    //     let rs1 = self.translate_operand(lhs, &mut body_instrs);
+                    //     let rs2 = self.translate_operand(rhs, &mut body_instrs);
+
+                    //     println!("==============");
+                    //     println!("rs1 {}, rs2 {}", rs1, rs2);
+                    //     println!("==============");
+
+                    //     let is_signed = dtype.is_int_signed();
+                    //     if let Some(rtype) = map_binop_to_rtype(op, dtype.clone(), is_signed) {
+                    //         body_instrs.push(asm::Instruction::RType {
+                    //             instr: rtype,
+                    //             rd,
+                    //             rs1,
+                    //             rs2: Some(rs2),
+                    //         });
+                    //     } else {
+                    //         unimplemented!("BinOp {:?} not implemented yet", op);
+                    //     }
+                    // }
                     ir::Instruction::Load { ptr } => {
                         let dtype = ptr.dtype().get_pointer_inner().unwrap().clone();
                         let rd = self.reg_allocator.allocate(
@@ -566,7 +678,6 @@ impl Asmgen {
                         {
                             // argument stack 에 다 저장 후 → call
                             for (i, arg) in args.iter().enumerate() {
-                                println!("translate function | Call | arg operand {}", arg);
                                 let arg_reg = asm::Register::T0;
 
                                 if let Some(c) = arg.get_constant() {
@@ -583,6 +694,10 @@ impl Asmgen {
                                         rd: arg_reg,
                                         rs: tmp_reg,
                                     }));
+                                    println!(
+                                        "Call | move arg_reg {}, tmp_reg {}",
+                                        arg_reg, tmp_reg
+                                    );
 
                                     self.reg_allocator.free(tmp_reg);
                                 }
@@ -597,6 +712,18 @@ impl Asmgen {
                                     &dummy_operand,
                                     &mut self.next_stack_offset,
                                 );
+                                println!(
+                                    "translate function | Call | arg operand {}, offset {}",
+                                    arg, offset
+                                );
+                                // ✅ 반드시 두 map 모두 업데이트
+                                let _ = self
+                                    .stack_allocator
+                                    .stack_map
+                                    .insert(dummy_operand.clone(), offset);
+                                let _ = self
+                                    .var_locations
+                                    .insert(dummy_operand.clone(), VarLocation::Stack(offset));
 
                                 let body_instr = asm::Instruction::SType {
                                     instr: asm::SType::store(arg.dtype()),
@@ -606,6 +733,7 @@ impl Asmgen {
                                 };
 
                                 if i == 0 {
+                                    // 첫 번째 arg 에 대한 address를 s1을 통해서 access할 수 있게 만들어줌
                                     body_instrs.push(asm::Instruction::IType {
                                         instr: asm::IType::Addi(asm::DataSize::Double),
                                         rd: asm::Register::S1,
@@ -765,6 +893,18 @@ impl Asmgen {
                 label: block_label,
                 instructions: body_instrs,
             });
+
+            println!("[DEBUG] stack_map = {{");
+            for (operand, offset) in &self.stack_allocator.stack_map {
+                println!("  {:?} => {}", operand, offset);
+            }
+            println!("}}");
+
+            println!("[DEBUG] var_locations = {{");
+            for (operand, loc) in &self.var_locations {
+                println!("  {:?} => {:?}", operand, loc);
+            }
+            println!("}}");
         }
 
         // 6️⃣ 마지막에 bid_init block의 sp placeholder patch (필수)
@@ -819,16 +959,15 @@ impl Asmgen {
                 }
             }
         }
-        let total_offset = (-self.next_stack_offset) as u64;
+        let total_offset = (self.next_stack_offset) as u64;
 
         // 첫 block 제외하고 나머지 블록만 순회
-        for (i, block) in asm_blocks.iter_mut().enumerate() {
-            if i == 0 {
-                continue; // 첫 번째 block은 건너뜀
-            }
-
+        for block in asm_blocks.iter_mut() {
             // 그 블럭 안에서 dummy addi sp, sp, 0 찾아서 수정
-            for instr in block.instructions.iter_mut() {
+            for (i, instr) in block.instructions.iter_mut().enumerate() {
+                if i == 0 {
+                    continue;
+                }
                 if let asm::Instruction::IType {
                     instr: asm::IType::Addi(asm::DataSize::Double),
                     rd: asm::Register::Sp,
