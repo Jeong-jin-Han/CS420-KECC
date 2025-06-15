@@ -150,6 +150,106 @@ impl StackAllocator {
 }
 
 impl Asmgen {
+
+    fn translate_operand_force_store(
+        &mut self,
+        operand: &ir::Operand,
+        dtype: &ir::Dtype,
+        asm_instrs: &mut Vec<asm::Instruction>,
+    ) {
+        let reg = asm::Register::T0; // 항상 T0 사용하여 store
+
+        match operand {
+            ir::Operand::Constant(c) => {
+                asm_instrs.push(asm::Instruction::Pseudo(asm::Pseudo::Li {
+                    rd: reg,
+                    imm: c.get_int().unwrap().0 as u64,
+                }));
+            }
+            _ => {
+                let tmp = self.translate_operand(operand, asm_instrs);
+                asm_instrs.push(asm::Instruction::Pseudo(asm::Pseudo::Mv {
+                    rd: reg,
+                    rs: tmp,
+                }));
+                self.reg_allocator.free(tmp);
+            }
+        }
+
+        // stack에 무조건 저장
+        let offset = self.stack_allocator.allocate_stack_slot(
+            operand,
+            &mut self.next_stack_offset,
+        );
+        asm_instrs.push(asm::Instruction::SType {
+            instr: asm::SType::store(dtype.clone()),
+            rs1: asm::Register::Sp,
+            rs2: reg,
+            imm: asm::Immediate::Value(offset as u64),
+        });
+
+        let _ = self
+            .var_locations
+            .insert(operand.clone(), VarLocation::Stack(offset));
+    }
+
+    fn translate_binop_with_forced_stack(
+        &mut self,
+        dst_rid: ir::RegisterId,
+        lhs: &ir::Operand,
+        rhs: &ir::Operand,
+        dtype: &ir::Dtype,
+        asm_instrs: &mut Vec<asm::Instruction>,
+    ) {
+        // STEP 1. 무조건 lhs, rhs stack-store 강제
+        self.translate_operand_force_store(lhs, dtype, asm_instrs);
+        self.translate_operand_force_store(rhs, dtype, asm_instrs);
+
+        // STEP 2. stack → load
+        let lhs_offset = self.stack_allocator.allocate_stack_slot(lhs, &mut self.next_stack_offset);
+        let rhs_offset = self.stack_allocator.allocate_stack_slot(rhs, &mut self.next_stack_offset);
+
+        asm_instrs.push(asm::Instruction::IType {
+            instr: asm::IType::load(dtype),
+            rd: asm::Register::T0,
+            rs1: asm::Register::Sp,
+            imm: asm::Immediate::Value(lhs_offset as u64),
+        });
+        asm_instrs.push(asm::Instruction::IType {
+            instr: asm::IType::load(dtype),
+            rd: asm::Register::T1,
+            rs1: asm::Register::Sp,
+            imm: asm::Immediate::Value(rhs_offset as u64),
+        });
+
+        // STEP 3. 연산
+        if let Some(rtype) = map_binop_to_rtype(&ast::BinaryOperator::Plus, dtype.clone(), dtype.is_int_signed()) {
+            asm_instrs.push(asm::Instruction::RType {
+                instr: rtype,
+                rd: asm::Register::T2,
+                rs1: asm::Register::T0,
+                rs2: Some(asm::Register::T1),
+            });
+        }
+
+        // STEP 4. 연산 결과 stack 저장
+        let dst_operand = ir::Operand::register(dst_rid, dtype.clone());
+        let dst_offset = self
+            .stack_allocator
+            .allocate_stack_slot(&dst_operand, &mut self.next_stack_offset);
+        asm_instrs.push(asm::Instruction::SType {
+            instr: asm::SType::store(dtype.clone()),
+            rs1: asm::Register::Sp,
+            rs2: asm::Register::T2,
+            imm: asm::Immediate::Value(dst_offset as u64),
+        });
+
+        let _ = self
+            .var_locations
+            .insert(dst_operand, VarLocation::Stack(dst_offset));
+    }
+
+
     fn translate_operand(
         &mut self,
         operand: &ir::Operand,
@@ -373,187 +473,186 @@ impl Asmgen {
             }
 
             // 2️⃣ Block instructions 처리
-            for (iid, (bid, block)) in func.blocks.iter().enumerate() {
-                for instr in &block.instructions {
-                    println!(
-                        "translate_function | name {} | instr {} | self.next_stack_offset {}",
-                        name, instr, self.next_stack_offset
-                    );
-                    match instr.deref() {
-                        ir::Instruction::BinOp {
-                            op,
-                            lhs,
-                            rhs,
-                            dtype,
-                        } => {
-                            let rd = self.reg_allocator.allocate(
-                                &ir::Operand::register(
-                                    ir::RegisterId::temp(*bid, iid), // ⭐ 여기서 iid 사용으로 고치면 spill 문제도 같이 해결
-                                    dtype.clone(),
-                                ),
-                                &mut self.stack_allocator,
-                                &mut self.next_stack_offset,
-                                &mut self.var_locations,
-                                &mut body_instrs,
-                            );
-                            let rs1 = self.translate_operand(lhs, &mut body_instrs);
-                            let rs2 = self.translate_operand(rhs, &mut body_instrs);
+            // for (iid, (bid, block)) in func.blocks.iter().enumerate() {
+            for instr in &block.instructions {
+                println!(
+                    "translate_function | name {} | instr {} | self.next_stack_offset {}",
+                    name, instr, self.next_stack_offset
+                );
+                match instr.deref() {
+                    ir::Instruction::BinOp {
+                        op,
+                        lhs,
+                        rhs,
+                        dtype,
+                    } => {
+                        let rd = self.reg_allocator.allocate(
+                            &ir::Operand::register(
+                                ir::RegisterId::temp(*bid, iid), // ⭐ 여기서 iid 사용으로 고치면 spill 문제도 같이 해결
+                                dtype.clone(),
+                            ),
+                            &mut self.stack_allocator,
+                            &mut self.next_stack_offset,
+                            &mut self.var_locations,
+                            &mut body_instrs,
+                        );
+                        let rs1 = self.translate_operand(lhs, &mut body_instrs);
+                        let rs2 = self.translate_operand(rhs, &mut body_instrs);
 
-                            if let Some(rtype) = map_binop_to_rtype(op) {
-                                body_instrs.push(asm::Instruction::RType {
-                                    instr: rtype,
-                                    rd,
-                                    rs1,
-                                    rs2: Some(rs2),
-                                });
-                            } else {
-                                unimplemented!("BinOp {:?} not implemented yet", op);
-                            }
-                        }
+                        println!("==============");
+                        println!("rs1 {}, rs2 {}", rs1, rs2);
+                        println!("==============");
 
-                        ir::Instruction::Load { ptr } => {
-                            let dtype = ptr.dtype().get_pointer_inner().unwrap().clone();
-                            let rd = self.reg_allocator.allocate(
-                                &ir::Operand::register(
-                                    ir::RegisterId::temp(*bid, iid), // ⭐ 여기서 iid 사용으로 고치면 spill 문제도 같이 해결
-                                    dtype.clone(),
-                                ),
-                                &mut self.stack_allocator,
-                                &mut self.next_stack_offset,
-                                &mut self.var_locations,
-                                &mut body_instrs,
-                            );
-                            let rs1 = self.translate_operand(ptr, &mut body_instrs);
-
-                            body_instrs.push(asm::Instruction::IType {
-                                instr: asm::IType::load(ptr.dtype()),
+                        let is_signed = dtype.is_int_signed();
+                        if let Some(rtype) = map_binop_to_rtype(op, dtype.clone(), is_signed) {
+                            body_instrs.push(asm::Instruction::RType {
+                                instr: rtype,
                                 rd,
                                 rs1,
-                                imm: asm::Immediate::Value(0),
+                                rs2: Some(rs2),
                             });
+                        } else {
+                            unimplemented!("BinOp {:?} not implemented yet", op);
                         }
+                    }
 
-                        ir::Instruction::Store { ptr, value } => {
-                            let rs1 = self.translate_operand(ptr, &mut body_instrs);
-                            let rs2 = self.translate_operand(value, &mut body_instrs);
+                    ir::Instruction::Load { ptr } => {
+                        let dtype = ptr.dtype().get_pointer_inner().unwrap().clone();
+                        let rd = self.reg_allocator.allocate(
+                            &ir::Operand::register(
+                                ir::RegisterId::temp(*bid, iid), // ⭐ 여기서 iid 사용으로 고치면 spill 문제도 같이 해결
+                                dtype.clone(),
+                            ),
+                            &mut self.stack_allocator,
+                            &mut self.next_stack_offset,
+                            &mut self.var_locations,
+                            &mut body_instrs,
+                        );
+                        let rs1 = self.translate_operand(ptr, &mut body_instrs);
 
-                            body_instrs.push(asm::Instruction::SType {
-                                instr: asm::SType::store(value.dtype()),
-                                rs1,
-                                rs2,
-                                imm: asm::Immediate::Value(0),
-                            });
-                        }
-                        ir::Instruction::Call {
-                            callee,
+                        body_instrs.push(asm::Instruction::IType {
+                            instr: asm::IType::load(ptr.dtype()),
+                            rd,
+                            rs1,
+                            imm: asm::Immediate::Value(0),
+                        });
+                    }
+
+                    ir::Instruction::Store { ptr, value } => {
+                        let rs1 = self.translate_operand(ptr, &mut body_instrs);
+                        let rs2 = self.translate_operand(value, &mut body_instrs);
+
+                        body_instrs.push(asm::Instruction::SType {
+                            instr: asm::SType::store(value.dtype()),
+                            rs1,
+                            rs2,
+                            imm: asm::Immediate::Value(0),
+                        });
+                    }
+                    ir::Instruction::Call {
+                        callee,
+                        args,
+                        return_type,
+                    } => {
+                        if let ir::Instruction::Call {
+                            callee:
+                                ir::Operand::Constant(ir::Constant::GlobalVariable {
+                                    name: call_name,
+                                    dtype: _,
+                                }),
                             args,
-                            return_type,
-                        } => {
-                            if let ir::Instruction::Call {
-                                callee:
-                                    ir::Operand::Constant(ir::Constant::GlobalVariable {
-                                        name: call_name,
-                                        dtype: _,
-                                    }),
-                                args,
-                                return_type: _,
-                            } = instr.deref()
-                            {
-                                // argument stack 에 다 저장 후 → call
-                                for (i, arg) in args.iter().enumerate() {
-                                    println!("translate function | Call | arg operand {}", arg);
-                                    let arg_reg = asm::Register::T0;
+                            return_type: _,
+                        } = instr.deref()
+                        {
+                            // argument stack 에 다 저장 후 → call
+                            for (i, arg) in args.iter().enumerate() {
+                                println!("translate function | Call | arg operand {}", arg);
+                                let arg_reg = asm::Register::T0;
 
-                                    if let Some(c) = arg.get_constant() {
-                                        // Constant → li t0, imm
-                                        body_instrs.push(asm::Instruction::Pseudo(
-                                            asm::Pseudo::Li {
-                                                rd: arg_reg,
-                                                imm: c.get_int().unwrap().0 as u64,
-                                            },
-                                        ));
-                                    } else {
-                                        // Register → translate_operand + mv t0, reg + free
-                                        let tmp_reg = self.translate_operand(arg, &mut body_instrs);
+                                if let Some(c) = arg.get_constant() {
+                                    // Constant → li t0, imm
+                                    body_instrs.push(asm::Instruction::Pseudo(asm::Pseudo::Li {
+                                        rd: arg_reg,
+                                        imm: c.get_int().unwrap().0 as u64,
+                                    }));
+                                } else {
+                                    // Register → translate_operand + mv t0, reg + free
+                                    let tmp_reg = self.translate_operand(arg, &mut body_instrs);
 
-                                        body_instrs.push(asm::Instruction::Pseudo(
-                                            asm::Pseudo::Mv {
-                                                rd: arg_reg,
-                                                rs: tmp_reg,
-                                            },
-                                        ));
+                                    body_instrs.push(asm::Instruction::Pseudo(asm::Pseudo::Mv {
+                                        rd: arg_reg,
+                                        rs: tmp_reg,
+                                    }));
 
-                                        self.reg_allocator.free(tmp_reg);
-                                    }
-
-                                    // sw t0, offset(sp)
-                                    // 여기서 dummy_operand 를 써서 slot 을 따로 만들면 좋음
-                                    let dummy_operand = ir::Operand::constant(ir::Constant::int(
-                                        i as u128,
-                                        ir::Dtype::int(32),
-                                    ));
-                                    let offset = self.stack_allocator.allocate_stack_slot(
-                                        &dummy_operand,
-                                        &mut self.next_stack_offset,
-                                    );
-
-                                    let body_instr = asm::Instruction::SType {
-                                        instr: asm::SType::store(arg.dtype()),
-                                        rs1: asm::Register::Sp,
-                                        rs2: arg_reg,
-                                        imm: asm::Immediate::Value(offset as u64),
-                                    };
-
-                                    if i == 0 {
-                                        body_instrs.push(asm::Instruction::IType {
-                                            instr: asm::IType::Addi(asm::DataSize::Double),
-                                            rd: asm::Register::S1,
-                                            rs1: asm::Register::Sp,
-                                            imm: asm::Immediate::Value(
-                                                self.next_stack_offset as u64,
-                                            ), // 임시로 넣지만 실제로 맞음
-                                        });
-                                    }
-                                    println!("translate_function | body_instr {:?}", body_instr);
-                                    body_instrs.push(body_instr);
+                                    self.reg_allocator.free(tmp_reg);
                                 }
 
-                                // call
-                                body_instrs.push(asm::Instruction::Pseudo(asm::Pseudo::Call {
-                                    offset: asm::Label(call_name.clone()),
-                                }));
+                                // sw t0, offset(sp)
+                                // 여기서 dummy_operand 를 써서 slot 을 따로 만들면 좋음
+                                let dummy_operand = ir::Operand::constant(ir::Constant::int(
+                                    i as u128,
+                                    ir::Dtype::int(32),
+                                ));
+                                let offset = self.stack_allocator.allocate_stack_slot(
+                                    &dummy_operand,
+                                    &mut self.next_stack_offset,
+                                );
 
-                                // call 결과는 a0 에 들어온다고 가정 (ref style 따라감)
-                                // 결과를 t0 에 옮기고 stack 에 저장
-                                body_instrs.push(asm::Instruction::Pseudo(asm::Pseudo::Mv {
-                                    rd: asm::Register::A0,
-                                    rs: asm::Register::T0,
-                                }));
+                                let body_instr = asm::Instruction::SType {
+                                    instr: asm::SType::store(arg.dtype()),
+                                    rs1: asm::Register::Sp,
+                                    rs2: arg_reg,
+                                    imm: asm::Immediate::Value(offset as u64),
+                                };
 
-                                // // 결과 stack 에 저장
-                                // let dummy_ret_operand = ir::Operand::constant(ir::Constant::int(
-                                //     9999,
-                                //     ir::Dtype::int(32),
-                                // ));
-                                // let ret_offset = self.stack_allocator.allocate_stack_slot(
-                                //     &dummy_ret_operand,
-                                //     &mut self.next_stack_offset,
-                                // );
-
-                                // body_instrs.push(asm::Instruction::SType {
-                                //     instr: asm::SType::store(ir::Dtype::int(32)), // int 32 가 대부분임
-                                //     rs1: asm::Register::Sp,
-                                //     rs2: asm::Register::T0,
-                                //     imm: asm::Immediate::Value(ret_offset as u64),
-                                // });
-                            } else {
-                                unimplemented!("Indirect call not supported");
+                                if i == 0 {
+                                    body_instrs.push(asm::Instruction::IType {
+                                        instr: asm::IType::Addi(asm::DataSize::Double),
+                                        rd: asm::Register::S1,
+                                        rs1: asm::Register::Sp,
+                                        imm: asm::Immediate::Value(self.next_stack_offset as u64), // 임시로 넣지만 실제로 맞음
+                                    });
+                                }
+                                println!("translate_function | body_instr {:?}", body_instr);
+                                body_instrs.push(body_instr);
                             }
+
+                            // call
+                            body_instrs.push(asm::Instruction::Pseudo(asm::Pseudo::Call {
+                                offset: asm::Label(call_name.clone()),
+                            }));
+
+                            // call 결과는 a0 에 들어온다고 가정 (ref style 따라감)
+                            // 결과를 t0 에 옮기고 stack 에 저장
+                            body_instrs.push(asm::Instruction::Pseudo(asm::Pseudo::Mv {
+                                rd: asm::Register::A0,
+                                rs: asm::Register::T0,
+                            }));
+
+                            // // 결과 stack 에 저장
+                            // let dummy_ret_operand = ir::Operand::constant(ir::Constant::int(
+                            //     9999,
+                            //     ir::Dtype::int(32),
+                            // ));
+                            // let ret_offset = self.stack_allocator.allocate_stack_slot(
+                            //     &dummy_ret_operand,
+                            //     &mut self.next_stack_offset,
+                            // );
+
+                            // body_instrs.push(asm::Instruction::SType {
+                            //     instr: asm::SType::store(ir::Dtype::int(32)), // int 32 가 대부분임
+                            //     rs1: asm::Register::Sp,
+                            //     rs2: asm::Register::T0,
+                            //     imm: asm::Immediate::Value(ret_offset as u64),
+                            // });
+                        } else {
+                            unimplemented!("Indirect call not supported");
                         }
-                        _ => {}
                     }
+                    _ => {}
                 }
             }
+            // }
 
             // 3️⃣ Block exit 처리
             match &block.exit {
@@ -582,11 +681,20 @@ impl Asmgen {
                 }
                 ir::BlockExit::Return { value } => {
                     if let Some(c) = value.get_constant() {
-                        // Constant → li t0
-                        body_instrs.push(asm::Instruction::Pseudo(asm::Pseudo::Li {
-                            rd: asm::Register::T0,
-                            imm: c.get_int().unwrap().0 as u64,
-                        }));
+                        println!("translate_function | Return value {}", value);
+                        if ir::Constant::is_undef(c) {
+                            // Constant → li t0
+                            body_instrs.push(asm::Instruction::Pseudo(asm::Pseudo::Li {
+                                rd: asm::Register::T0,
+                                imm: 0,
+                            }));
+                        } else {
+                            // Constant → li t0
+                            body_instrs.push(asm::Instruction::Pseudo(asm::Pseudo::Li {
+                                rd: asm::Register::T0,
+                                imm: c.get_int().unwrap().0 as u64,
+                            }));
+                        }
                     } else {
                         // Register → translate_operand + mv t0, reg
                         // let ret_reg = self.translate_operand(value, &mut body_instrs);
@@ -622,12 +730,12 @@ impl Asmgen {
                     });
 
                     // addi sp, sp, MN
-                    let total_offset = (self.next_stack_offset) as u64;
+                    // let total_offset = (self.next_stack_offset) as u64;
                     body_instrs.push(asm::Instruction::IType {
                         instr: asm::IType::Addi(asm::DataSize::Double),
                         rd: asm::Register::Sp,
                         rs1: asm::Register::Sp,
-                        imm: asm::Immediate::Value(total_offset),
+                        imm: asm::Immediate::Value(0),
                     });
 
                     // ret
@@ -711,6 +819,29 @@ impl Asmgen {
                 }
             }
         }
+        let total_offset = (-self.next_stack_offset) as u64;
+
+        // 첫 block 제외하고 나머지 블록만 순회
+        for (i, block) in asm_blocks.iter_mut().enumerate() {
+            if i == 0 {
+                continue; // 첫 번째 block은 건너뜀
+            }
+
+            // 그 블럭 안에서 dummy addi sp, sp, 0 찾아서 수정
+            for instr in block.instructions.iter_mut() {
+                if let asm::Instruction::IType {
+                    instr: asm::IType::Addi(asm::DataSize::Double),
+                    rd: asm::Register::Sp,
+                    rs1: asm::Register::Sp,
+                    imm,
+                } = instr
+                {
+                    if let asm::Immediate::Value(0) = imm {
+                        *imm = asm::Immediate::Value(total_offset);
+                    }
+                }
+            }
+        }
 
         asm::Function::new(asm_blocks)
     }
@@ -785,13 +916,19 @@ impl Translate<ir::TranslationUnit> for Asmgen {
     }
 }
 
-fn map_binop_to_rtype(op: &ast::BinaryOperator) -> Option<asm::RType> {
+fn map_binop_to_rtype(
+    op: &ast::BinaryOperator,
+    dtype: ir::Dtype,
+    is_signed: bool,
+) -> Option<asm::RType> {
     match op {
         ast::BinaryOperator::Plus => Some(asm::RType::Add(asm::DataSize::Byte)),
         ast::BinaryOperator::Minus => Some(asm::RType::Sub(asm::DataSize::Byte)),
         ast::BinaryOperator::BitwiseXor => Some(asm::RType::Xor),
         ast::BinaryOperator::BitwiseOr => Some(asm::RType::Or),
         ast::BinaryOperator::BitwiseAnd => Some(asm::RType::And),
+        ast::BinaryOperator::Less => Some(asm::RType::Slt { is_signed }),
+        ast::BinaryOperator::Modulo => Some(asm::RType::rem(dtype, is_signed)),
         _ => None,
     }
 }
