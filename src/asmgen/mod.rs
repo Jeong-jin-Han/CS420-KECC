@@ -590,17 +590,48 @@ impl Asmgen {
                         dtype,
                         &mut self.next_stack_offset,
                     );
-
                     add_padding(&mut self.next_stack_offset);
                     println!("\n=======================\n");
 
-                    // binop test
-                    asm_block_instrs.push(asm::Instruction::IType {
-                        instr: asm::IType::Addi(asm::DataSize::Double),
-                        rd: asm::Register::T5,
-                        rs1: asm::Register::T5,
-                        imm: asm::Immediate::Value(0),
+                    // // binop test
+                    // asm_block_instrs.push(asm::Instruction::IType {
+                    //     instr: asm::IType::Addi(asm::DataSize::Double),
+                    //     rd: asm::Register::T5,
+                    //     rs1: asm::Register::T5,
+                    //     imm: asm::Immediate::Value(0),
+                    // });
+
+                    asm_block_instrs.push(asm::Instruction::SType {
+                        instr: asm::SType::store(dtype.clone()),
+                        rs1: asm::Register::Sp,
+                        rs2: asm::Register::T0,
+                        imm: asm::Immediate::Value(offset as u64),
                     });
+                }
+                if *op == ast::BinaryOperator::Equals {
+                    println!("binop op {:?}", op);
+                    // xor t0,t1,t2   ; 두 피연산자 같으면 t0=0
+                    asm_block_instrs.push(asm::Instruction::RType {
+                        instr: asm::RType::Xor,
+                        rd: asm::Register::T0,
+                        rs1: asm::Register::T1,
+                        rs2: Some(asm::Register::T2),
+                    });
+                    // seqz t0,t0      ; t0=1  (equal) / 0 (not equal)   ← pseudo-instr
+                    asm_block_instrs.push(asm::Instruction::Pseudo(asm::Pseudo::Seqz {
+                        rd: asm::Register::T0,
+                        rs: asm::Register::T0,
+                    }));
+
+                    println!("\n===== binop alloc =====\n");
+                    // dst_rid에 대해서 T0를 저장해야 함
+                    let offset = self.stack_allocator.allocate_stack_slot(
+                        &dst_rid,
+                        dtype,
+                        &mut self.next_stack_offset,
+                    );
+                    add_padding(&mut self.next_stack_offset);
+                    println!("\n=======================\n");
 
                     asm_block_instrs.push(asm::Instruction::SType {
                         instr: asm::SType::store(dtype.clone()),
