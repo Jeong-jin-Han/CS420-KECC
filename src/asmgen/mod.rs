@@ -563,6 +563,30 @@ impl Asmgen {
     ) {
         let dst_rid = ir::RegisterId::temp(bid, iid);
         match instruction.deref() {
+            ir::Instruction::UnaryOp { op, operand, dtype } => match op {
+                ast::UnaryOperator::Minus => {
+                    self.translate_operand(operand.clone(), asm::Register::T0, asm_block_instrs);
+
+                    let pseudo =
+                        asm::Pseudo::neg(dtype.clone(), asm::Register::T0, asm::Register::T0);
+                    asm_block_instrs.push(asm::Instruction::Pseudo(pseudo));
+                    let offset = self.stack_allocator.allocate_stack_slot(
+                        &dst_rid,
+                        dtype,
+                        &mut self.next_stack_offset,
+                    );
+                    add_padding(&mut self.next_stack_offset);
+                    asm_block_instrs.push(asm::Instruction::SType {
+                        instr: asm::SType::store(dtype.clone()),
+                        rs1: asm::Register::Sp,
+                        rs2: asm::Register::T0,
+                        imm: asm::Immediate::Value(offset as u64),
+                    });
+                }
+                _ => {
+                    println!();
+                }
+            },
             ir::Instruction::BinOp {
                 op,
                 lhs,
@@ -733,7 +757,28 @@ impl Asmgen {
 
                 add_padding(&mut self.next_stack_offset);
             }
-            _ => {}
+            ir::Instruction::TypeCast {
+                value,
+                target_dtype,
+            } => {
+                self.translate_operand(value.clone(), asm::Register::T0, asm_block_instrs);
+                // Load then 상황
+                let offset = self.stack_allocator.allocate_stack_slot(
+                    &dst_rid,
+                    target_dtype,
+                    &mut self.next_stack_offset,
+                );
+
+                asm_block_instrs.push(asm::Instruction::SType {
+                    instr: asm::SType::store(target_dtype.clone()),
+                    rs1: asm::Register::Sp,
+                    rs2: asm::Register::T0,
+                    imm: asm::Immediate::Value(offset as u64),
+                });
+            }
+            _ => {
+                println!("todo insturction {}", instruction);
+            }
         }
     }
 
@@ -849,6 +894,7 @@ fn ast_binop_to_rtype(
         ast::BinaryOperator::BitwiseOr => Some(asm::RType::Or),
         ast::BinaryOperator::BitwiseAnd => Some(asm::RType::And),
         ast::BinaryOperator::Less => Some(asm::RType::Slt { is_signed }),
+        // ast::BinaryOperator::Greater => Some(asm::RType::S)
         ast::BinaryOperator::Modulo => Some(asm::RType::rem(dtype, is_signed)),
         _ => None,
     }
