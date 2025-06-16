@@ -494,16 +494,6 @@ impl Asmgen {
             ir::BlockExit::Return { value } => {
                 self.translate_operand(value.clone(), asm::Register::A0, asm_block_instrs);
 
-                if name != "main" {
-                    // rs2 rs1(imm)
-                    asm_block_instrs.push(asm::Instruction::SType {
-                        instr: asm::SType::store(value.dtype()),
-                        rs1: asm::Register::S1,
-                        rs2: asm::Register::A0,
-                        imm: asm::Immediate::Value(-8i64 as u64),
-                    });
-                }
-
                 if call_flag {
                     asm_block_instrs.push(asm::Instruction::IType {
                         instr: asm::IType::Load {
@@ -523,6 +513,16 @@ impl Asmgen {
                         rd: asm::Register::Ra,
                         rs1: asm::Register::Sp,
                         imm: asm::Immediate::Value(8),
+                    });
+                }
+
+                if name != "main" {
+                    // rs2 rs1(imm)
+                    asm_block_instrs.push(asm::Instruction::SType {
+                        instr: asm::SType::store(value.dtype()),
+                        rs1: asm::Register::S1,
+                        rs2: asm::Register::A0,
+                        imm: asm::Immediate::Value(-8i64 as u64),
                     });
                 }
 
