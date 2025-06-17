@@ -3,7 +3,7 @@ use std::ops::Deref;
 
 use lang_c::ast::{self, FunctionDeclarator};
 
-use crate::ir::{HasDtype, Named};
+use crate::ir::{HasDtype, JumpArg, Named};
 use crate::opt::opt_utils;
 use crate::{Translate, asm, ir};
 
@@ -382,7 +382,221 @@ fn split_large_memory_offset(instr: asm::Instruction) -> Option<Vec<asm::Instruc
     }
 }
 
+// bid -> arg.bid (phinode 존재하는 bid)
+fn insert_argbid(
+    // arg: &JumpArg,
+    arg_bid: &ir::BlockId,
+    bid: &ir::BlockId,
+    phinodes: Vec<ir::BlockId>,
+    phinodes_to_predecessor: &mut HashMap<ir::BlockId, Vec<ir::BlockId>>,
+    predecessor_to_phinodes: &mut Vec<(ir::BlockId, ir::BlockId)>,
+) {
+    // if phinodes.contains(&arg.bid) {
+    //     let bid_entry = phinodes_to_predecessor.entry(arg.bid).or_default();
+    //     bid_entry.push(*bid);
+    // }
+    if phinodes.contains(arg_bid) {
+        let bid_entry = phinodes_to_predecessor.entry(*arg_bid).or_default();
+        bid_entry.push(*bid);
+
+        predecessor_to_phinodes.push((*bid, *arg_bid));
+    }
+}
+
+fn make_label(
+    name: &str,
+    arg: &ir::JumpArg,
+    bid: &ir::BlockId,
+    phinodes: &[ir::BlockId],
+) -> asm::Label {
+    if phinodes.contains(&arg.bid) {
+        asm::Label::new_pred(name, *bid, arg.bid)
+    } else {
+        asm::Label::new(name, arg.bid)
+    }
+}
+
+fn amongus_jumparg(jumpargs: &[ir::JumpArg], bid: &ir::BlockId) -> ir::JumpArg {
+    let mut result = jumpargs[0].clone();
+    for jumparg in jumpargs {
+        if jumparg.bid == *bid {
+            result = jumparg.clone();
+            break;
+        }
+    }
+    result
+}
+
 impl Asmgen {
+    fn translate_function_phinodes_jumparg(
+        &mut self,
+        jumparg: &ir::JumpArg,
+        phinode: &ir::BlockId,
+        phinodes_dtype: &[Named<ir::Dtype>],
+        asm_block_instrs: &mut Vec<asm::Instruction>,
+    ) {
+        let mut offsets = Vec::new();
+        let operands = jumparg.args.clone();
+
+        for (i, phinode_dtype) in phinodes_dtype.iter().enumerate() {
+            let t3_reg = asm_register_instruction(3, phinode_dtype);
+            self.translate_operand(operands[i].clone(), t3_reg, asm_block_instrs);
+            // t0_reg에 저장 완료
+
+            // rid가 없어서 mapping을 따로 안하는 대신에 offset 추적기를 사용하기
+
+            // add_padding(&mut self.stack_allocator.next_stack_offset);
+
+            asm_block_instrs.push(asm::Instruction::SType {
+                instr: asm::SType::store(phinode_dtype.deref().clone()),
+                rs1: asm::Register::Sp,
+                rs2: t3_reg,
+                imm: asm::Immediate::Value(self.stack_allocator.next_stack_offset as u64),
+            });
+            offsets.push(self.stack_allocator.next_stack_offset);
+            self.stack_allocator.next_stack_offset += get_dtype_size(phinode_dtype);
+        }
+
+        for (i, phinode_dtype) in phinodes_dtype.iter().enumerate() {
+            let t3_reg = asm_register_instruction(3, phinode_dtype);
+            let data_size = asm::DataSize::from_dtype(phinode_dtype);
+
+            asm_block_instrs.push(asm::Instruction::IType {
+                instr: asm::IType::Load {
+                    data_size,
+                    is_signed: true,
+                },
+                rd: t3_reg,
+                rs1: asm::Register::Sp,
+                imm: asm::Immediate::Value(offsets[i] as u64),
+            });
+
+            let rid = ir::RegisterId::arg(*phinode, i);
+            let slot_off = self
+                .stack_allocator
+                .allocate_stack_slot(&rid, phinode_dtype);
+
+            asm_block_instrs.push(asm::Instruction::SType {
+                instr: asm::SType::store(phinode_dtype.deref().clone()),
+                rs1: asm::Register::Sp,
+                rs2: t3_reg,
+                imm: asm::Immediate::Value(slot_off as u64),
+            });
+        }
+
+        add_padding(&mut self.stack_allocator.next_stack_offset);
+    }
+
+    fn translate_function_phinodes(
+        &mut self,
+        name: &str,
+        phinodes: &[ir::BlockId],
+        blocks: &BTreeMap<ir::BlockId, ir::Block>,
+        predecessor_to_phinodes: &[(ir::BlockId, ir::BlockId)],
+        asm_blocks: &mut Vec<asm::Block>,
+    ) {
+        // for phinode in phinodes {
+        //     let block_label = asm::Label::new_phi(name, *phinode);
+        //     let true_label = asm::Label::new(name, *phinode);
+        //     // let mut asm_block_instrs = Vec::new();
+
+        //     // asm_block_instrs.push(asm::Instruction::Pseudo(asm::Pseudo::J {
+        //     //     offset: true_label,
+        //     // }));
+        //     let asm_block_instrs = vec![asm::Instruction::Pseudo(asm::Pseudo::J {
+        //         offset: true_label,
+        //     })];
+        //     let asm_block = asm::Block::new(Some(block_label), asm_block_instrs);
+        //     asm_blocks.push(asm_block);
+        // }
+        for (predecessor, phinode) in predecessor_to_phinodes {
+            let exit = blocks.get(predecessor).unwrap().exit.clone();
+            let phinodes_dtype = &blocks.get(phinode).unwrap().phinodes.clone();
+
+            println!("translate_function_phinodes");
+            println!("exit {}", exit);
+            println!("phinodes {:?}", phinodes);
+
+            let block_label = asm::Label::new_pred(name, *predecessor, *phinode);
+            let true_label = asm::Label::new(name, *phinode);
+            let mut asm_block_instrs = Vec::new();
+
+            match &exit {
+                ir::BlockExit::Jump { arg } => {
+                    /* predecessor */
+                    self.translate_function_phinodes_jumparg(
+                        arg,
+                        phinode,
+                        phinodes_dtype,
+                        &mut asm_block_instrs,
+                    );
+                }
+                ir::BlockExit::ConditionalJump {
+                    /* 둘 중에 누가 predecessor인지 그리고 해당 predecessor에 대해서만 */
+                    condition,
+                    arg_then,
+                    arg_else,
+                } => {
+                    let jumpargs = vec![arg_then.clone(), arg_else.clone()];
+
+                    let jumparg = amongus_jumparg(&jumpargs, phinode);
+
+                    self.translate_function_phinodes_jumparg(
+                        &jumparg,
+                        phinode,
+                        phinodes_dtype,
+                        &mut asm_block_instrs,
+                    );
+                }
+                ir::BlockExit::Switch {
+                    value,
+                    default,
+                    cases,
+                } => {
+                    let mut jumpargs = Vec::new();
+                    jumpargs.push(default.clone());
+                    for (_, case) in cases {
+                        jumpargs.push(case.clone());
+                    }
+
+                    let jumparg = amongus_jumparg(&jumpargs, phinode);
+
+                    self.translate_function_phinodes_jumparg(
+                        &jumparg,
+                        phinode,
+                        phinodes_dtype,
+                        &mut asm_block_instrs,
+                    );
+                }
+                _ => panic!("not yet implemented"),
+            }
+
+            asm_block_instrs.push(asm::Instruction::Pseudo(asm::Pseudo::J {
+                offset: true_label,
+            }));
+
+            /*
+            어떤 것을 load pred blcok의 jump arg
+
+            추가해야할 logic
+            for loop1 {
+                Load
+                Store t4_reg
+            }
+
+            누구의 rid 대상으로 Store?? -> Phinode 대상으로 Store
+            for loop2 {
+                Load t4_reg
+                Store
+            }
+            */
+            add_padding(&mut self.stack_allocator.next_stack_offset);
+
+            let asm_block = asm::Block::new(Some(block_label), asm_block_instrs);
+            asm_blocks.push(asm_block);
+        }
+    }
+
     fn translate_function_divider_for_memory_offset(&mut self, asm_blocks: &mut [asm::Block]) {
         for block in asm_blocks.iter_mut() {
             let mut new_instrs = Vec::with_capacity(block.instructions.len());
@@ -555,6 +769,9 @@ impl Asmgen {
         */
         let mut ptr_indicator_offsets = Vec::new();
         for (i, dtype) in allocations.iter().enumerate() {
+            println!("\n translate_function_prelogue \n");
+            println!("i {} dtype {}", i, dtype);
+
             let local_rid = ir::RegisterId::local(i);
             ptr_indicator_offsets.push((
                 local_rid,
@@ -724,30 +941,55 @@ impl Asmgen {
         block: &ir::Block,
         name: &str,
         call_flag: bool,
+        phinodes: Vec<ir::BlockId>,
+        bid: &ir::BlockId,
         asm_block_instrs: &mut Vec<asm::Instruction>,
     ) {
         match &block.exit {
             ir::BlockExit::Jump { arg } => {
-                asm_block_instrs.push(asm::Instruction::Pseudo(asm::Pseudo::J {
-                    offset: asm::Label::new(name, arg.bid),
-                }));
+                println!(
+                    "blockexit {} \n argbid {} | argbid contains in phinodes {}",
+                    block.exit,
+                    arg.bid,
+                    phinodes.contains(&arg.bid)
+                );
+
+                let label = make_label(name, arg, bid, &phinodes);
+
+                asm_block_instrs.push(asm::Instruction::Pseudo(asm::Pseudo::J { offset: label }));
             }
             ir::BlockExit::ConditionalJump {
                 condition,
                 arg_then,
                 arg_else,
             } => {
+                println!(
+                    "blockexit {} \n argbid {} | argbid contains in phinodes {}",
+                    block.exit,
+                    arg_then.bid,
+                    phinodes.contains(&arg_then.bid)
+                );
+                println!(
+                    "blockexit {} \n argbid {} | argbid contains in phinodes {}",
+                    block.exit,
+                    arg_else.bid,
+                    phinodes.contains(&arg_else.bid)
+                );
+
                 self.translate_operand(condition.clone(), asm::Register::T0, asm_block_instrs);
+
+                let else_label = make_label(name, arg_else, bid, &phinodes);
+                let then_label = make_label(name, arg_then, bid, &phinodes);
 
                 asm_block_instrs.push(asm::Instruction::BType {
                     instr: asm::BType::Beq,
                     rs1: asm::Register::T0,
                     rs2: asm::Register::Zero,
-                    imm: asm::Label::new(name, arg_else.bid),
+                    imm: else_label,
                 });
 
                 asm_block_instrs.push(asm::Instruction::Pseudo(asm::Pseudo::J {
-                    offset: asm::Label::new(name, arg_then.bid),
+                    offset: then_label,
                 }));
             }
             ir::BlockExit::Return { value } => {
@@ -826,6 +1068,23 @@ impl Asmgen {
                 default,
                 cases,
             } => {
+                println!(
+                    "blockexit {} \n argbid {} | argbid contains in phinodes {}",
+                    block.exit,
+                    default.bid,
+                    phinodes.contains(&default.bid)
+                );
+                for (_, arg) in cases {
+                    println!(
+                        "blockexit {} \n argbid {} | argbid contains in phinodes {}",
+                        block.exit,
+                        arg.bid,
+                        phinodes.contains(&arg.bid)
+                    );
+                }
+
+                let default_label = make_label(name, default, bid, &phinodes);
+
                 // float 불가
                 // ① 분기 값 → T0
                 self.translate_operand(value.clone(), asm::Register::T1, asm_block_instrs);
@@ -833,6 +1092,8 @@ impl Asmgen {
 
                 // ② 각 case 비교-분기
                 for (const_val, case_arg) in cases {
+                    let case_label = make_label(name, case_arg, bid, &phinodes);
+
                     let constant_operand = ir::Operand::Constant(const_val.clone());
                     self.translate_operand(
                         constant_operand.clone(),
@@ -852,13 +1113,13 @@ impl Asmgen {
                         instr: asm::BType::Beq,
                         rs1: asm::Register::T0,
                         rs2: asm::Register::Zero,
-                        imm: asm::Label::new(name, case_arg.bid),
+                        imm: case_label,
                     });
                 }
 
                 // ③ 모두 빗나가면 default 로
                 asm_block_instrs.push(asm::Instruction::Pseudo(asm::Pseudo::J {
-                    offset: asm::Label::new(name, default.bid),
+                    offset: default_label,
                 }));
             }
             _ => unimplemented!("BlockExit type not yet handled"),
@@ -1440,6 +1701,31 @@ impl Asmgen {
                     imm: asm::Immediate::Value(offset as u64),
                 });
             }
+            ir::Instruction::GetElementPtr { ptr, offset, dtype } => {
+                // t0, t1, t2
+                self.translate_operand(ptr.clone(), asm::Register::T1, asm_block_instrs);
+                self.translate_operand(offset.clone(), asm::Register::T2, asm_block_instrs);
+
+                let data_size = asm::DataSize::from_dtype(dtype);
+
+                asm_block_instrs.push(asm::Instruction::RType {
+                    instr: asm::RType::Add(data_size),
+                    rd: asm::Register::T0,
+                    rs1: asm::Register::T1,
+                    rs2: Some(asm::Register::T2),
+                });
+
+                let offset = self.stack_allocator.allocate_stack_slot(&dst_rid, dtype);
+
+                asm_block_instrs.push(asm::Instruction::SType {
+                    instr: asm::SType::store(dtype.clone()),
+                    rs1: asm::Register::Sp,
+                    rs2: asm::Register::T0,
+                    imm: asm::Immediate::Value(offset as u64),
+                });
+
+                add_padding(&mut self.stack_allocator.next_stack_offset);
+            }
             _ => {
                 println!("todo insturction {}", instruction);
             }
@@ -1461,6 +1747,74 @@ impl Asmgen {
         let mut asm_blocks: Vec<asm::Block> = vec![];
 
         let call_flag = call_flag(func);
+
+        let mut phinodes = Vec::new(); // bid 모으기
+        let mut phinodes_to_predecessor = HashMap::new();
+        let mut predecessor_to_phinodes = Vec::new();
+
+        for (bid, block) in func.blocks.iter() {
+            if !block.phinodes.is_empty() && *bid != func.bid_init {
+                phinodes.push(*bid);
+            }
+        }
+
+        for (bid, block) in func.blocks.iter() {
+            match &block.exit {
+                ir::BlockExit::Jump { arg } => {
+                    insert_argbid(
+                        &arg.bid,
+                        bid,
+                        phinodes.clone(),
+                        &mut phinodes_to_predecessor,
+                        &mut predecessor_to_phinodes,
+                    );
+                }
+                ir::BlockExit::ConditionalJump {
+                    condition,
+                    arg_then,
+                    arg_else,
+                } => {
+                    insert_argbid(
+                        &arg_then.bid,
+                        bid,
+                        phinodes.clone(),
+                        &mut phinodes_to_predecessor,
+                        &mut predecessor_to_phinodes,
+                    );
+                    insert_argbid(
+                        &arg_else.bid,
+                        bid,
+                        phinodes.clone(),
+                        &mut phinodes_to_predecessor,
+                        &mut predecessor_to_phinodes,
+                    );
+                }
+                ir::BlockExit::Return { value } => {}
+                ir::BlockExit::Switch {
+                    value,
+                    default,
+                    cases,
+                } => {
+                    insert_argbid(
+                        &default.bid,
+                        bid,
+                        phinodes.clone(),
+                        &mut phinodes_to_predecessor,
+                        &mut predecessor_to_phinodes,
+                    );
+                    for (_, arg) in cases {
+                        insert_argbid(
+                            &arg.bid,
+                            bid,
+                            phinodes.clone(),
+                            &mut phinodes_to_predecessor,
+                            &mut predecessor_to_phinodes,
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
 
         for (bid, block) in func.blocks.iter() {
             let mut asm_block_instrs: Vec<asm::Instruction> = vec![];
@@ -1487,7 +1841,14 @@ impl Asmgen {
 
             // epilogue
             // block exit같은 것
-            self.translate_function_epilogue(block, name, call_flag, &mut asm_block_instrs);
+            self.translate_function_epilogue(
+                block,
+                name,
+                call_flag,
+                phinodes.clone(),
+                bid,
+                &mut asm_block_instrs,
+            );
 
             let block_label = if bid.0 == func.bid_init.0 {
                 asm::Label(name.to_string())
@@ -1505,6 +1866,16 @@ impl Asmgen {
             println!("}}");
             println!("=========================");
         }
+        println!("phinodes {:?}", phinodes);
+        println!("phinodes_to_predecessor {:?}", phinodes_to_predecessor);
+        println!("predecessor_to_phinodes {:?}", predecessor_to_phinodes);
+        self.translate_function_phinodes(
+            name,
+            &phinodes.clone(),
+            &func.blocks,
+            &predecessor_to_phinodes,
+            &mut asm_blocks,
+        );
 
         self.translate_function_placeholder_handler(&mut asm_blocks);
         self.translate_function_divider_for_memory_offset(&mut asm_blocks);
@@ -1548,6 +1919,7 @@ impl asm::DataSize {
                 width: 64,
                 is_const,
             } => asm::DataSize::DoublePrecision,
+            ir::Dtype::Pointer { inner, is_const } => asm::DataSize::Double,
             _ => panic!("Unsupported dtype for DataSize conversion: {:?}", dtype),
         }
     }
@@ -1560,6 +1932,7 @@ fn get_dtype_size(dtype: &ir::Dtype) -> i32 {
 
         ir::Dtype::Pointer { inner, is_const } => 8,
         ir::Dtype::Unit { is_const } => 0,
+        ir::Dtype::Array { inner, size } => get_dtype_size(inner) * (*size as i32),
         _ => panic!("Unsupported argument type: {:?}", dtype),
     }
 }
@@ -1638,8 +2011,24 @@ fn release_ptr(dtype: &ir::Dtype) -> Option<&ir::Dtype> {
 fn asm_register_instruction(idx: usize, dtype: &ir::Dtype) -> asm::Register {
     use asm::Register;
 
-    const INT_REGS: [Register; 3] = [Register::T0, Register::T1, Register::T2];
-    const FLOAT_REGS: [Register; 3] = [Register::FT0, Register::FT1, Register::FT2];
+    const INT_REGS: [Register; 7] = [
+        Register::T0,
+        Register::T1,
+        Register::T2,
+        Register::T3,
+        Register::T4,
+        Register::T5,
+        Register::T6,
+    ];
+    const FLOAT_REGS: [Register; 7] = [
+        Register::FT0,
+        Register::FT1,
+        Register::FT2,
+        Register::T3,
+        Register::FT4,
+        Register::FT5,
+        Register::T6,
+    ];
 
     match dtype {
         ir::Dtype::Float { .. } => FLOAT_REGS[idx],
@@ -1674,5 +2063,13 @@ fn asm_register_args(idx: usize, dtype: &ir::Dtype) -> asm::Register {
     match dtype {
         ir::Dtype::Float { .. } => FLOAT_REGS[idx],
         _ => INT_REGS[idx],
+    }
+}
+
+impl asm::Label {
+    pub fn new_pred(name: &str, block_id: ir::BlockId, phi_id: ir::BlockId) -> Self {
+        let id = block_id.0;
+        let phi_id = phi_id.0;
+        Self(format!(".{name}_L{id}_to_L_{phi_id}_fake"))
     }
 }
