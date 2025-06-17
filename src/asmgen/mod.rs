@@ -789,8 +789,22 @@ impl Asmgen {
         println!("instruction {} dst_rid {}", instruction, dst_rid);
         println!("\n================================================\n");
         match instruction.deref() {
-            ir::Instruction::UnaryOp { op, operand, dtype } => match op {
+            ir::Instruction::UnaryOp {
+                op,
+                operand,
+                dtype:
+                    ir::Dtype::Int {
+                        width,
+                        is_signed,
+                        is_const,
+                    },
+            } => match op {
                 ast::UnaryOperator::Minus => {
+                    let dtype = &ir::Dtype::Int {
+                        width: *width,
+                        is_signed: *is_signed,
+                        is_const: *is_const,
+                    };
                     self.translate_operand(operand.clone(), asm::Register::T0, asm_block_instrs);
 
                     let pseudo =
@@ -807,6 +821,11 @@ impl Asmgen {
                     });
                 }
                 ast::UnaryOperator::Negate => {
+                    let dtype = &ir::Dtype::Int {
+                        width: *width,
+                        is_signed: *is_signed,
+                        is_const: *is_const,
+                    };
                     // operand를 T0에 옮긴다
                     self.translate_operand(operand.clone(), asm::Register::T0, asm_block_instrs);
 
@@ -835,13 +854,25 @@ impl Asmgen {
                 op,
                 lhs,
                 rhs,
-                dtype,
+                dtype:
+                    ir::Dtype::Int {
+                        width,
+                        is_signed,
+                        is_const,
+                    },
             } => {
+                let dtype = &ir::Dtype::Int {
+                    width: *width,
+                    is_signed: *is_signed,
+                    is_const: *is_const,
+                };
+
                 self.translate_operand(lhs.clone(), asm::Register::T1, asm_block_instrs);
                 self.translate_operand(rhs.clone(), asm::Register::T2, asm_block_instrs);
 
                 // temp step
                 let mut is_signed = dtype.is_int_signed();
+
                 println!("instruction {} is_signed {}", instruction, is_signed);
 
                 if let Some(rtype) = ast_binop_to_rtype(op, dtype.clone(), is_signed) {
@@ -935,7 +966,10 @@ impl Asmgen {
                         });
                     }
                     ast::BinaryOperator::Less => {
-                        is_signed = lhs.dtype().is_int_signed();
+                        is_signed = true;
+                        if let ir::Dtype::Int { .. } = lhs.dtype() {
+                            is_signed = lhs.dtype().is_int_signed();
+                        }
                         asm_block_instrs.push(asm::Instruction::RType {
                             instr: asm::RType::Slt { is_signed },
                             rd: asm::Register::T0,
@@ -954,7 +988,10 @@ impl Asmgen {
                         });
                     }
                     ast::BinaryOperator::Greater => {
-                        is_signed = lhs.dtype().is_int_signed();
+                        is_signed = true;
+                        if let ir::Dtype::Int { .. } = lhs.dtype() {
+                            is_signed = lhs.dtype().is_int_signed();
+                        }
                         asm_block_instrs.push(asm::Instruction::RType {
                             instr: asm::RType::Slt { is_signed },
                             rd: asm::Register::T0,
@@ -975,7 +1012,10 @@ impl Asmgen {
                     ast::BinaryOperator::GreaterOrEqual => {
                         // <=> Less, Less의 결과를 반전
                         // 1. signed / unsigned 결정
-                        is_signed = lhs.dtype().is_int_signed();
+                        is_signed = true;
+                        if let ir::Dtype::Int { .. } = lhs.dtype() {
+                            is_signed = lhs.dtype().is_int_signed();
+                        }
 
                         // T1 >= T2
                         // T1 < T2 -> 뒤집기
@@ -1318,8 +1358,14 @@ impl asm::DataSize {
                 64 => asm::DataSize::Double,
                 _ => asm::DataSize::Byte, // maybe??
             },
-            // ir::Dtype::Float => asm::DataSize::SinglePrecision,
-            // ir::Dtype::Double => asm::DataSize::DoublePrecision,
+            ir::Dtype::Float {
+                width: 32,
+                is_const,
+            } => asm::DataSize::SinglePrecision,
+            ir::Dtype::Float {
+                width: 64,
+                is_const,
+            } => asm::DataSize::DoublePrecision,
             _ => panic!("Unsupported dtype for DataSize conversion: {:?}", dtype),
         }
     }
@@ -1328,6 +1374,7 @@ impl asm::DataSize {
 fn get_dtype_size(dtype: &ir::Dtype) -> i32 {
     match dtype {
         ir::Dtype::Int { width, .. } => ((width + 7) / 8) as i32,
+        ir::Dtype::Float { width, .. } => ((width + 7) / 8) as i32, // 예: float32 → 4, float64 → 8
 
         ir::Dtype::Pointer { inner, is_const } => 8,
         ir::Dtype::Unit { is_const } => 0,
@@ -1349,30 +1396,76 @@ fn ast_binop_to_rtype(
     dtype: ir::Dtype,
     is_signed: bool,
 ) -> Option<asm::RType> {
-    let ds = asm::DataSize::from_dtype(&dtype);
-    match op {
-        ast::BinaryOperator::Plus => Some(asm::RType::Add(ds)),
-        ast::BinaryOperator::Minus => Some(asm::RType::Sub(ds)),
-        ast::BinaryOperator::Multiply => Some(asm::RType::Mul(ds)),
-        ast::BinaryOperator::BitwiseXor => Some(asm::RType::Xor),
-        ast::BinaryOperator::BitwiseOr => Some(asm::RType::Or),
-        ast::BinaryOperator::BitwiseAnd => Some(asm::RType::And),
-        ast::BinaryOperator::ShiftLeft => Some(asm::RType::Sll(ds)), // 좌시프트
-        ast::BinaryOperator::ShiftRight => Some(if is_signed {
-            asm::RType::Sra(ds)
-        }
-        // 우시프트(부호 유지)
-        else {
-            asm::RType::Srl(ds)
-        }), // 우시프트(0-패딩)
-        // ast::BinaryOperator::ShiftLeft => Some(asm::RType::(asm::DataSize::from_dtype(&dtype))),
-        // ast::BinaryOperator::ShiftRight => Some
-        // ast::BinaryOperator::Less => Some(asm::RType::Slt { is_signed }),
-        // ast::BinaryOperator::Greater => Some(asm::RType::S)
-        ast::BinaryOperator::Modulo => Some(asm::RType::rem(dtype, is_signed)),
-        _ => None, // Less, Greater, NotEqual, Equal
+    use asm::{DataSize, RType};
+    let ds = DataSize::from_dtype(&dtype);
+
+    match dtype {
+        ir::Dtype::Float { .. } => match op {
+            ast::BinaryOperator::Plus => Some(RType::Fadd(ds)),
+            ast::BinaryOperator::Minus => Some(RType::Fsub(ds)),
+            ast::BinaryOperator::Multiply => Some(RType::Fmul(ds)),
+            ast::BinaryOperator::Divide => Some(RType::Fdiv(ds)),
+            // ast::BinaryOperator::Equals => Some(RType::Feq(ds)),
+            // ast::BinaryOperator::Less => Some(RType::Flt(ds)),
+            // 필요시 Greater → float용 별도 추가 가능
+            _ => None,
+        },
+        _ => match op {
+            ast::BinaryOperator::Plus => Some(RType::Add(ds)),
+            ast::BinaryOperator::Minus => Some(RType::Sub(ds)),
+            ast::BinaryOperator::Multiply => Some(RType::Mul(ds)),
+            ast::BinaryOperator::BitwiseXor => Some(RType::Xor),
+            ast::BinaryOperator::BitwiseOr => Some(RType::Or),
+            ast::BinaryOperator::BitwiseAnd => Some(RType::And),
+            ast::BinaryOperator::ShiftLeft => Some(RType::Sll(ds)),
+            ast::BinaryOperator::ShiftRight => Some(if is_signed {
+                RType::Sra(ds)
+            } else {
+                RType::Srl(ds)
+            }),
+            ast::BinaryOperator::Modulo => Some(RType::Rem {
+                data_size: ds,
+                is_signed,
+            }),
+            ast::BinaryOperator::Divide => Some(RType::Div {
+                data_size: ds,
+                is_signed,
+            }),
+            // ast::BinaryOperator::Less => Some(RType::Slt { is_signed }),
+            _ => None,
+        },
     }
 }
+
+// fn ast_binop_to_rtype(
+//     op: &ast::BinaryOperator,
+//     dtype: ir::Dtype,
+//     is_signed: bool,
+// ) -> Option<asm::RType> {
+//     let ds = asm::DataSize::from_dtype(&dtype);
+//     match op {
+//         ast::BinaryOperator::Plus => Some(asm::RType::Add(ds)),
+//         ast::BinaryOperator::Minus => Some(asm::RType::Sub(ds)),
+//         ast::BinaryOperator::Multiply => Some(asm::RType::Mul(ds)),
+//         ast::BinaryOperator::BitwiseXor => Some(asm::RType::Xor),
+//         ast::BinaryOperator::BitwiseOr => Some(asm::RType::Or),
+//         ast::BinaryOperator::BitwiseAnd => Some(asm::RType::And),
+//         ast::BinaryOperator::ShiftLeft => Some(asm::RType::Sll(ds)), // 좌시프트
+//         ast::BinaryOperator::ShiftRight => Some(if is_signed {
+//             asm::RType::Sra(ds)
+//         }
+//         // 우시프트(부호 유지)
+//         else {
+//             asm::RType::Srl(ds)
+//         }), // 우시프트(0-패딩)
+//         // ast::BinaryOperator::ShiftLeft => Some(asm::RType::(asm::DataSize::from_dtype(&dtype))),
+//         // ast::BinaryOperator::ShiftRight => Some
+//         // ast::BinaryOperator::Less => Some(asm::RType::Slt { is_signed }),
+//         // ast::BinaryOperator::Greater => Some(asm::RType::S)
+//         ast::BinaryOperator::Modulo => Some(asm::RType::rem(dtype, is_signed)),
+//         _ => None, // Less, Greater, NotEqual, Equal
+//     }
+// }
 
 fn add_padding(next_offset: &mut i32) {
     let mut remainder = *next_offset % 8;
@@ -1389,3 +1482,28 @@ fn release_ptr(dtype: &ir::Dtype) -> Option<&ir::Dtype> {
         _ => Some(dtype),
     }
 }
+
+fn asm_register_instruction(idx: usize, dtype: &ir::Dtype) -> asm::Register {
+    use asm::Register;
+
+    const INT_REGS: [Register; 3] = [Register::T0, Register::T1, Register::T2];
+    const FLOAT_REGS: [Register; 3] = [Register::FT0, Register::FT1, Register::FT2];
+
+    match dtype {
+        ir::Dtype::Float { .. } => FLOAT_REGS[idx],
+        _ => INT_REGS[idx],
+    }
+}
+
+fn asm_register_args(idx: usize, dtype: &ir::Dtype) -> asm::Register {
+    use asm::Register;
+
+    const INT_REGS: [Register; 8] = [Register::A0, Register::A1, Register::A2, Register::A3, Register::A4, Register::A5, Register::A6, Register::A7];
+    const FLOAT_REGS: [Register; 8] = [Register::FA0, Register::FA1, Register::FA2, Register::FA3, Register::FA4, Register::FA5, Register::FA6, Register::FA7];
+
+    match dtype {
+        ir::Dtype::Float { .. } => FLOAT_REGS[idx],
+        _ => INT_REGS[idx],
+    }
+}
+
