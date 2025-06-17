@@ -200,8 +200,8 @@ impl Translate<ir::TranslationUnit> for Asmgen {
             }
         }
 
-        println!("====translate===");
-        println!("self.function_name_list {:?}", self.function_name_list);
+        // println!("====translate===");
+        // println!("self.function_name_list {:?}", self.function_name_list);
 
         let asm_unit = asm::TranslationUnit {
             functions,
@@ -245,7 +245,8 @@ impl Asmgen {
                         *imm = asm::Immediate::Value(self.next_stack_offset as u64);
                     }
                     _ => {
-                        println!();
+                        // panic!("not yet implemented");
+                        // println!();
                     }
                 }
             }
@@ -579,7 +580,7 @@ impl Asmgen {
                         instr: asm::SType::store(value.dtype()),
                         rs1: asm::Register::S1,
                         rs2: asm::Register::A0,
-                        imm: asm::Immediate::Value(-8i64 as u64),
+                        imm: asm::Immediate::Value((-8i64) as u64),
                     });
                 }
 
@@ -611,7 +612,41 @@ impl Asmgen {
                 value,
                 default,
                 cases,
-            } => {}
+            } => {
+                // ① 분기 값 → T0
+                self.translate_operand(value.clone(), asm::Register::T1, asm_block_instrs);
+                // li T0, const_val
+
+                // ② 각 case 비교-분기
+                for (const_val, case_arg) in cases {
+                    let constant_operand = ir::Operand::Constant(const_val.clone());
+                    self.translate_operand(
+                        constant_operand.clone(),
+                        asm::Register::T2,
+                        asm_block_instrs,
+                    );
+
+                    // xor T0,T1,T2
+                    asm_block_instrs.push(asm::Instruction::RType {
+                        instr: asm::RType::Xor,
+                        rd: asm::Register::T0,
+                        rs1: asm::Register::T1,
+                        rs2: Some(asm::Register::T2),
+                    });
+                    // beq T0,zero, <case label>
+                    asm_block_instrs.push(asm::Instruction::BType {
+                        instr: asm::BType::Beq,
+                        rs1: asm::Register::T0,
+                        rs2: asm::Register::Zero,
+                        imm: asm::Label::new(name, case_arg.bid),
+                    });
+                }
+
+                // ③ 모두 빗나가면 default 로
+                asm_block_instrs.push(asm::Instruction::Pseudo(asm::Pseudo::J {
+                    offset: asm::Label::new(name, default.bid),
+                }));
+            }
             _ => unimplemented!("BlockExit type not yet handled"),
         }
     }
@@ -1161,6 +1196,7 @@ fn ast_binop_to_rtype(
     match op {
         ast::BinaryOperator::Plus => Some(asm::RType::Add(ds)),
         ast::BinaryOperator::Minus => Some(asm::RType::Sub(ds)),
+        ast::BinaryOperator::Multiply => Some(asm::RType::Mul(ds)),
         ast::BinaryOperator::BitwiseXor => Some(asm::RType::Xor),
         ast::BinaryOperator::BitwiseOr => Some(asm::RType::Or),
         ast::BinaryOperator::BitwiseAnd => Some(asm::RType::And),
