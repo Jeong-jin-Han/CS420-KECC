@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::ops::Deref;
 
-use lang_c::ast;
+use lang_c::ast::{self, FunctionDeclarator};
 
 use crate::ir::{HasDtype, Named};
 use crate::opt::opt_utils;
@@ -200,6 +200,9 @@ impl Translate<ir::TranslationUnit> for Asmgen {
             }
         }
 
+        println!("====translate===");
+        println!("self.function_name_list {:?}", self.function_name_list);
+
         let asm_unit = asm::TranslationUnit {
             functions,
             variables,
@@ -277,6 +280,7 @@ impl Asmgen {
         block: &ir::Block,
         bid: &ir::BlockId,
         allocations: Vec<Named<ir::Dtype>>,
+        name: &str,
         asm_block_instrs: &mut Vec<asm::Instruction>,
     ) {
         // prelogue
@@ -374,6 +378,10 @@ impl Asmgen {
 
         // phinodes
         let mut caller_offset = 0;
+        println!(
+            "translate_function_prelogue | phinodes {:?}",
+            block.phinodes
+        );
         for (i, dtype) in block.phinodes.iter().enumerate() {
             let phinode_rid = ir::RegisterId::arg(*bid, i);
             let offset = self.stack_allocator.allocate_stack_slot(
@@ -400,6 +408,47 @@ impl Asmgen {
 
             caller_offset += get_dtype_size(dtype.deref());
         }
+
+        // if let Some((_, functionsginature)) = self.function_name_list.get(name) {
+        //     println!("==========================");
+        //     println!("translate_function_prelogue");
+
+        //     println!("functionsignature.ret {}", functionsginature.ret);
+
+        //     if let Some(ir::Dtype::Function { ret, params }) = release_ptr(&functionsginature.ret) {
+        //         println!(
+        //             "functionsginautre.params {:?} params {:?}",
+        //             functionsginature.params, params
+        //         );
+        //         for (i, dtype) in params.iter().enumerate() {
+        //             let phinode_rid: ir::RegisterId = ir::RegisterId::arg(*bid, i);
+        //             let offset = self.stack_allocator.allocate_stack_slot(
+        //                 &phinode_rid,
+        //                 dtype,
+        //                 &mut self.next_stack_offset,
+        //             );
+
+        //             asm_block_instrs.push(asm::Instruction::IType {
+        //                 instr: asm::IType::Load {
+        //                     data_size: asm::DataSize::from_dtype(dtype),
+        //                     is_signed: true,
+        //                 },
+        //                 rd: asm::Register::T0,
+        //                 rs1: asm::Register::S1,
+        //                 imm: asm::Immediate::Value(caller_offset as u64),
+        //             });
+        //             asm_block_instrs.push(asm::Instruction::SType {
+        //                 instr: asm::SType::store(dtype.clone()),
+        //                 rs1: asm::Register::Sp,
+        //                 rs2: asm::Register::T0,
+        //                 imm: asm::Immediate::Value(offset as u64),
+        //             }); // store dst rs2
+
+        //             caller_offset += get_dtype_size(dtype);
+        //         }
+        //     }
+        // }
+
         add_padding(&mut self.next_stack_offset);
     }
 
@@ -492,6 +541,8 @@ impl Asmgen {
                 }));
             }
             ir::BlockExit::Return { value } => {
+                println!("translate_functino_epilogue | value {}", value);
+
                 self.translate_operand(value.clone(), asm::Register::A0, asm_block_instrs);
 
                 if call_flag {
@@ -515,9 +566,15 @@ impl Asmgen {
                         imm: asm::Immediate::Value(8),
                     });
                 }
-
-                if name != "main" {
+                let ret_offset = get_dtype_size(&value.dtype());
+                if name != "main" && ret_offset != 0 {
                     // rs2 rs1(imm)
+                    // asm_block_instrs.push(asm::Instruction::SType {
+                    //     instr: asm::SType::store(value.dtype()),
+                    //     rs1: asm::Register::S1,
+                    //     rs2: asm::Register::A0,
+                    //     imm: asm::Immediate::Value(-ret_offset as u64),
+                    // });
                     asm_block_instrs.push(asm::Instruction::SType {
                         instr: asm::SType::store(value.dtype()),
                         rs1: asm::Register::S1,
@@ -550,6 +607,11 @@ impl Asmgen {
             ir::BlockExit::Unreachable => {
                 // No-op
             }
+            ir::BlockExit::Switch {
+                value,
+                default,
+                cases,
+            } => {}
             _ => unimplemented!("BlockExit type not yet handled"),
         }
     }
@@ -562,6 +624,9 @@ impl Asmgen {
         asm_block_instrs: &mut Vec<asm::Instruction>,
     ) {
         let dst_rid = ir::RegisterId::temp(bid, iid);
+        println!("\n======= translate_function_instruction ========\n");
+        println!("instruction {} dst_rid {}", instruction, dst_rid);
+        println!("\n================================================\n");
         match instruction.deref() {
             ir::Instruction::UnaryOp { op, operand, dtype } => match op {
                 ast::UnaryOperator::Minus => {
@@ -711,6 +776,43 @@ impl Asmgen {
                         imm: asm::Immediate::Value(offset as u64),
                     });
                 }
+                if *op == ast::BinaryOperator::GreaterOrEqual {
+                    // <=> Less, Less의 결과를 반전
+                    // 1. signed / unsigned 결정
+                    is_signed = lhs.dtype().is_int_signed();
+
+                    // T1 >= T2
+                    // T1 < T2 -> 뒤집기
+
+                    // 2. lhs < rhs  → tmp(T0)
+                    asm_block_instrs.push(asm::Instruction::RType {
+                        instr: asm::RType::Slt { is_signed }, // slt(u) 선택
+                        rd: asm::Register::T0,                // tmp = lhs < rhs
+                        rs1: asm::Register::T1,               // lhs
+                        rs2: Some(asm::Register::T2),         // rhs
+                    });
+
+                    // 3. 반전   tmp = (tmp == 0)
+                    asm_block_instrs.push(asm::Instruction::Pseudo(asm::Pseudo::Seqz {
+                        rd: asm::Register::T0,
+                        rs: asm::Register::T0,
+                    }));
+
+                    // 4. dst_rid 저장
+                    let offset = self.stack_allocator.allocate_stack_slot(
+                        &dst_rid,
+                        dtype,
+                        &mut self.next_stack_offset,
+                    );
+                    add_padding(&mut self.next_stack_offset);
+
+                    asm_block_instrs.push(asm::Instruction::SType {
+                        instr: asm::SType::store(dtype.clone()),
+                        rs1: asm::Register::Sp,
+                        rs2: asm::Register::T0,
+                        imm: asm::Immediate::Value(offset as u64),
+                    });
+                }
             }
             ir::Instruction::Load { ptr } => {
                 let ptr_inner_dtype = ptr.dtype().get_pointer_inner().unwrap().clone();
@@ -766,8 +868,15 @@ impl Asmgen {
                 args,
                 return_type,
             } => {
+                println!(
+                    "translate_function_instruction | before ret | next_stack_offset {}",
+                    self.next_stack_offset
+                );
+
+                add_padding(&mut self.next_stack_offset);
+
                 // dst_rid에 대해서 T0를 저장해야 함
-                let _ = self.stack_allocator.allocate_stack_slot(
+                let ret_offset = self.stack_allocator.allocate_stack_slot(
                     &dst_rid,
                     ret,
                     &mut self.next_stack_offset,
@@ -775,12 +884,17 @@ impl Asmgen {
 
                 add_padding(&mut self.next_stack_offset);
 
+                println!(
+                    "translate_function_instruction | after ret | next_stack_offset {}",
+                    self.next_stack_offset
+                );
+
                 asm_block_instrs.push(asm::Instruction::IType {
                     instr: asm::IType::Addi(asm::DataSize::Double),
                     rd: asm::Register::S1,
                     rs1: asm::Register::Sp,
                     imm: asm::Immediate::Value(self.next_stack_offset as u64),
-                });
+                }); // 일단 arg 초반 시작부터 보는 거여서 맞기는 함
 
                 // 인자들을 stack에 저장
                 for (i, arg) in args.iter().enumerate() {
@@ -796,10 +910,78 @@ impl Asmgen {
                     self.next_stack_offset += get_dtype_size(&arg.dtype());
                 }
                 add_padding(&mut self.next_stack_offset);
+                println!(
+                    "translate_function_instruction next_stack_offset {}",
+                    self.next_stack_offset
+                );
 
                 // call 실행
                 asm_block_instrs.push(asm::Instruction::Pseudo(asm::Pseudo::Call {
                     offset: asm::Label(call_name.clone()),
+                }));
+
+                add_padding(&mut self.next_stack_offset);
+            }
+            ir::Instruction::Call {
+                callee: ir::Operand::Register { rid, dtype },
+                args,
+                return_type,
+            } => {
+                let callee = ir::Operand::Register {
+                    rid: *rid,
+                    dtype: dtype.clone(),
+                };
+                println!(
+                    "translate_function_instruction | before ret | next_stack_offset {}",
+                    self.next_stack_offset
+                );
+
+                add_padding(&mut self.next_stack_offset);
+
+                // dst_rid에 대해서 T0를 저장해야 함
+                let ret_offset = self.stack_allocator.allocate_stack_slot(
+                    &dst_rid,
+                    return_type,
+                    &mut self.next_stack_offset,
+                );
+
+                add_padding(&mut self.next_stack_offset);
+
+                println!(
+                    "translate_function_instruction | after ret | next_stack_offset {}",
+                    self.next_stack_offset
+                );
+
+                asm_block_instrs.push(asm::Instruction::IType {
+                    instr: asm::IType::Addi(asm::DataSize::Double),
+                    rd: asm::Register::S1,
+                    rs1: asm::Register::Sp,
+                    imm: asm::Immediate::Value(self.next_stack_offset as u64),
+                }); // 일단 arg 초반 시작부터 보는 거여서 맞기는 함
+
+                // 인자들을 stack에 저장
+                for (i, arg) in args.iter().enumerate() {
+                    // translate_operand는 교환자임, 교환이 아닌 경우, 새로운 것이 들어왔을 경우??
+                    self.translate_operand(arg.clone(), asm::Register::T0, asm_block_instrs);
+
+                    asm_block_instrs.push(asm::Instruction::SType {
+                        instr: asm::SType::store(arg.dtype()),
+                        rs1: asm::Register::Sp,
+                        rs2: asm::Register::T0,
+                        imm: asm::Immediate::Value(self.next_stack_offset as u64),
+                    });
+                    self.next_stack_offset += get_dtype_size(&arg.dtype());
+                }
+                add_padding(&mut self.next_stack_offset);
+                println!(
+                    "translate_function_instruction next_stack_offset {}",
+                    self.next_stack_offset
+                );
+                self.translate_operand(callee, asm::Register::T0, asm_block_instrs);
+
+                // call 실행
+                asm_block_instrs.push(asm::Instruction::Pseudo(asm::Pseudo::Jalr {
+                    rs: asm::Register::T0,
                 }));
 
                 add_padding(&mut self.next_stack_offset);
@@ -858,6 +1040,7 @@ impl Asmgen {
                     block,
                     bid,
                     func.allocations.clone(),
+                    name,
                     &mut asm_block_instrs,
                 );
             }
@@ -916,6 +1099,7 @@ fn get_dtype_size(dtype: &ir::Dtype) -> i32 {
         ir::Dtype::Int { width, .. } => ((width + 7) / 8) as i32,
 
         ir::Dtype::Pointer { inner, is_const } => 8,
+        ir::Dtype::Unit { is_const } => 0,
         _ => panic!("Unsupported argument type: {:?}", dtype),
     }
 }
@@ -948,6 +1132,17 @@ fn ast_binop_to_rtype(
 }
 
 fn add_padding(next_offset: &mut i32) {
-    let remainder = *next_offset % 8;
+    let mut remainder = *next_offset % 8;
+    if remainder == 0 {
+        remainder = 8;
+    }
+    println!("add_padding: + how much {}", 8 - remainder);
     *next_offset += 8 - remainder;
+}
+
+fn release_ptr(dtype: &ir::Dtype) -> Option<&ir::Dtype> {
+    match dtype {
+        ir::Dtype::Pointer { inner, is_const } => release_ptr(dtype.get_pointer_inner().unwrap()),
+        _ => Some(dtype),
+    }
 }
