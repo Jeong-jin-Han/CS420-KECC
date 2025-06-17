@@ -212,7 +212,64 @@ impl Translate<ir::TranslationUnit> for Asmgen {
     }
 }
 
+/// 12-bit 즉시값 범위를 벗어나면 여러 개의 addi 로 분해한다.
+///   rd : 결과를 쓸 레지스터 (sp 등)
+///   rs : 첫 addi 의 rs1  (첫 번째는 기존 rs1, 이후부터는 rd)
+fn split_large_addi(rd: asm::Register, rs: asm::Register, imm64: i64) -> Vec<asm::Instruction> {
+    use asm::{DataSize, IType, Immediate, Instruction};
+
+    let mut seq = Vec::new();
+    let mut rest = imm64;
+    let mut cur_rs = rs; // 첫 번은 원래 rs1 사용
+
+    while rest != 0 {
+        // 12-bit signed 범위에 들어가는 chunk 계산
+        let chunk = rest.clamp(-2048, 2047);
+
+        seq.push(Instruction::IType {
+            instr: IType::Addi(DataSize::Double),
+            rd,
+            rs1: cur_rs,
+            imm: Immediate::Value(chunk as u64),
+        });
+
+        rest -= chunk;
+        cur_rs = rd; // 이후부터 rs1 = rd
+    }
+    seq
+}
+
 impl Asmgen {
+    fn translate_function_divider_for_addi(&mut self, asm_blocks: &mut [asm::Block]) {
+        use asm::{DataSize, IType, Immediate, Instruction, Register};
+
+        for block in asm_blocks.iter_mut() {
+            let mut new_instrs = Vec::with_capacity(block.instructions.len());
+
+            for instr in block.instructions.drain(..) {
+                // addi *, *, imm   인지 확인
+                if let Instruction::IType {
+                    instr: IType::Addi(DataSize::Double),
+                    rd,
+                    rs1,
+                    imm: Immediate::Value(val),
+                } = &instr
+                {
+                    let simm = *val as i64;
+                    if !(-2048..=2047).contains(&simm) {
+                        // 12-bit 초과 → 분해해서 삽입
+                        new_instrs.extend(split_large_addi(*rd, *rs1, simm));
+                        continue; // 원본 instr 버림
+                    }
+                }
+                // 그대로 사용
+                new_instrs.push(instr);
+            }
+
+            block.instructions = new_instrs;
+        }
+    }
+
     fn translate_function_placeholder_handler(&mut self, asm_blocks: &mut [asm::Block]) {
         // prelogue, epilogue 둘 다 placeholder를 가지고 있음
 
@@ -362,13 +419,6 @@ impl Asmgen {
                 imm: asm::Immediate::Value(ptr_indicator_offset as u64),
             });
 
-            // asm_block_instrs.push(asm::Instruction::IType {
-            //     instr: asm::IType::Addi(asm::DataSize::Double),
-            //     rd: asm::Register::T3,
-            //     rs1: asm::Register::T3,
-            //     imm: asm::Immediate::Value(0),
-            // }); // just test
-
             asm_block_instrs.push(asm::Instruction::SType {
                 instr: asm::SType::Store(asm::DataSize::Double),
                 rs1: asm::Register::Sp,
@@ -409,46 +459,6 @@ impl Asmgen {
 
             caller_offset += get_dtype_size(dtype.deref());
         }
-
-        // if let Some((_, functionsginature)) = self.function_name_list.get(name) {
-        //     println!("==========================");
-        //     println!("translate_function_prelogue");
-
-        //     println!("functionsignature.ret {}", functionsginature.ret);
-
-        //     if let Some(ir::Dtype::Function { ret, params }) = release_ptr(&functionsginature.ret) {
-        //         println!(
-        //             "functionsginautre.params {:?} params {:?}",
-        //             functionsginature.params, params
-        //         );
-        //         for (i, dtype) in params.iter().enumerate() {
-        //             let phinode_rid: ir::RegisterId = ir::RegisterId::arg(*bid, i);
-        //             let offset = self.stack_allocator.allocate_stack_slot(
-        //                 &phinode_rid,
-        //                 dtype,
-        //                 &mut self.next_stack_offset,
-        //             );
-
-        //             asm_block_instrs.push(asm::Instruction::IType {
-        //                 instr: asm::IType::Load {
-        //                     data_size: asm::DataSize::from_dtype(dtype),
-        //                     is_signed: true,
-        //                 },
-        //                 rd: asm::Register::T0,
-        //                 rs1: asm::Register::S1,
-        //                 imm: asm::Immediate::Value(caller_offset as u64),
-        //             });
-        //             asm_block_instrs.push(asm::Instruction::SType {
-        //                 instr: asm::SType::store(dtype.clone()),
-        //                 rs1: asm::Register::Sp,
-        //                 rs2: asm::Register::T0,
-        //                 imm: asm::Immediate::Value(offset as u64),
-        //             }); // store dst rs2
-
-        //             caller_offset += get_dtype_size(dtype);
-        //         }
-        //     }
-        // }
 
         add_padding(&mut self.next_stack_offset);
     }
@@ -898,14 +908,6 @@ impl Asmgen {
                     imm: asm::Immediate::Value(0),
                 });
 
-                // load test
-                asm_block_instrs.push(asm::Instruction::IType {
-                    instr: asm::IType::Addi(asm::DataSize::Double),
-                    rd: asm::Register::T4,
-                    rs1: asm::Register::T4,
-                    imm: asm::Immediate::Value(0),
-                });
-
                 // dst_rid에 대해서 T0를 저장해야 함
                 let offset = self.stack_allocator.allocate_stack_slot(
                     &dst_rid,
@@ -1146,6 +1148,7 @@ impl Asmgen {
         }
 
         self.translate_function_placeholder_handler(&mut asm_blocks);
+        // self.translate_function_divider_for_addi(&mut asm_blocks);
 
         asm::Function::new(asm_blocks)
     }
@@ -1213,34 +1216,9 @@ fn ast_binop_to_rtype(
         // ast::BinaryOperator::Less => Some(asm::RType::Slt { is_signed }),
         // ast::BinaryOperator::Greater => Some(asm::RType::S)
         ast::BinaryOperator::Modulo => Some(asm::RType::rem(dtype, is_signed)),
-        _ => None, // shiftLeft, shifRight, Less, Greater, NotEqual, Equal
+        _ => None, // Less, Greater, NotEqual, Equal
     }
 }
-
-// fn ast_binop_to_rtype(
-//     op: &ast::BinaryOperator,
-//     dtype: ir::Dtype,
-//     is_signed: bool,
-// ) -> Option<asm::RType> {
-//     use ast::BinaryOperator::*;
-//     use asm::RType as R;
-
-//     let ds = asm::DataSize::from_dtype(&dtype);
-
-//     match op {
-//         Plus            => Some(R::Add(ds)),
-//         Minus           => Some(R::Sub(ds)),
-//         BitwiseXor      => Some(R::Xor),
-//         BitwiseOr       => Some(R::Or),
-//         BitwiseAnd      => Some(R::And),
-//         ShiftLeft       => Some(R::Sll(ds)),                          // ← 가변 shamt
-//         ShiftRight      => Some(if is_signed { R::Sra(ds) }
-//                                          else { R::Srl(ds) }),
-//         // Less            => Some(R::Slt { is_signed }),
-//         Modulo          => Some(R::Rem { data_size: ds, is_signed }),
-//         _               => None,
-//     }
-// }
 
 fn add_padding(next_offset: &mut i32) {
     let mut remainder = *next_offset % 8;
