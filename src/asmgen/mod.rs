@@ -46,21 +46,26 @@ Caller arg
 #[derive(Debug)]
 pub struct Asmgen {
     stack_allocator: StackAllocator,
-    next_stack_offset: i32,
     function_name_list: HashMap<String, (usize, ir::FunctionSignature)>,
     variable_name_list: HashMap<String, ir::Dtype>,
 }
 
 #[derive(Debug)]
 struct StackAllocator {
-    stack_map: HashMap<ir::RegisterId, i32>,
+    stack_map: HashMap<ir::RegisterId, Loc>,
+    next_stack_offset: i32,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Loc {
+    Stack(i32),         // 기존 offset
+    Reg(asm::Register), // a0..a7, t0.. 등
 }
 
 impl Default for Asmgen {
     fn default() -> Self {
         Self {
             stack_allocator: StackAllocator::new(),
-            next_stack_offset: 0,
             function_name_list: HashMap::new(),
             variable_name_list: HashMap::new(),
         }
@@ -71,31 +76,68 @@ impl StackAllocator {
     fn new() -> Self {
         Self {
             stack_map: HashMap::new(),
+            next_stack_offset: 0,
         }
     }
 
-    fn allocate_stack_slot(
-        // 이것을 하게 되면 내가 추가적으로 stack을 늘릴 필요x 자동으로 늘려줌
+    // fn allocate_stack_slot(
+    //     // 이것을 하게 되면 내가 추가적으로 stack을 늘릴 필요x 자동으로 늘려줌
+    //     &mut self,
+    //     rid: &ir::RegisterId,
+    //     dtype: &ir::Dtype,
+    //     next_offset: &mut i32,
+    // ) -> i32 {
+    //     if let Some(&offset) = self.stack_map.get(rid) {
+    //         println!("already exist rid: {}", rid);
+    //         offset
+    //     } else {
+    //         let old_next_offset = *next_offset;
+    //         let _unused = self.stack_map.insert(*rid, *next_offset);
+    //         let offset = get_dtype_size(dtype);
+
+    //         println!(
+    //             "insert rid {} next_offset {} offset {} dtype {}",
+    //             rid, next_offset, offset, dtype
+    //         );
+    //         *next_offset += offset;
+    //         println!("next_offset {}", next_offset);
+    //         old_next_offset
+    //     }
+    // }
+
+    fn allocate_stack_slot(&mut self, rid: &ir::RegisterId, dtype: &ir::Dtype) -> i32 {
+        println!("allocat_stack_slot {}", self.next_stack_offset);
+
+        match self.stack_map.get(rid) {
+            Some(Loc::Stack(off)) => *off,
+            Some(Loc::Reg(_)) => {
+                println!("allocate_stack_slot | Reg");
+                0
+            } // 레지스터면 offset 의미 0 (안 씀)
+            None => {
+                let off = self.next_stack_offset;
+                let _ = self.stack_map.insert(*rid, Loc::Stack(off));
+                self.next_stack_offset += get_dtype_size(dtype);
+                off
+            }
+        }
+    }
+    fn force_spill_if_reg(
         &mut self,
         rid: &ir::RegisterId,
         dtype: &ir::Dtype,
-        next_offset: &mut i32,
-    ) -> i32 {
-        if let Some(&offset) = self.stack_map.get(rid) {
-            println!("already exist rid: {}", rid);
-            offset
-        } else {
-            let old_next_offset = *next_offset;
-            let _unused = self.stack_map.insert(*rid, *next_offset);
-            let offset = get_dtype_size(dtype);
-
-            println!(
-                "insert rid {} next_offset {} offset {} dtype {}",
-                rid, next_offset, offset, dtype
-            );
-            *next_offset += offset;
-            println!("next_offset {}", next_offset);
-            old_next_offset
+        asm_instrs: &mut Vec<asm::Instruction>,
+    ) {
+        if let Some(Loc::Reg(reg)) = self.stack_map.get(rid) {
+            let off = self.next_stack_offset;
+            asm_instrs.push(asm::Instruction::SType {
+                instr: asm::SType::store(dtype.clone()),
+                rs1: asm::Register::Sp,
+                rs2: *reg,
+                imm: asm::Immediate::Value(off as u64),
+            });
+            let _ = self.stack_map.insert(*rid, Loc::Stack(off));
+            self.next_stack_offset += get_dtype_size(dtype);
         }
     }
 }
@@ -273,7 +315,7 @@ impl Asmgen {
     fn translate_function_placeholder_handler(&mut self, asm_blocks: &mut [asm::Block]) {
         // prelogue, epilogue 둘 다 placeholder를 가지고 있음
 
-        add_padding(&mut self.next_stack_offset);
+        add_padding(&mut self.stack_allocator.next_stack_offset);
 
         // 6️⃣ 마지막에 bid_init block의 sp placeholder patch (필수)
         if let Some(block_init) = asm_blocks.first_mut() {
@@ -284,10 +326,10 @@ impl Asmgen {
                 imm,
             }) = block_init.instructions.first_mut()
             {
-                *imm = asm::Immediate::Value((-self.next_stack_offset) as u64);
+                *imm = asm::Immediate::Value((-self.stack_allocator.next_stack_offset) as u64);
                 println!(
                     "Patched initial sp offset to {}",
-                    (-self.next_stack_offset) as u64
+                    (-self.stack_allocator.next_stack_offset) as u64
                 );
             }
             for instr in block_init.instructions.iter_mut() {
@@ -299,7 +341,7 @@ impl Asmgen {
                         imm,
                     } => {
                         // Prologue용 s0 설정 patch
-                        *imm = asm::Immediate::Value(self.next_stack_offset as u64);
+                        *imm = asm::Immediate::Value(self.stack_allocator.next_stack_offset as u64);
                     }
                     _ => {
                         // panic!("not yet implemented");
@@ -308,7 +350,7 @@ impl Asmgen {
                 }
             }
         }
-        let total_offset = (self.next_stack_offset) as u64;
+        let total_offset = (self.stack_allocator.next_stack_offset) as u64;
 
         // 첫 instruction 제외 나머지 instruction만 순회
         for block in asm_blocks.iter_mut() {
@@ -359,9 +401,9 @@ impl Asmgen {
             instr: asm::SType::Store(asm::DataSize::Double),
             rs1: asm::Register::Sp,
             rs2: asm::Register::S0,
-            imm: asm::Immediate::Value(self.next_stack_offset as u64),
+            imm: asm::Immediate::Value(self.stack_allocator.next_stack_offset as u64),
         });
-        self.next_stack_offset += 8;
+        self.stack_allocator.next_stack_offset += 8;
 
         if call_flag {
             // sw ra,8(sp)
@@ -369,25 +411,25 @@ impl Asmgen {
                 instr: asm::SType::Store(asm::DataSize::Double),
                 rs1: asm::Register::Sp,
                 rs2: asm::Register::Ra,
-                imm: asm::Immediate::Value(self.next_stack_offset as u64),
+                imm: asm::Immediate::Value(self.stack_allocator.next_stack_offset as u64),
             });
-            self.next_stack_offset += 8;
+            self.stack_allocator.next_stack_offset += 8;
 
             // sw s1, 16(sp)
             asm_block_instrs.push(asm::Instruction::SType {
                 instr: asm::SType::Store(asm::DataSize::Double),
                 rs1: asm::Register::Sp,
                 rs2: asm::Register::S1,
-                imm: asm::Immediate::Value(self.next_stack_offset as u64),
+                imm: asm::Immediate::Value(self.stack_allocator.next_stack_offset as u64),
             });
-            self.next_stack_offset += 8;
+            self.stack_allocator.next_stack_offset += 8;
         }
 
         asm_block_instrs.push(asm::Instruction::IType {
             instr: asm::IType::Addi(asm::DataSize::Double),
             rd: asm::Register::S0,
             rs1: asm::Register::Sp,
-            imm: asm::Immediate::Value(self.next_stack_offset as u64), // placeholder
+            imm: asm::Immediate::Value(self.stack_allocator.next_stack_offset as u64), // placeholder
         });
 
         // allocations
@@ -397,20 +439,22 @@ impl Asmgen {
         let mut ptr_indicator_offsets = Vec::new();
         for (i, dtype) in allocations.iter().enumerate() {
             let local_rid = ir::RegisterId::local(i);
-            ptr_indicator_offsets.push((local_rid, dtype.deref(), self.next_stack_offset));
+            ptr_indicator_offsets.push((
+                local_rid,
+                dtype.deref(),
+                self.stack_allocator.next_stack_offset,
+            ));
 
-            self.next_stack_offset += get_dtype_size(dtype);
+            self.stack_allocator.next_stack_offset += get_dtype_size(dtype);
         }
-        add_padding(&mut self.next_stack_offset);
+        add_padding(&mut self.stack_allocator.next_stack_offset);
 
         for (local_rid, dtype, ptr_indicator_offset) in ptr_indicator_offsets {
             let ptr_dtype = ir::Dtype::pointer(dtype.clone());
 
-            let offset = self.stack_allocator.allocate_stack_slot(
-                &local_rid,
-                &ptr_dtype,
-                &mut self.next_stack_offset,
-            );
+            let offset = self
+                .stack_allocator
+                .allocate_stack_slot(&local_rid, &ptr_dtype);
 
             asm_block_instrs.push(asm::Instruction::IType {
                 instr: asm::IType::Addi(asm::DataSize::Double),
@@ -427,40 +471,43 @@ impl Asmgen {
             });
         }
 
-        // phinodes
         let mut caller_offset = 0;
-        println!(
-            "translate_function_prelogue | phinodes {:?}",
-            block.phinodes
-        );
         for (i, dtype) in block.phinodes.iter().enumerate() {
-            let phinode_rid = ir::RegisterId::arg(*bid, i);
-            let offset = self.stack_allocator.allocate_stack_slot(
-                &phinode_rid,
-                dtype.deref(),
-                &mut self.next_stack_offset,
-            );
+            let rid = ir::RegisterId::arg(*bid, i);
+            let slot_off = self
+                .stack_allocator
+                .allocate_stack_slot(&rid, dtype.deref());
 
-            asm_block_instrs.push(asm::Instruction::IType {
-                instr: asm::IType::Load {
-                    data_size: asm::DataSize::from_dtype(dtype.deref()),
-                    is_signed: true,
-                },
-                rd: asm::Register::T0,
-                rs1: asm::Register::S1,
-                imm: asm::Immediate::Value(caller_offset as u64),
-            });
-            asm_block_instrs.push(asm::Instruction::SType {
-                instr: asm::SType::store(dtype.deref().clone()),
-                rs1: asm::Register::Sp,
-                rs2: asm::Register::T0,
-                imm: asm::Immediate::Value(offset as u64),
-            }); // store dst rs2
-
-            caller_offset += get_dtype_size(dtype.deref());
+            if i < 8 {
+                // a<i> 값을 바로 스택에 복사
+                asm_block_instrs.push(asm::Instruction::SType {
+                    instr: asm::SType::store(dtype.deref().clone()),
+                    rs1: asm::Register::Sp,
+                    rs2: asm::Register::a(i),
+                    imm: asm::Immediate::Value(slot_off as u64),
+                });
+            } else {
+                // 8번째 이후는 호출자가 S1 에 남겨둔 영역에서 load (기존 코드)
+                asm_block_instrs.push(asm::Instruction::IType {
+                    instr: asm::IType::Load {
+                        data_size: asm::DataSize::from_dtype(dtype.deref()),
+                        is_signed: true,
+                    },
+                    rd: asm::Register::T0,
+                    rs1: asm::Register::S1,
+                    imm: asm::Immediate::Value(caller_offset as u64),
+                });
+                asm_block_instrs.push(asm::Instruction::SType {
+                    instr: asm::SType::store(dtype.deref().clone()),
+                    rs1: asm::Register::Sp,
+                    rs2: asm::Register::T0,
+                    imm: asm::Immediate::Value(slot_off as u64),
+                });
+                caller_offset += get_dtype_size(dtype.deref());
+            }
         }
 
-        add_padding(&mut self.next_stack_offset);
+        add_padding(&mut self.stack_allocator.next_stack_offset);
     }
 
     // 원하는 reg (rd)에 우리가 ir::Operand값을 넣어주기
@@ -475,11 +522,8 @@ impl Asmgen {
         match &operand {
             ir::Operand::Register { rid, dtype } => {
                 // 여기서는 resuse 하는 상황
-                let offset = self.stack_allocator.allocate_stack_slot(
-                    rid,
-                    dtype,
-                    &mut self.next_stack_offset,
-                );
+                let offset = self.stack_allocator.allocate_stack_slot(rid, dtype);
+                println!("translate_operand | offset {}", offset);
                 asm_block_instrs.push(asm::Instruction::IType {
                     instr: asm::IType::load(operand.dtype()),
                     rd,
@@ -513,7 +557,9 @@ impl Asmgen {
                             imm: *value as u64,
                         }));
                     }
-                    _ => {}
+                    _ => {
+                        println!("TODO");
+                    }
                 }
             }
         }
@@ -552,6 +598,7 @@ impl Asmgen {
                 }));
             }
             ir::BlockExit::Return { value } => {
+                // add_padding(&mut self.stack_allocator.next_stack_offset);
                 println!("translate_functino_epilogue | value {}", value);
 
                 self.translate_operand(value.clone(), asm::Register::A0, asm_block_instrs);
@@ -680,12 +727,30 @@ impl Asmgen {
                     let pseudo =
                         asm::Pseudo::neg(dtype.clone(), asm::Register::T0, asm::Register::T0);
                     asm_block_instrs.push(asm::Instruction::Pseudo(pseudo));
-                    let offset = self.stack_allocator.allocate_stack_slot(
-                        &dst_rid,
-                        dtype,
-                        &mut self.next_stack_offset,
-                    );
-                    add_padding(&mut self.next_stack_offset);
+                    let offset = self.stack_allocator.allocate_stack_slot(&dst_rid, dtype);
+                    println!("unaryop offset {}", offset);
+                    add_padding(&mut self.stack_allocator.next_stack_offset);
+                    asm_block_instrs.push(asm::Instruction::SType {
+                        instr: asm::SType::store(dtype.clone()),
+                        rs1: asm::Register::Sp,
+                        rs2: asm::Register::T0,
+                        imm: asm::Immediate::Value(offset as u64),
+                    });
+                }
+                ast::UnaryOperator::Negate => {
+                    // operand를 T0에 옮긴다
+                    self.translate_operand(operand.clone(), asm::Register::T0, asm_block_instrs);
+
+                    // T0이 0이면 T0 ← 1, 아니면 T0 ← 0
+                    asm_block_instrs.push(asm::Instruction::Pseudo(asm::Pseudo::Seqz {
+                        rd: asm::Register::T0,
+                        rs: asm::Register::T0,
+                    }));
+                    // 스택 슬롯 할당 및 저장
+                    let offset = self.stack_allocator.allocate_stack_slot(&dst_rid, dtype);
+                    println!("unaryop negate offset {}", offset);
+                    add_padding(&mut self.stack_allocator.next_stack_offset);
+
                     asm_block_instrs.push(asm::Instruction::SType {
                         instr: asm::SType::store(dtype.clone()),
                         rs1: asm::Register::Sp,
@@ -694,7 +759,7 @@ impl Asmgen {
                     });
                 }
                 _ => {
-                    println!();
+                    println!("TODO unaryop {:?}", op);
                 }
             },
             ir::Instruction::BinOp {
@@ -720,12 +785,8 @@ impl Asmgen {
 
                     println!("\n===== binop alloc =====\n");
                     // dst_rid에 대해서 T0를 저장해야 함
-                    let offset = self.stack_allocator.allocate_stack_slot(
-                        &dst_rid,
-                        dtype,
-                        &mut self.next_stack_offset,
-                    );
-                    add_padding(&mut self.next_stack_offset);
+                    let offset = self.stack_allocator.allocate_stack_slot(&dst_rid, dtype);
+                    add_padding(&mut self.stack_allocator.next_stack_offset);
                     println!("\n=======================\n");
 
                     // // binop test
@@ -766,12 +827,8 @@ impl Asmgen {
 
                         println!("\n===== binop alloc =====\n");
                         // dst_rid에 대해서 T0를 저장해야 함
-                        let offset = self.stack_allocator.allocate_stack_slot(
-                            &dst_rid,
-                            dtype,
-                            &mut self.next_stack_offset,
-                        );
-                        add_padding(&mut self.next_stack_offset);
+                        let offset = self.stack_allocator.allocate_stack_slot(&dst_rid, dtype);
+                        add_padding(&mut self.stack_allocator.next_stack_offset);
                         println!("\n=======================\n");
 
                         asm_block_instrs.push(asm::Instruction::SType {
@@ -798,12 +855,8 @@ impl Asmgen {
                         }));
 
                         // 3) 결과를 스택에 저장
-                        let offset = self.stack_allocator.allocate_stack_slot(
-                            &dst_rid,
-                            dtype,
-                            &mut self.next_stack_offset,
-                        );
-                        add_padding(&mut self.next_stack_offset);
+                        let offset = self.stack_allocator.allocate_stack_slot(&dst_rid, dtype);
+                        add_padding(&mut self.stack_allocator.next_stack_offset);
 
                         asm_block_instrs.push(asm::Instruction::SType {
                             instr: asm::SType::store(dtype.clone()),
@@ -821,12 +874,8 @@ impl Asmgen {
                             rs2: Some(asm::Register::T2),
                         });
                         // dst_rid에 대해서 T0를 저장해야 함
-                        let offset = self.stack_allocator.allocate_stack_slot(
-                            &dst_rid,
-                            dtype,
-                            &mut self.next_stack_offset,
-                        );
-                        add_padding(&mut self.next_stack_offset);
+                        let offset = self.stack_allocator.allocate_stack_slot(&dst_rid, dtype);
+                        add_padding(&mut self.stack_allocator.next_stack_offset);
 
                         asm_block_instrs.push(asm::Instruction::SType {
                             instr: asm::SType::store(dtype.clone()),
@@ -844,12 +893,8 @@ impl Asmgen {
                             rs2: Some(asm::Register::T1),
                         });
                         // dst_rid에 대해서 T0를 저장해야 함
-                        let offset = self.stack_allocator.allocate_stack_slot(
-                            &dst_rid,
-                            dtype,
-                            &mut self.next_stack_offset,
-                        );
-                        add_padding(&mut self.next_stack_offset);
+                        let offset = self.stack_allocator.allocate_stack_slot(&dst_rid, dtype);
+                        add_padding(&mut self.stack_allocator.next_stack_offset);
 
                         asm_block_instrs.push(asm::Instruction::SType {
                             instr: asm::SType::store(dtype.clone()),
@@ -881,12 +926,8 @@ impl Asmgen {
                         }));
 
                         // 4. dst_rid 저장
-                        let offset = self.stack_allocator.allocate_stack_slot(
-                            &dst_rid,
-                            dtype,
-                            &mut self.next_stack_offset,
-                        );
-                        add_padding(&mut self.next_stack_offset);
+                        let offset = self.stack_allocator.allocate_stack_slot(&dst_rid, dtype);
+                        add_padding(&mut self.stack_allocator.next_stack_offset);
 
                         asm_block_instrs.push(asm::Instruction::SType {
                             instr: asm::SType::store(dtype.clone()),
@@ -909,11 +950,9 @@ impl Asmgen {
                 });
 
                 // dst_rid에 대해서 T0를 저장해야 함
-                let offset = self.stack_allocator.allocate_stack_slot(
-                    &dst_rid,
-                    &ptr_inner_dtype,
-                    &mut self.next_stack_offset,
-                );
+                let offset = self
+                    .stack_allocator
+                    .allocate_stack_slot(&dst_rid, &ptr_inner_dtype);
 
                 asm_block_instrs.push(asm::Instruction::SType {
                     instr: asm::SType::store(ptr_inner_dtype.clone()),
@@ -922,7 +961,7 @@ impl Asmgen {
                     imm: asm::Immediate::Value(offset as u64),
                 });
 
-                add_padding(&mut self.next_stack_offset);
+                add_padding(&mut self.stack_allocator.next_stack_offset);
             }
 
             ir::Instruction::Store { ptr, value } => {
@@ -946,30 +985,26 @@ impl Asmgen {
             } => {
                 println!(
                     "translate_function_instruction | before ret | next_stack_offset {}",
-                    self.next_stack_offset
+                    self.stack_allocator.next_stack_offset
                 );
 
-                add_padding(&mut self.next_stack_offset);
+                add_padding(&mut self.stack_allocator.next_stack_offset);
 
                 // dst_rid에 대해서 T0를 저장해야 함
-                let ret_offset = self.stack_allocator.allocate_stack_slot(
-                    &dst_rid,
-                    ret,
-                    &mut self.next_stack_offset,
-                );
+                let ret_offset = self.stack_allocator.allocate_stack_slot(&dst_rid, ret);
 
-                add_padding(&mut self.next_stack_offset);
+                add_padding(&mut self.stack_allocator.next_stack_offset);
 
                 println!(
                     "translate_function_instruction | after ret | next_stack_offset {}",
-                    self.next_stack_offset
+                    self.stack_allocator.next_stack_offset
                 );
 
                 asm_block_instrs.push(asm::Instruction::IType {
                     instr: asm::IType::Addi(asm::DataSize::Double),
                     rd: asm::Register::S1,
                     rs1: asm::Register::Sp,
-                    imm: asm::Immediate::Value(self.next_stack_offset as u64),
+                    imm: asm::Immediate::Value(self.stack_allocator.next_stack_offset as u64),
                 }); // 일단 arg 초반 시작부터 보는 거여서 맞기는 함
 
                 // 인자들을 stack에 저장
@@ -977,18 +1012,36 @@ impl Asmgen {
                     // translate_operand는 교환자임, 교환이 아닌 경우, 새로운 것이 들어왔을 경우??
                     self.translate_operand(arg.clone(), asm::Register::T0, asm_block_instrs);
 
-                    asm_block_instrs.push(asm::Instruction::SType {
-                        instr: asm::SType::store(arg.dtype()),
-                        rs1: asm::Register::Sp,
-                        rs2: asm::Register::T0,
-                        imm: asm::Immediate::Value(self.next_stack_offset as u64),
-                    });
-                    self.next_stack_offset += get_dtype_size(&arg.dtype());
+                    // asm_block_instrs.push(asm::Instruction::SType {
+                    //     instr: asm::SType::store(arg.dtype()),
+                    //     rs1: asm::Register::Sp,
+                    //     rs2: asm::Register::T0,
+                    //     imm: asm::Immediate::Value(self.stack_allocator.next_stack_offset as u64),
+                    // });
+                    // self.stack_allocator.next_stack_offset += get_dtype_size(&arg.dtype());
+                    if i < 8 {
+                        // a<i> ← T0
+                        asm_block_instrs.push(asm::Instruction::Pseudo(asm::Pseudo::Mv {
+                            rd: asm::Register::a(i),
+                            rs: asm::Register::T0,
+                        }));
+                    } else {
+                        // 8번째 이후는 스택 spill (지금 쓰고 있는 코드 재사용)
+                        asm_block_instrs.push(asm::Instruction::SType {
+                            instr: asm::SType::store(arg.dtype()),
+                            rs1: asm::Register::Sp,
+                            rs2: asm::Register::T0,
+                            imm: asm::Immediate::Value(
+                                self.stack_allocator.next_stack_offset as u64,
+                            ),
+                        });
+                        self.stack_allocator.next_stack_offset += get_dtype_size(&arg.dtype());
+                    }
                 }
-                add_padding(&mut self.next_stack_offset);
+                add_padding(&mut self.stack_allocator.next_stack_offset);
                 println!(
                     "translate_function_instruction next_stack_offset {}",
-                    self.next_stack_offset
+                    self.stack_allocator.next_stack_offset
                 );
 
                 // call 실행
@@ -996,7 +1049,7 @@ impl Asmgen {
                     offset: asm::Label(call_name.clone()),
                 }));
 
-                add_padding(&mut self.next_stack_offset);
+                add_padding(&mut self.stack_allocator.next_stack_offset);
             }
             ir::Instruction::Call {
                 callee: ir::Operand::Register { rid, dtype },
@@ -1009,30 +1062,28 @@ impl Asmgen {
                 };
                 println!(
                     "translate_function_instruction | before ret | next_stack_offset {}",
-                    self.next_stack_offset
+                    self.stack_allocator.next_stack_offset
                 );
 
-                add_padding(&mut self.next_stack_offset);
+                add_padding(&mut self.stack_allocator.next_stack_offset);
 
                 // dst_rid에 대해서 T0를 저장해야 함
-                let ret_offset = self.stack_allocator.allocate_stack_slot(
-                    &dst_rid,
-                    return_type,
-                    &mut self.next_stack_offset,
-                );
+                let ret_offset = self
+                    .stack_allocator
+                    .allocate_stack_slot(&dst_rid, return_type);
 
-                add_padding(&mut self.next_stack_offset);
+                add_padding(&mut self.stack_allocator.next_stack_offset);
 
                 println!(
                     "translate_function_instruction | after ret | next_stack_offset {}",
-                    self.next_stack_offset
+                    self.stack_allocator.next_stack_offset
                 );
 
                 asm_block_instrs.push(asm::Instruction::IType {
                     instr: asm::IType::Addi(asm::DataSize::Double),
                     rd: asm::Register::S1,
                     rs1: asm::Register::Sp,
-                    imm: asm::Immediate::Value(self.next_stack_offset as u64),
+                    imm: asm::Immediate::Value(self.stack_allocator.next_stack_offset as u64),
                 }); // 일단 arg 초반 시작부터 보는 거여서 맞기는 함
 
                 // 인자들을 stack에 저장
@@ -1040,18 +1091,37 @@ impl Asmgen {
                     // translate_operand는 교환자임, 교환이 아닌 경우, 새로운 것이 들어왔을 경우??
                     self.translate_operand(arg.clone(), asm::Register::T0, asm_block_instrs);
 
-                    asm_block_instrs.push(asm::Instruction::SType {
-                        instr: asm::SType::store(arg.dtype()),
-                        rs1: asm::Register::Sp,
-                        rs2: asm::Register::T0,
-                        imm: asm::Immediate::Value(self.next_stack_offset as u64),
-                    });
-                    self.next_stack_offset += get_dtype_size(&arg.dtype());
+                    // asm_block_instrs.push(asm::Instruction::SType {
+                    //     instr: asm::SType::store(arg.dtype()),
+                    //     rs1: asm::Register::Sp,
+                    //     rs2: asm::Register::T0,
+                    //     imm: asm::Immediate::Value(self.stack_allocator.next_stack_offset as u64),
+                    // });
+                    // self.stack_allocator.next_stack_offset += get_dtype_size(&arg.dtype());
+
+                    if i < 8 {
+                        // a<i> ← T0
+                        asm_block_instrs.push(asm::Instruction::Pseudo(asm::Pseudo::Mv {
+                            rd: asm::Register::a(i),
+                            rs: asm::Register::T0,
+                        }));
+                    } else {
+                        // 8번째 이후는 스택 spill (지금 쓰고 있는 코드 재사용)
+                        asm_block_instrs.push(asm::Instruction::SType {
+                            instr: asm::SType::store(arg.dtype()),
+                            rs1: asm::Register::Sp,
+                            rs2: asm::Register::T0,
+                            imm: asm::Immediate::Value(
+                                self.stack_allocator.next_stack_offset as u64,
+                            ),
+                        });
+                        self.stack_allocator.next_stack_offset += get_dtype_size(&arg.dtype());
+                    }
                 }
-                add_padding(&mut self.next_stack_offset);
+                add_padding(&mut self.stack_allocator.next_stack_offset);
                 println!(
                     "translate_function_instruction next_stack_offset {}",
-                    self.next_stack_offset
+                    self.stack_allocator.next_stack_offset
                 );
                 self.translate_operand(callee, asm::Register::T0, asm_block_instrs);
 
@@ -1060,7 +1130,7 @@ impl Asmgen {
                     rs: asm::Register::T0,
                 }));
 
-                add_padding(&mut self.next_stack_offset);
+                add_padding(&mut self.stack_allocator.next_stack_offset);
             }
             ir::Instruction::TypeCast {
                 value,
@@ -1068,11 +1138,9 @@ impl Asmgen {
             } => {
                 self.translate_operand(value.clone(), asm::Register::T0, asm_block_instrs);
                 // Load then 상황
-                let offset = self.stack_allocator.allocate_stack_slot(
-                    &dst_rid,
-                    target_dtype,
-                    &mut self.next_stack_offset,
-                );
+                let offset = self
+                    .stack_allocator
+                    .allocate_stack_slot(&dst_rid, target_dtype);
 
                 asm_block_instrs.push(asm::Instruction::SType {
                     instr: asm::SType::store(target_dtype.clone()),
@@ -1097,7 +1165,7 @@ impl Asmgen {
         ra : +16
         s0 : +8
         */
-        self.next_stack_offset = 0;
+        self.stack_allocator.next_stack_offset = 0;
         self.stack_allocator.stack_map.clear();
         let mut asm_blocks: Vec<asm::Block> = vec![];
 
@@ -1141,7 +1209,7 @@ impl Asmgen {
             println!("======== bid {} =========", bid);
             println!("[DEBUG] stack_map = {{");
             for (operand, offset) in &self.stack_allocator.stack_map {
-                println!("  {:?} => {}", operand, offset);
+                println!("  {:?} => {:?}", operand, offset);
             }
             println!("}}");
             println!("=========================");
@@ -1151,6 +1219,22 @@ impl Asmgen {
         // self.translate_function_divider_for_addi(&mut asm_blocks);
 
         asm::Function::new(asm_blocks)
+    }
+}
+
+impl asm::Register {
+    /// 0‥7 → a0‥a7
+    pub fn a(i: usize) -> Self {
+        [
+            asm::Register::A0,
+            asm::Register::A1,
+            asm::Register::A2,
+            asm::Register::A3,
+            asm::Register::A4,
+            asm::Register::A5,
+            asm::Register::A6,
+            asm::Register::A7,
+        ][i]
     }
 }
 
