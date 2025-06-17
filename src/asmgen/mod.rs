@@ -80,31 +80,6 @@ impl StackAllocator {
         }
     }
 
-    // fn allocate_stack_slot(
-    //     // 이것을 하게 되면 내가 추가적으로 stack을 늘릴 필요x 자동으로 늘려줌
-    //     &mut self,
-    //     rid: &ir::RegisterId,
-    //     dtype: &ir::Dtype,
-    //     next_offset: &mut i32,
-    // ) -> i32 {
-    //     if let Some(&offset) = self.stack_map.get(rid) {
-    //         println!("already exist rid: {}", rid);
-    //         offset
-    //     } else {
-    //         let old_next_offset = *next_offset;
-    //         let _unused = self.stack_map.insert(*rid, *next_offset);
-    //         let offset = get_dtype_size(dtype);
-
-    //         println!(
-    //             "insert rid {} next_offset {} offset {} dtype {}",
-    //             rid, next_offset, offset, dtype
-    //         );
-    //         *next_offset += offset;
-    //         println!("next_offset {}", next_offset);
-    //         old_next_offset
-    //     }
-    // }
-
     fn allocate_stack_slot(&mut self, rid: &ir::RegisterId, dtype: &ir::Dtype) -> i32 {
         println!("allocat_stack_slot {}", self.next_stack_offset);
 
@@ -281,7 +256,100 @@ fn split_large_addi(rd: asm::Register, rs: asm::Register, imm64: i64) -> Vec<asm
     seq
 }
 
+fn split_large_memory_offset(instr: asm::Instruction) -> Option<Vec<asm::Instruction>> {
+    match instr {
+        // --- S-Type: store t0, offset(sp)
+        asm::Instruction::SType {
+            instr: stype,
+            rs1,
+            rs2,
+            imm: asm::Immediate::Value(imm),
+        } => {
+            let simm = imm as i64;
+            if !(-2048..=2047).contains(&simm) {
+                Some(vec![
+                    asm::Instruction::Pseudo(asm::Pseudo::Li {
+                        rd: asm::Register::T4,
+                        imm,
+                    }),
+                    asm::Instruction::RType {
+                        instr: asm::RType::Add(asm::DataSize::Double),
+                        rd: asm::Register::T4,
+                        rs1,
+                        rs2: Some(asm::Register::T4),
+                    },
+                    asm::Instruction::SType {
+                        instr: stype,
+                        rs1: asm::Register::T4,
+                        rs2,
+                        imm: asm::Immediate::Value(0),
+                    },
+                ])
+            } else {
+                None
+            }
+        }
+
+        // --- I-Type: load t0, offset(sp)
+        asm::Instruction::IType {
+            instr:
+                asm::IType::Load {
+                    data_size,
+                    is_signed,
+                },
+            rd,
+            rs1,
+            imm: asm::Immediate::Value(imm),
+        } => {
+            let simm = imm as i64;
+            if !(-2048..=2047).contains(&simm) {
+                Some(vec![
+                    asm::Instruction::Pseudo(asm::Pseudo::Li {
+                        rd: asm::Register::T4,
+                        imm,
+                    }),
+                    asm::Instruction::RType {
+                        instr: asm::RType::Add(asm::DataSize::Double),
+                        rd: asm::Register::T4,
+                        rs1,
+                        rs2: Some(asm::Register::T4),
+                    },
+                    asm::Instruction::IType {
+                        instr: asm::IType::Load {
+                            data_size,
+                            is_signed,
+                        },
+                        rd,
+                        rs1: asm::Register::T4,
+                        imm: asm::Immediate::Value(0),
+                    },
+                ])
+            } else {
+                None
+            }
+        }
+
+        _ => None,
+    }
+}
+
 impl Asmgen {
+    fn translate_function_divider_for_memory_offset(&mut self, asm_blocks: &mut [asm::Block]) {
+        for block in asm_blocks.iter_mut() {
+            let mut new_instrs = Vec::with_capacity(block.instructions.len());
+
+            for instr in block.instructions.drain(..) {
+                if let Some(mut expanded) = split_large_memory_offset(instr.clone()) {
+                    new_instrs.append(&mut expanded);
+                } else {
+                    new_instrs.push(instr);
+                }
+            }
+
+            block.instructions = new_instrs;
+        }
+    }
+
     fn translate_function_divider_for_addi(&mut self, asm_blocks: &mut [asm::Block]) {
         use asm::{DataSize, IType, Immediate, Instruction, Register};
 
@@ -471,6 +539,7 @@ impl Asmgen {
             });
         }
 
+        // 계속 allocate_stack_slot을 할 이유가 없음
         let mut caller_offset = 0;
         for (i, dtype) in block.phinodes.iter().enumerate() {
             let rid = ir::RegisterId::arg(*bid, i);
@@ -1216,7 +1285,8 @@ impl Asmgen {
         }
 
         self.translate_function_placeholder_handler(&mut asm_blocks);
-        // self.translate_function_divider_for_addi(&mut asm_blocks);
+        self.translate_function_divider_for_memory_offset(&mut asm_blocks);
+        self.translate_function_divider_for_addi(&mut asm_blocks);
 
         asm::Function::new(asm_blocks)
     }
