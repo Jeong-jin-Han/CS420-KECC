@@ -89,7 +89,10 @@ impl StackAllocator {
         dtype: &ir::Dtype,
         struct_map: &HashMap<String, Option<ir::Dtype>>,
     ) -> i32 {
-        println!("allocat_stack_slot {}", self.next_stack_offset);
+        println!(
+            "allocat_stack_slot | self.next_stack_offset {}",
+            self.next_stack_offset
+        );
 
         match self.stack_map.get(rid) {
             Some(Loc::Stack(off)) => *off,
@@ -957,6 +960,7 @@ impl Asmgen {
                     self.stack_allocator
                         .allocate_stack_slot(rid, dtype, &self.struct_list);
                 println!("translate_operand | offset {}", offset);
+                println!("trnaslate_opernad | laod | dtype {}", dtype);
                 asm_block_instrs.push(asm::Instruction::IType {
                     instr: asm::IType::load(operand.dtype()),
                     rd,
@@ -1740,45 +1744,189 @@ impl Asmgen {
             }
             ir::Instruction::Load { ptr } => {
                 let ptr_inner_dtype = ptr.dtype().get_pointer_inner().unwrap().clone();
-                let t0_reg = asm_register_instruction(0, &ptr_inner_dtype);
+                if !matches!(ptr_inner_dtype, ir::Dtype::Struct { .. }) {
+                    let t0_reg = asm_register_instruction(0, &ptr_inner_dtype);
 
-                self.translate_operand(ptr.clone(), asm::Register::T0, asm_block_instrs);
+                    self.translate_operand(ptr.clone(), asm::Register::T0, asm_block_instrs);
 
-                asm_block_instrs.push(asm::Instruction::IType {
-                    instr: asm::IType::load(ptr_inner_dtype.clone()),
-                    rd: t0_reg,
-                    rs1: asm::Register::T0,
-                    imm: asm::Immediate::Value(0),
-                });
+                    asm_block_instrs.push(asm::Instruction::IType {
+                        instr: asm::IType::load(ptr_inner_dtype.clone()),
+                        rd: t0_reg,
+                        rs1: asm::Register::T0,
+                        imm: asm::Immediate::Value(0),
+                    });
 
-                // dst_rid에 대해서 T0를 저장해야 함
-                let offset = self.stack_allocator.allocate_stack_slot(
-                    &dst_rid,
-                    &ptr_inner_dtype,
-                    &self.struct_list,
-                );
+                    // dst_rid에 대해서 T0를 저장해야 함
+                    let offset = self.stack_allocator.allocate_stack_slot(
+                        &dst_rid,
+                        &ptr_inner_dtype,
+                        &self.struct_list,
+                    );
 
-                asm_block_instrs.push(asm::Instruction::SType {
-                    instr: asm::SType::store(ptr_inner_dtype.clone()),
-                    rs1: asm::Register::Sp,
-                    rs2: t0_reg,
-                    imm: asm::Immediate::Value(offset as u64),
-                });
+                    asm_block_instrs.push(asm::Instruction::SType {
+                        instr: asm::SType::store(ptr_inner_dtype.clone()),
+                        rs1: asm::Register::Sp,
+                        rs2: t0_reg,
+                        imm: asm::Immediate::Value(offset as u64),
+                    });
 
-                add_padding(&mut self.stack_allocator.next_stack_offset);
+                    add_padding(&mut self.stack_allocator.next_stack_offset);
+                } else {
+                    // 이 부분 수정
+                    // 기존:
+                    let offset = self.stack_allocator.allocate_stack_slot(
+                        &dst_rid,
+                        &ptr_inner_dtype,
+                        &self.struct_list,
+                    );
+
+                    asm_block_instrs.push(asm::Instruction::SType {
+                        instr: asm::SType::store(ptr.dtype()),
+                        rs1: asm::Register::Sp,
+                        rs2: asm::Register::T0,
+                        imm: asm::Immediate::Value(offset as u64),
+                    });
+
+                    // ⛔ 위는 구조체를 값으로 load하려는 시도로, DataSize 변환 실패로 panic 발생
+
+                    // ✅ 아래처럼 "pointer forwarding"으로 바꾸세요
+                    // T0 ← SP + ptr_rid offset
+                    let ptr_offset = self.stack_allocator.allocate_stack_slot(
+                        ptr.get_register().unwrap().0,
+                        &ptr.dtype(),
+                        &self.struct_list,
+                    );
+
+                    let dst_offset = self.stack_allocator.allocate_stack_slot(
+                        &dst_rid,
+                        &ptr_inner_dtype, // not pointer!
+                        &self.struct_list,
+                    );
+
+                    asm_block_instrs.push(asm::Instruction::IType {
+                        instr: asm::IType::Load {
+                            data_size: asm::DataSize::Double, // pointer size
+                            is_signed: true,
+                        },
+                        rd: asm::Register::T0,
+                        rs1: asm::Register::Sp,
+                        imm: asm::Immediate::Value(ptr_offset as u64),
+                    });
+
+                    asm_block_instrs.push(asm::Instruction::SType {
+                        instr: asm::SType::Store(asm::DataSize::Double),
+                        rs1: asm::Register::Sp,
+                        rs2: asm::Register::T0,
+                        imm: asm::Immediate::Value(dst_offset as u64),
+                    });
+                }
             }
 
             ir::Instruction::Store { ptr, value } => {
-                self.translate_operand(ptr.clone(), asm::Register::T0, asm_block_instrs);
+                if !matches!(value.dtype(), ir::Dtype::Struct { .. }) {
+                    self.translate_operand(ptr.clone(), asm::Register::T0, asm_block_instrs);
 
-                let t1_reg = asm_register_instruction(1, &value.dtype());
-                self.translate_operand(value.clone(), t1_reg, asm_block_instrs);
-                asm_block_instrs.push(asm::Instruction::SType {
-                    instr: asm::SType::store(value.dtype()),
-                    rs1: asm::Register::T0,
-                    rs2: t1_reg,
-                    imm: asm::Immediate::Value(0),
-                });
+                    let t1_reg = asm_register_instruction(1, &value.dtype());
+                    self.translate_operand(value.clone(), t1_reg, asm_block_instrs);
+                    asm_block_instrs.push(asm::Instruction::SType {
+                        instr: asm::SType::store(value.dtype()),
+                        rs1: asm::Register::T0,
+                        rs2: t1_reg,
+                        imm: asm::Immediate::Value(0),
+                    });
+                } else {
+                    /* value : struct, ptr : sturct * */
+                    /* struct의 경우에는 둘 다 예외적으로 ptr */
+                    /* field 에 access 하는 방법 */
+
+                    /*
+                    일단 store하기 전의 load에서 그냥 바로 ptr 을 넣어주었기 때문에
+                    실제로 value의 type의 ptr버전이 value_rid -> Stack(offset)으로 맵핑되고 있는 상황
+
+
+                    지금 해야할 것은 두 개의 ptr pointer에 대해서 각각의 값을 field by field로 복사 붙여넣기 해주기
+
+
+                    for offse in offsets {
+                        load t0 ptr_rid
+
+                        load t1 value_rid
+                        load t1 offset(t1)
+
+                        store ptr: t0, value: t1
+                    }
+
+
+                    */
+                    if let Some((value_rid, value_dtype)) = value.get_register() {
+                        if let Some((ptr_rid, ptr_dtype)) = ptr.get_register() {
+                            let ptr_offset = self.stack_allocator.allocate_stack_slot(
+                                ptr_rid,
+                                ptr_dtype,
+                                &self.struct_list,
+                            );
+                            let value_offset = self.stack_allocator.allocate_stack_slot(
+                                value_rid,
+                                value_dtype,
+                                &self.struct_list,
+                            );
+
+                            // base pointer load
+                            asm_block_instrs.push(asm::Instruction::IType {
+                                instr: asm::IType::Load {
+                                    data_size: asm::DataSize::Double,
+                                    is_signed: true,
+                                },
+                                rd: asm::Register::T0, // dest ptr
+                                rs1: asm::Register::Sp,
+                                imm: asm::Immediate::Value(ptr_offset as u64),
+                            });
+
+                            asm_block_instrs.push(asm::Instruction::IType {
+                                instr: asm::IType::Load {
+                                    data_size: asm::DataSize::Double,
+                                    is_signed: true,
+                                },
+                                rd: asm::Register::T1, // src ptr
+                                rs1: asm::Register::Sp,
+                                imm: asm::Immediate::Value(value_offset as u64),
+                            });
+
+                            // flatten된 모든 필드들을 복사
+                            let flattened = flatten_struct_fields(value_dtype, &self.struct_list);
+                            for (field_dtype, offset) in flattened {
+                                let data_size = asm::DataSize::from_dtype(field_dtype);
+
+                                let is_signed = match field_dtype {
+                                    ir::Dtype::Int { is_signed, .. } => *is_signed,
+                                    _ => false, // 기본적으로 signed 아님
+                                };
+
+                                let t2_reg = asm_register_instruction(2, field_dtype);
+                                // let t1_reg = asm_register_instruction(1, field_dtype);
+
+                                // load t2, offset(t1)
+                                asm_block_instrs.push(asm::Instruction::IType {
+                                    instr: asm::IType::Load {
+                                        data_size,
+                                        is_signed,
+                                    },
+                                    rd: t2_reg,
+                                    rs1: asm::Register::T1,
+                                    imm: asm::Immediate::Value(offset as u64),
+                                });
+
+                                // store t2, offset(t0)
+                                asm_block_instrs.push(asm::Instruction::SType {
+                                    instr: asm::SType::Store(data_size),
+                                    rs1: asm::Register::T0,
+                                    rs2: t2_reg,
+                                    imm: asm::Immediate::Value(offset as u64),
+                                });
+                            }
+                        }
+                    }
+                }
             }
             ir::Instruction::Call {
                 callee:
@@ -2251,22 +2399,6 @@ impl Asmgen {
     }
 }
 
-// impl asm::Register {
-//     /// 0‥7 → a0‥a7
-//     pub fn a(i: usize) -> Self {
-//         [
-//             asm::Register::A0,
-//             asm::Register::A1,
-//             asm::Register::A2,
-//             asm::Register::A3,
-//             asm::Register::A4,
-//             asm::Register::A5,
-//             asm::Register::A6,
-//             asm::Register::A7,
-//         ][i]
-//     }
-// }
-
 impl asm::DataSize {
     pub fn from_dtype(dtype: &ir::Dtype) -> Self {
         match dtype {
@@ -2291,14 +2423,38 @@ impl asm::DataSize {
     }
 }
 
-fn get_dtype_size(dtype: &ir::Dtype, _struct_map: &HashMap<String, Option<ir::Dtype>>) -> i32 {
+// fn get_dtype_size(dtype: &ir::Dtype, _struct_map: &HashMap<String, Option<ir::Dtype>>) -> i32 {
+//     match dtype {
+//         ir::Dtype::Int { width, .. } => ((width + 7) / 8) as i32,
+//         ir::Dtype::Float { width, .. } => ((width + 7) / 8) as i32, // 예: float32 → 4, float64 → 8
+
+//         ir::Dtype::Pointer { inner, is_const } => 8,
+//         ir::Dtype::Unit { is_const } => 0,
+//         ir::Dtype::Array { inner, size } => get_dtype_size(inner, _struct_map) * (*size as i32),
+//         _ => panic!("Unsupported argument type: {:?}", dtype),
+//     }
+// }
+
+fn get_dtype_size(dtype: &ir::Dtype, struct_map: &HashMap<String, Option<ir::Dtype>>) -> i32 {
     match dtype {
         ir::Dtype::Int { width, .. } => ((width + 7) / 8) as i32,
-        ir::Dtype::Float { width, .. } => ((width + 7) / 8) as i32, // 예: float32 → 4, float64 → 8
-
-        ir::Dtype::Pointer { inner, is_const } => 8,
-        ir::Dtype::Unit { is_const } => 0,
-        ir::Dtype::Array { inner, size } => get_dtype_size(inner, _struct_map) * (*size as i32),
+        ir::Dtype::Float { width, .. } => ((width + 7) / 8) as i32,
+        ir::Dtype::Pointer { .. } => 8,
+        ir::Dtype::Unit { .. } => 0,
+        ir::Dtype::Array { inner, size } => get_dtype_size(inner, struct_map) * (*size as i32),
+        ir::Dtype::Struct {
+            name: Some(name), ..
+        } => {
+            if let Some(Some(ir::Dtype::Struct {
+                size_align_offsets: Some((size, _, _)),
+                ..
+            })) = struct_map.get(name)
+            {
+                *size as i32
+            } else {
+                panic!("Struct '{}' not found or missing size_align_offsets", name);
+            }
+        }
         _ => panic!("Unsupported argument type: {:?}", dtype),
     }
 }
@@ -2438,4 +2594,67 @@ impl asm::Label {
         let phi_id = phi_id.0;
         Self(format!(".{name}_L{id}_to_L_{phi_id}_fake"))
     }
+}
+
+// /// 완전한 struct 타입을 반환하는 도우미 함수
+// fn expand_struct_type<'a>(
+//     dtype: &'a ir::Dtype,
+//     struct_list: &'a HashMap<String, Option<ir::Dtype>>,
+// ) -> &'a ir::Dtype {
+//     match dtype {
+//         ir::Dtype::Struct {
+//             name: Some(name),
+//             fields: None,
+//             ..
+//         } => {
+//             let resolved = struct_list.get(name).unwrap();
+//             resolved.as_ref().unwrap()
+//         }
+//         _ => dtype,
+//     }
+// }
+
+fn flatten_struct_fields<'a>(
+    dtype: &'a ir::Dtype,
+    struct_list: &'a HashMap<String, Option<ir::Dtype>>,
+) -> Vec<(&'a ir::Dtype, usize)> {
+    fn helper<'a>(
+        dtype: &'a ir::Dtype,
+        base_offset: usize,
+        struct_list: &'a HashMap<String, Option<ir::Dtype>>,
+        acc: &mut Vec<(&'a ir::Dtype, usize)>,
+    ) {
+        match dtype {
+            ir::Dtype::Struct {
+                name: Some(name), ..
+            } => {
+                let Some(Some(struct_def)) = struct_list.get(name) else {
+                    panic!()
+                };
+                if let ir::Dtype::Struct {
+                    fields: Some(fields),
+                    size_align_offsets: Some((_, _, offsets)),
+                    ..
+                } = struct_def
+                {
+                    for (field, &offset) in fields.iter().zip(offsets) {
+                        helper(field.deref(), base_offset + offset, struct_list, acc);
+                    }
+                }
+            }
+            ir::Dtype::Array { inner, size } => {
+                let inner_size = get_dtype_size(inner, struct_list) as usize;
+                for i in 0..*size {
+                    helper(inner, base_offset + i * inner_size, struct_list, acc);
+                }
+            }
+            _ => {
+                acc.push((dtype, base_offset));
+            }
+        }
+    }
+
+    let mut result = vec![];
+    helper(dtype, 0, struct_list, &mut result);
+    result
 }
