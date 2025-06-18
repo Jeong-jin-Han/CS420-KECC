@@ -911,33 +911,36 @@ impl Asmgen {
             let arg_reg = asm_register_args(i, dtype);
             let t0_reg = asm_register_instruction(0, dtype);
 
-            if i < 8 {
-                // a<i> 값을 바로 스택에 복사
-                asm_block_instrs.push(asm::Instruction::SType {
-                    instr: asm::SType::store(dtype.deref().clone()),
-                    rs1: asm::Register::Sp,
-                    rs2: arg_reg,
-                    imm: asm::Immediate::Value(slot_off as u64),
-                });
-            } else {
-                // 8번째 이후는 호출자가 S1 에 남겨둔 영역에서 load (기존 코드)
+            println!("translate_function_prelogue | dtype {}", dtype.deref());
+            if !matches!(dtype.deref(), ir::Dtype::Struct { .. }) {
+                if i < 8 {
+                    // a<i> 값을 바로 스택에 복사
+                    asm_block_instrs.push(asm::Instruction::SType {
+                        instr: asm::SType::store(dtype.deref().clone()),
+                        rs1: asm::Register::Sp,
+                        rs2: arg_reg,
+                        imm: asm::Immediate::Value(slot_off as u64),
+                    });
+                } else {
+                    // 8번째 이후는 호출자가 S1 에 남겨둔 영역에서 load (기존 코드)
 
-                asm_block_instrs.push(asm::Instruction::IType {
-                    instr: asm::IType::Load {
-                        data_size: asm::DataSize::from_dtype(dtype.deref()),
-                        is_signed: true,
-                    },
-                    rd: t0_reg,
-                    rs1: asm::Register::S1,
-                    imm: asm::Immediate::Value(caller_offset as u64),
-                });
-                asm_block_instrs.push(asm::Instruction::SType {
-                    instr: asm::SType::store(dtype.deref().clone()),
-                    rs1: asm::Register::Sp,
-                    rs2: t0_reg,
-                    imm: asm::Immediate::Value(slot_off as u64),
-                });
-                caller_offset += get_dtype_size(dtype.deref(), &self.struct_list);
+                    asm_block_instrs.push(asm::Instruction::IType {
+                        instr: asm::IType::Load {
+                            data_size: asm::DataSize::from_dtype(dtype.deref()),
+                            is_signed: true,
+                        },
+                        rd: t0_reg,
+                        rs1: asm::Register::S1,
+                        imm: asm::Immediate::Value(caller_offset as u64),
+                    });
+                    asm_block_instrs.push(asm::Instruction::SType {
+                        instr: asm::SType::store(dtype.deref().clone()),
+                        rs1: asm::Register::Sp,
+                        rs2: t0_reg,
+                        imm: asm::Immediate::Value(slot_off as u64),
+                    });
+                    caller_offset += get_dtype_size(dtype.deref(), &self.struct_list);
+                }
             }
         }
 
@@ -1088,72 +1091,74 @@ impl Asmgen {
                 }));
             }
             ir::BlockExit::Return { value } => {
-                // add_padding(&mut self.stack_allocator.next_stack_offset);
-                println!("translate_functino_epilogue | value {}", value);
+                if !matches!(value.dtype(), ir::Dtype::Struct { .. }) {
+                    // add_padding(&mut self.stack_allocator.next_stack_offset);
+                    println!("translate_functino_epilogue | value {}", value);
 
-                let a0_reg = asm_register_args(0, &value.dtype());
-                // asm::Register::A0 -> a0_reg
+                    let a0_reg = asm_register_args(0, &value.dtype());
+                    // asm::Register::A0 -> a0_reg
 
-                self.translate_operand(value.clone(), a0_reg, asm_block_instrs);
+                    self.translate_operand(value.clone(), a0_reg, asm_block_instrs);
 
-                if call_flag {
+                    if call_flag {
+                        asm_block_instrs.push(asm::Instruction::IType {
+                            instr: asm::IType::Load {
+                                data_size: asm::DataSize::Double,
+                                is_signed: true,
+                            },
+                            rd: asm::Register::S1,
+                            rs1: asm::Register::Sp,
+                            imm: asm::Immediate::Value(16),
+                        });
+
+                        asm_block_instrs.push(asm::Instruction::IType {
+                            instr: asm::IType::Load {
+                                data_size: asm::DataSize::Double,
+                                is_signed: true,
+                            },
+                            rd: asm::Register::Ra,
+                            rs1: asm::Register::Sp,
+                            imm: asm::Immediate::Value(8),
+                        });
+                    }
+                    let ret_offset = get_dtype_size(&value.dtype(), &self.struct_list);
+                    if name != "main" && ret_offset != 0 {
+                        // rs2 rs1(imm)
+                        // asm_block_instrs.push(asm::Instruction::SType {
+                        //     instr: asm::SType::store(value.dtype()),
+                        //     rs1: asm::Register::S1,
+                        //     rs2: asm::Register::A0,
+                        //     imm: asm::Immediate::Value(-ret_offset as u64),
+                        // });
+                        asm_block_instrs.push(asm::Instruction::SType {
+                            instr: asm::SType::store(value.dtype()),
+                            rs1: asm::Register::S1,
+                            rs2: a0_reg,
+                            imm: asm::Immediate::Value((-8i64) as u64),
+                        });
+                    }
+
                     asm_block_instrs.push(asm::Instruction::IType {
                         instr: asm::IType::Load {
                             data_size: asm::DataSize::Double,
                             is_signed: true,
                         },
-                        rd: asm::Register::S1,
+                        rd: asm::Register::S0,
                         rs1: asm::Register::Sp,
-                        imm: asm::Immediate::Value(16),
+                        imm: asm::Immediate::Value(0),
                     });
 
+                    // addi sp, sp, MN
                     asm_block_instrs.push(asm::Instruction::IType {
-                        instr: asm::IType::Load {
-                            data_size: asm::DataSize::Double,
-                            is_signed: true,
-                        },
-                        rd: asm::Register::Ra,
+                        instr: asm::IType::Addi(asm::DataSize::Double),
+                        rd: asm::Register::Sp,
                         rs1: asm::Register::Sp,
-                        imm: asm::Immediate::Value(8),
+                        imm: asm::Immediate::Value(0), // placeholder
                     });
+
+                    // ret
+                    asm_block_instrs.push(asm::Instruction::Pseudo(asm::Pseudo::Ret));
                 }
-                let ret_offset = get_dtype_size(&value.dtype(), &self.struct_list);
-                if name != "main" && ret_offset != 0 {
-                    // rs2 rs1(imm)
-                    // asm_block_instrs.push(asm::Instruction::SType {
-                    //     instr: asm::SType::store(value.dtype()),
-                    //     rs1: asm::Register::S1,
-                    //     rs2: asm::Register::A0,
-                    //     imm: asm::Immediate::Value(-ret_offset as u64),
-                    // });
-                    asm_block_instrs.push(asm::Instruction::SType {
-                        instr: asm::SType::store(value.dtype()),
-                        rs1: asm::Register::S1,
-                        rs2: a0_reg,
-                        imm: asm::Immediate::Value((-8i64) as u64),
-                    });
-                }
-
-                asm_block_instrs.push(asm::Instruction::IType {
-                    instr: asm::IType::Load {
-                        data_size: asm::DataSize::Double,
-                        is_signed: true,
-                    },
-                    rd: asm::Register::S0,
-                    rs1: asm::Register::Sp,
-                    imm: asm::Immediate::Value(0),
-                });
-
-                // addi sp, sp, MN
-                asm_block_instrs.push(asm::Instruction::IType {
-                    instr: asm::IType::Addi(asm::DataSize::Double),
-                    rd: asm::Register::Sp,
-                    rs1: asm::Register::Sp,
-                    imm: asm::Immediate::Value(0), // placeholder
-                });
-
-                // ret
-                asm_block_instrs.push(asm::Instruction::Pseudo(asm::Pseudo::Ret));
             }
             ir::BlockExit::Unreachable => {
                 // No-op
@@ -1965,49 +1970,51 @@ impl Asmgen {
 
                 // 인자들을 stack에 저장
                 for (i, arg) in args.iter().enumerate() {
-                    // translate_operand는 교환자임, 교환이 아닌 경우, 새로운 것이 들어왔을 경우??
-                    let t0_reg = asm_register_instruction(0, &arg.dtype());
-                    let arg_reg = asm_register_args(i, &arg.dtype());
-                    // arg_reg -> a(i)
+                    if !matches!(arg.dtype(), ir::Dtype::Struct { .. }) {
+                        // translate_operand는 교환자임, 교환이 아닌 경우, 새로운 것이 들어왔을 경우??
+                        let t0_reg = asm_register_instruction(0, &arg.dtype());
+                        let arg_reg = asm_register_args(i, &arg.dtype());
+                        // arg_reg -> a(i)
 
-                    self.translate_operand(arg.clone(), t0_reg, asm_block_instrs);
+                        self.translate_operand(arg.clone(), t0_reg, asm_block_instrs);
 
-                    // asm_block_instrs.push(asm::Instruction::SType {
-                    //     instr: asm::SType::store(arg.dtype()),
-                    //     rs1: asm::Register::Sp,
-                    //     rs2: asm::Register::T0,
-                    //     imm: asm::Immediate::Value(self.stack_allocator.next_stack_offset as u64),
-                    // });
-                    // self.stack_allocator.next_stack_offset += get_dtype_size(&arg.dtype());
-                    if i < 8 {
-                        // a<i> ← T0
-                        let data_size = asm::DataSize::from_dtype(&arg.dtype());
-                        let pseudo = if t0_reg == asm::Register::T0 {
-                            asm::Pseudo::Mv {
-                                rd: arg_reg,
-                                rs: t0_reg,
-                            }
+                        // asm_block_instrs.push(asm::Instruction::SType {
+                        //     instr: asm::SType::store(arg.dtype()),
+                        //     rs1: asm::Register::Sp,
+                        //     rs2: asm::Register::T0,
+                        //     imm: asm::Immediate::Value(self.stack_allocator.next_stack_offset as u64),
+                        // });
+                        // self.stack_allocator.next_stack_offset += get_dtype_size(&arg.dtype());
+                        if i < 8 {
+                            // a<i> ← T0
+                            let data_size = asm::DataSize::from_dtype(&arg.dtype());
+                            let pseudo = if t0_reg == asm::Register::T0 {
+                                asm::Pseudo::Mv {
+                                    rd: arg_reg,
+                                    rs: t0_reg,
+                                }
+                            } else {
+                                asm::Pseudo::Fmv {
+                                    data_size,
+                                    rd: arg_reg,
+                                    rs: t0_reg,
+                                }
+                            };
+
+                            asm_block_instrs.push(asm::Instruction::Pseudo(pseudo));
                         } else {
-                            asm::Pseudo::Fmv {
-                                data_size,
-                                rd: arg_reg,
-                                rs: t0_reg,
-                            }
-                        };
-
-                        asm_block_instrs.push(asm::Instruction::Pseudo(pseudo));
-                    } else {
-                        // 8번째 이후는 스택 spill (지금 쓰고 있는 코드 재사용)
-                        asm_block_instrs.push(asm::Instruction::SType {
-                            instr: asm::SType::store(arg.dtype()),
-                            rs1: asm::Register::Sp,
-                            rs2: t0_reg,
-                            imm: asm::Immediate::Value(
-                                self.stack_allocator.next_stack_offset as u64,
-                            ),
-                        });
-                        self.stack_allocator.next_stack_offset +=
-                            get_dtype_size(&arg.dtype(), &self.struct_list);
+                            // 8번째 이후는 스택 spill (지금 쓰고 있는 코드 재사용)
+                            asm_block_instrs.push(asm::Instruction::SType {
+                                instr: asm::SType::store(arg.dtype()),
+                                rs1: asm::Register::Sp,
+                                rs2: t0_reg,
+                                imm: asm::Immediate::Value(
+                                    self.stack_allocator.next_stack_offset as u64,
+                                ),
+                            });
+                            self.stack_allocator.next_stack_offset +=
+                                get_dtype_size(&arg.dtype(), &self.struct_list);
+                        }
                     }
                 }
                 add_padding(&mut self.stack_allocator.next_stack_offset);
