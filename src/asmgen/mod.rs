@@ -3,6 +3,7 @@ use std::ops::Deref;
 
 use lang_c::ast::{self, FunctionDeclarator};
 
+use crate::asm::DataSize;
 use crate::ir::{HasDtype, JumpArg, Named};
 use crate::opt::opt_utils;
 use crate::{Translate, asm, ir};
@@ -167,10 +168,6 @@ impl Translate<ir::TranslationUnit> for Asmgen {
                     functions.push(asm::Section::new(header, func));
                 }
 
-                // ir::Declaration::Variable { dtype, initializer } => {
-                //     // 나중에 전역 변수 처리 로직 추가 가능
-                //     // variables.push(...);
-                // }
                 ir::Declaration::Variable { dtype, initializer } => {
                     let label = asm::Label(name.clone());
                     println!(
@@ -238,17 +235,92 @@ impl Translate<ir::TranslationUnit> for Asmgen {
 
                     println!("name {} init_value {}", name, init_value);
                     // .word, .quad 등 선
-                    let data_directive = match dtype {
-                        ir::Dtype::Int { width: 8, .. } => asm::Directive::Byte(init_value as u8),
-                        ir::Dtype::Int { width: 16, .. } => asm::Directive::Half(init_value as u16),
-                        ir::Dtype::Int { width: 32, .. } => asm::Directive::Word(init_value as u32),
-                        ir::Dtype::Int { width: 64, .. } => asm::Directive::Quad(init_value),
-                        ir::Dtype::Float { width: 32, .. } => {
-                            asm::Directive::Word(init_value as u32)
-                        }
-                        ir::Dtype::Float { width: 64, .. } => asm::Directive::Quad(init_value),
+                    let data_directives: Vec<asm::Directive> = match (&dtype, initializer) {
+                        // ✅ 배열 + 초기화 리스트
+                        (
+                            ir::Dtype::Array { inner, size },
+                            Some(ast::Initializer::List(init_list)),
+                        ) => {
+                            let mut directives = vec![];
 
-                        _ => panic!("Unsupported global var dtype: {:?}", dtype),
+                            for init in init_list {
+                                if let ast::Initializer::Expression(expr) =
+                                    &init.node.initializer.node
+                                {
+                                    if let Ok(constant) = ir::Constant::try_from(&expr.node) {
+                                        match constant {
+                                            ir::Constant::Int {
+                                                value, width: 32, ..
+                                            } => {
+                                                directives.push(asm::Directive::Word(value as u32));
+                                            }
+                                            ir::Constant::Int {
+                                                value, width: 64, ..
+                                            } => {
+                                                directives.push(asm::Directive::Quad(value as u64));
+                                            }
+                                            _ => {
+                                                panic!("Unsupported array constant: {:?}", constant)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // padding
+                            let element_size = get_dtype_size(inner);
+                            let total_size = get_dtype_size(dtype);
+                            let used_size = element_size * directives.len() as i32;
+                            let padding = total_size - used_size;
+                            if padding > 0 {
+                                directives.push(asm::Directive::Zero(padding as usize));
+                            }
+
+                            directives
+                        }
+
+                        // ✅ 배열이지만 초기값이 없는 경우 (.zero)
+                        (ir::Dtype::Array { .. }, _) => {
+                            vec![asm::Directive::Zero(get_dtype_size(dtype) as usize)]
+                        }
+
+                        // ✅ 기존 단일 값 처리 그대로 유지
+                        (_, _) => {
+                            let init_value: u64 = match init_value_opt {
+                                Some(ir::Constant::Int { value, .. }) => value as u64,
+                                Some(ir::Constant::Float { value, width }) => match width {
+                                    32 => {
+                                        let f: f32 = value.0 as f32;
+                                        f.to_bits() as u64
+                                    }
+                                    64 => value.0.to_bits(),
+                                    _ => panic!("Unsupported float width"),
+                                },
+                                _ => 0,
+                            };
+
+                            vec![match dtype {
+                                ir::Dtype::Int { width: 8, .. } => {
+                                    asm::Directive::Byte(init_value as u8)
+                                }
+                                ir::Dtype::Int { width: 16, .. } => {
+                                    asm::Directive::Half(init_value as u16)
+                                }
+                                ir::Dtype::Int { width: 32, .. } => {
+                                    asm::Directive::Word(init_value as u32)
+                                }
+                                ir::Dtype::Int { width: 64, .. } => {
+                                    asm::Directive::Quad(init_value)
+                                }
+                                ir::Dtype::Float { width: 32, .. } => {
+                                    asm::Directive::Word(init_value as u32)
+                                }
+                                ir::Dtype::Float { width: 64, .. } => {
+                                    asm::Directive::Quad(init_value)
+                                }
+                                _ => panic!("Unsupported global var dtype: {:?}", dtype),
+                            }]
+                        }
                     };
 
                     let header = vec![
@@ -257,7 +329,7 @@ impl Translate<ir::TranslationUnit> for Asmgen {
                         asm::Directive::Type(label.clone(), asm::SymbolType::Object),
                     ];
 
-                    let variable = asm::Variable::new(label, vec![data_directive]);
+                    let variable = asm::Variable::new(label, data_directives);
                     let section = asm::Section::new(header, variable);
                     variables.push(section);
                 }
@@ -1268,141 +1340,323 @@ impl Asmgen {
 
                     // }
                     ast::BinaryOperator::Equals => {
-                        println!("binop op {:?}", op);
-                        // xor t0,t1,t2   ; 두 피연산자 같으면 t0=0
-                        asm_block_instrs.push(asm::Instruction::RType {
-                            instr: asm::RType::Xor,
-                            rd: t0_reg,
-                            rs1: t1_reg,
-                            rs2: Some(t2_reg),
-                        });
-                        // seqz t0,t0      ; t0=1  (equal) / 0 (not equal)   ← pseudo-instr
-                        asm_block_instrs.push(asm::Instruction::Pseudo(asm::Pseudo::Seqz {
-                            rd: t0_reg,
-                            rs: t0_reg,
-                        }));
+                        if asm::Register::T1 == t1_reg {
+                            println!("binop op {:?}", op);
+                            // xor t0,t1,t2   ; 두 피연산자 같으면 t0=0
+                            asm_block_instrs.push(asm::Instruction::RType {
+                                instr: asm::RType::Xor,
+                                rd: t0_reg,
+                                rs1: t1_reg,
+                                rs2: Some(t2_reg),
+                            });
+                            // seqz t0,t0      ; t0=1  (equal) / 0 (not equal)   ← pseudo-instr
+                            asm_block_instrs.push(asm::Instruction::Pseudo(asm::Pseudo::Seqz {
+                                rd: t0_reg,
+                                rs: t0_reg,
+                            }));
 
-                        println!("\n===== binop alloc =====\n");
-                        // dst_rid에 대해서 T0를 저장해야 함
-                        let offset = self.stack_allocator.allocate_stack_slot(&dst_rid, dtype);
-                        add_padding(&mut self.stack_allocator.next_stack_offset);
-                        println!("\n=======================\n");
+                            println!("\n===== binop alloc =====\n");
+                            // dst_rid에 대해서 T0를 저장해야 함
+                            let offset = self.stack_allocator.allocate_stack_slot(&dst_rid, dtype);
+                            add_padding(&mut self.stack_allocator.next_stack_offset);
+                            println!("\n=======================\n");
 
-                        asm_block_instrs.push(asm::Instruction::SType {
-                            instr: asm::SType::store(dtype.clone()),
-                            rs1: asm::Register::Sp,
-                            rs2: t0_reg,
-                            imm: asm::Immediate::Value(offset as u64),
-                        });
+                            asm_block_instrs.push(asm::Instruction::SType {
+                                instr: asm::SType::store(dtype.clone()),
+                                rs1: asm::Register::Sp,
+                                rs2: t0_reg,
+                                imm: asm::Immediate::Value(offset as u64),
+                            });
+                        } else {
+                            // ===== float 처리 =====
+                            // feq.s or feq.d 사용
+                            asm_block_instrs.push(asm::Instruction::RType {
+                                instr: asm::RType::feq(lhs.dtype()),
+                                rd: asm::Register::T0, // 결과는 int이므로 정수 레지스터에
+                                rs1: t1_reg,
+                                rs2: Some(t2_reg),
+                            });
+
+                            let offset = self.stack_allocator.allocate_stack_slot(&dst_rid, dtype);
+                            add_padding(&mut self.stack_allocator.next_stack_offset);
+                            asm_block_instrs.push(asm::Instruction::SType {
+                                instr: asm::SType::store(dtype.clone()),
+                                rs1: asm::Register::Sp,
+                                rs2: asm::Register::T0, // 결과 저장은 T0
+                                imm: asm::Immediate::Value(offset as u64),
+                            });
+                        }
                     }
                     ast::BinaryOperator::NotEquals => {
-                        // 1) xor t0,t1,t2   ; 같으면 0, 다르면 ≠0
-                        asm_block_instrs.push(asm::Instruction::RType {
-                            instr: asm::RType::Xor,
-                            rd: t0_reg,
-                            rs1: t1_reg,
-                            rs2: Some(t2_reg),
-                        });
+                        if asm::Register::T1 == t1_reg {
+                            // 1) xor t0,t1,t2   ; 같으면 0, 다르면 ≠0
+                            asm_block_instrs.push(asm::Instruction::RType {
+                                instr: asm::RType::Xor,
+                                rd: t0_reg,
+                                rs1: t1_reg,
+                                rs2: Some(t2_reg),
+                            });
 
-                        // 2) snez t0,t0      ; t0 = 1 (≠) / 0 (＝)
-                        asm_block_instrs.push(asm::Instruction::Pseudo(asm::Pseudo::Snez {
-                            // <- snez 한 줄
-                            rd: t0_reg,
-                            rs: t0_reg,
-                        }));
+                            // 2) snez t0,t0      ; t0 = 1 (≠) / 0 (＝)
+                            asm_block_instrs.push(asm::Instruction::Pseudo(asm::Pseudo::Snez {
+                                // <- snez 한 줄
+                                rd: t0_reg,
+                                rs: t0_reg,
+                            }));
 
-                        // 3) 결과를 스택에 저장
-                        let offset = self.stack_allocator.allocate_stack_slot(&dst_rid, dtype);
-                        add_padding(&mut self.stack_allocator.next_stack_offset);
+                            // 3) 결과를 스택에 저장
+                            let offset = self.stack_allocator.allocate_stack_slot(&dst_rid, dtype);
+                            add_padding(&mut self.stack_allocator.next_stack_offset);
 
-                        asm_block_instrs.push(asm::Instruction::SType {
-                            instr: asm::SType::store(dtype.clone()),
-                            rs1: asm::Register::Sp,
-                            rs2: t0_reg,
-                            imm: asm::Immediate::Value(offset as u64),
-                        });
+                            asm_block_instrs.push(asm::Instruction::SType {
+                                instr: asm::SType::store(dtype.clone()),
+                                rs1: asm::Register::Sp,
+                                rs2: t0_reg,
+                                imm: asm::Immediate::Value(offset as u64),
+                            });
+                        } else {
+                            // ===== 부동소수점 처리 =====
+                            // feq → xori t0, t0, 1
+                            asm_block_instrs.push(asm::Instruction::RType {
+                                instr: asm::RType::feq(lhs.dtype()),
+                                rd: asm::Register::T0,
+                                rs1: t1_reg,
+                                rs2: Some(t2_reg),
+                            });
+
+                            asm_block_instrs.push(asm::Instruction::IType {
+                                instr: asm::IType::Xori,
+                                rd: asm::Register::T0,
+                                rs1: asm::Register::T0,
+                                imm: asm::Immediate::Value(1),
+                            });
+
+                            let offset = self.stack_allocator.allocate_stack_slot(&dst_rid, dtype);
+                            add_padding(&mut self.stack_allocator.next_stack_offset);
+
+                            asm_block_instrs.push(asm::Instruction::SType {
+                                instr: asm::SType::store(dtype.clone()),
+                                rs1: asm::Register::Sp,
+                                rs2: asm::Register::T0,
+                                imm: asm::Immediate::Value(offset as u64),
+                            });
+                        }
                     }
                     ast::BinaryOperator::Less => {
-                        is_signed = true;
-                        if let ir::Dtype::Int { .. } = lhs.dtype() {
-                            is_signed = lhs.dtype().is_int_signed();
-                        }
-                        asm_block_instrs.push(asm::Instruction::RType {
-                            instr: asm::RType::Slt { is_signed },
-                            rd: t0_reg,
-                            rs1: t1_reg,
-                            rs2: Some(t2_reg),
-                        });
-                        // dst_rid에 대해서 T0를 저장해야 함
-                        let offset = self.stack_allocator.allocate_stack_slot(&dst_rid, dtype);
-                        add_padding(&mut self.stack_allocator.next_stack_offset);
+                        if asm::Register::T1 == t1_reg {
+                            is_signed = true;
+                            if let ir::Dtype::Int { .. } = lhs.dtype() {
+                                is_signed = lhs.dtype().is_int_signed();
+                            }
+                            asm_block_instrs.push(asm::Instruction::RType {
+                                instr: asm::RType::Slt { is_signed },
+                                rd: t0_reg,
+                                rs1: t1_reg,
+                                rs2: Some(t2_reg),
+                            });
+                            // dst_rid에 대해서 T0를 저장해야 함
+                            let offset = self.stack_allocator.allocate_stack_slot(&dst_rid, dtype);
+                            add_padding(&mut self.stack_allocator.next_stack_offset);
 
-                        asm_block_instrs.push(asm::Instruction::SType {
-                            instr: asm::SType::store(dtype.clone()),
-                            rs1: asm::Register::Sp,
-                            rs2: t0_reg,
-                            imm: asm::Immediate::Value(offset as u64),
-                        });
+                            asm_block_instrs.push(asm::Instruction::SType {
+                                instr: asm::SType::store(dtype.clone()),
+                                rs1: asm::Register::Sp,
+                                rs2: t0_reg,
+                                imm: asm::Immediate::Value(offset as u64),
+                            });
+                        } else {
+                            // ===== float 타입 =====
+                            asm_block_instrs.push(asm::Instruction::RType {
+                                instr: asm::RType::flt(lhs.dtype()),
+                                rd: asm::Register::T0, // float 비교 결과는 정수 레지스터에 저장
+                                rs1: t1_reg,
+                                rs2: Some(t2_reg),
+                            });
+
+                            let offset = self.stack_allocator.allocate_stack_slot(&dst_rid, dtype);
+                            add_padding(&mut self.stack_allocator.next_stack_offset);
+
+                            asm_block_instrs.push(asm::Instruction::SType {
+                                instr: asm::SType::store(dtype.clone()),
+                                rs1: asm::Register::Sp,
+                                rs2: asm::Register::T0, // 비교 결과는 t0에 있음
+                                imm: asm::Immediate::Value(offset as u64),
+                            });
+                        }
                     }
                     ast::BinaryOperator::Greater => {
-                        is_signed = true;
-                        if let ir::Dtype::Int { .. } = lhs.dtype() {
-                            is_signed = lhs.dtype().is_int_signed();
-                        }
-                        asm_block_instrs.push(asm::Instruction::RType {
-                            instr: asm::RType::Slt { is_signed },
-                            rd: t0_reg,
-                            rs1: t2_reg,
-                            rs2: Some(t1_reg),
-                        });
-                        // dst_rid에 대해서 T0를 저장해야 함
-                        let offset = self.stack_allocator.allocate_stack_slot(&dst_rid, dtype);
-                        add_padding(&mut self.stack_allocator.next_stack_offset);
+                        if asm::Register::T1 == t1_reg {
+                            is_signed = true;
+                            if let ir::Dtype::Int { .. } = lhs.dtype() {
+                                is_signed = lhs.dtype().is_int_signed();
+                            }
+                            asm_block_instrs.push(asm::Instruction::RType {
+                                instr: asm::RType::Slt { is_signed },
+                                rd: t0_reg,
+                                rs1: t2_reg,
+                                rs2: Some(t1_reg),
+                            });
+                            // dst_rid에 대해서 T0를 저장해야 함
+                            let offset = self.stack_allocator.allocate_stack_slot(&dst_rid, dtype);
+                            add_padding(&mut self.stack_allocator.next_stack_offset);
 
-                        asm_block_instrs.push(asm::Instruction::SType {
-                            instr: asm::SType::store(dtype.clone()),
-                            rs1: asm::Register::Sp,
-                            rs2: t0_reg,
-                            imm: asm::Immediate::Value(offset as u64),
-                        });
+                            asm_block_instrs.push(asm::Instruction::SType {
+                                instr: asm::SType::store(dtype.clone()),
+                                rs1: asm::Register::Sp,
+                                rs2: t0_reg,
+                                imm: asm::Immediate::Value(offset as u64),
+                            });
+                        } else {
+                            // ===== float 타입 =====
+                            // flt t0, ft2, ft1   => t1 > t2
+                            asm_block_instrs.push(asm::Instruction::RType {
+                                instr: asm::RType::flt(lhs.dtype()),
+                                rd: asm::Register::T0,
+                                rs1: t2_reg, // 오른쪽 < 왼쪽
+                                rs2: Some(t1_reg),
+                            });
+
+                            let offset = self.stack_allocator.allocate_stack_slot(&dst_rid, dtype);
+                            add_padding(&mut self.stack_allocator.next_stack_offset);
+
+                            asm_block_instrs.push(asm::Instruction::SType {
+                                instr: asm::SType::store(dtype.clone()),
+                                rs1: asm::Register::Sp,
+                                rs2: asm::Register::T0,
+                                imm: asm::Immediate::Value(offset as u64),
+                            });
+                        }
                     }
                     ast::BinaryOperator::GreaterOrEqual => {
-                        // <=> Less, Less의 결과를 반전
-                        // 1. signed / unsigned 결정
-                        is_signed = true;
-                        if let ir::Dtype::Int { .. } = lhs.dtype() {
-                            is_signed = lhs.dtype().is_int_signed();
+                        if asm::Register::T1 == t1_reg {
+                            // <=> Less, Less의 결과를 반전
+                            // 1. signed / unsigned 결정
+                            is_signed = true;
+                            if let ir::Dtype::Int { .. } = lhs.dtype() {
+                                is_signed = lhs.dtype().is_int_signed();
+                            }
+
+                            // T1 >= T2
+                            // T1 < T2 -> 뒤집기
+
+                            // 2. lhs < rhs  → tmp(T0)
+                            asm_block_instrs.push(asm::Instruction::RType {
+                                instr: asm::RType::Slt { is_signed }, // slt(u) 선택
+                                rd: t0_reg,                           // tmp = lhs < rhs
+                                rs1: t1_reg,                          // lhs
+                                rs2: Some(t2_reg),                    // rhs
+                            });
+
+                            // 3. 반전   tmp = (tmp == 0)
+                            asm_block_instrs.push(asm::Instruction::Pseudo(asm::Pseudo::Seqz {
+                                rd: t0_reg,
+                                rs: t0_reg,
+                            }));
+
+                            // 4. dst_rid 저장
+                            let offset = self.stack_allocator.allocate_stack_slot(&dst_rid, dtype);
+                            add_padding(&mut self.stack_allocator.next_stack_offset);
+
+                            asm_block_instrs.push(asm::Instruction::SType {
+                                instr: asm::SType::store(dtype.clone()),
+                                rs1: asm::Register::Sp,
+                                rs2: t0_reg,
+                                imm: asm::Immediate::Value(offset as u64),
+                            });
+                        } else {
+                            // ===== float 타입 =====
+                            // T1 >= T2 → !(T1 < T2)
+                            // → ft0 = flt.ft1, ft2 → seqz t0, t0
+
+                            asm_block_instrs.push(asm::Instruction::RType {
+                                instr: asm::RType::flt(lhs.dtype()),
+                                rd: asm::Register::T0,
+                                rs1: t1_reg, // lhs < rhs
+                                rs2: Some(t2_reg),
+                            });
+
+                            asm_block_instrs.push(asm::Instruction::Pseudo(asm::Pseudo::Seqz {
+                                rd: asm::Register::T0,
+                                rs: asm::Register::T0,
+                            }));
+
+                            let offset = self.stack_allocator.allocate_stack_slot(&dst_rid, dtype);
+                            add_padding(&mut self.stack_allocator.next_stack_offset);
+
+                            asm_block_instrs.push(asm::Instruction::SType {
+                                instr: asm::SType::store(dtype.clone()),
+                                rs1: asm::Register::Sp,
+                                rs2: asm::Register::T0,
+                                imm: asm::Immediate::Value(offset as u64),
+                            });
                         }
-
-                        // T1 >= T2
-                        // T1 < T2 -> 뒤집기
-
-                        // 2. lhs < rhs  → tmp(T0)
-                        asm_block_instrs.push(asm::Instruction::RType {
-                            instr: asm::RType::Slt { is_signed }, // slt(u) 선택
-                            rd: t0_reg,                           // tmp = lhs < rhs
-                            rs1: t1_reg,                          // lhs
-                            rs2: Some(t2_reg),                    // rhs
-                        });
-
-                        // 3. 반전   tmp = (tmp == 0)
-                        asm_block_instrs.push(asm::Instruction::Pseudo(asm::Pseudo::Seqz {
-                            rd: t0_reg,
-                            rs: t0_reg,
-                        }));
-
-                        // 4. dst_rid 저장
-                        let offset = self.stack_allocator.allocate_stack_slot(&dst_rid, dtype);
-                        add_padding(&mut self.stack_allocator.next_stack_offset);
-
-                        asm_block_instrs.push(asm::Instruction::SType {
-                            instr: asm::SType::store(dtype.clone()),
-                            rs1: asm::Register::Sp,
-                            rs2: t0_reg,
-                            imm: asm::Immediate::Value(offset as u64),
-                        });
                     }
-                    _ => {}
+                    ast::BinaryOperator::LessOrEqual => {
+                        if asm::Register::T1 == t1_reg {
+                            // ===== 정수 타입 =====
+                            // a <= b ⇔ !(b < a) ⇔ !(a > b)
+                            // 즉: slt t0, t2, t1  → seqz t0, t0
+
+                            is_signed = true;
+                            if let ir::Dtype::Int { .. } = lhs.dtype() {
+                                is_signed = lhs.dtype().is_int_signed();
+                            }
+
+                            // 1. b < a (t2 < t1)
+                            asm_block_instrs.push(asm::Instruction::RType {
+                                instr: asm::RType::Slt { is_signed },
+                                rd: asm::Register::T0,
+                                rs1: t2_reg,
+                                rs2: Some(t1_reg),
+                            });
+
+                            // 2. 반전: !(b < a) ⇔ a <= b
+                            asm_block_instrs.push(asm::Instruction::Pseudo(asm::Pseudo::Seqz {
+                                rd: asm::Register::T0,
+                                rs: asm::Register::T0,
+                            }));
+
+                            // 3. 결과 저장
+                            let offset = self.stack_allocator.allocate_stack_slot(&dst_rid, dtype);
+                            add_padding(&mut self.stack_allocator.next_stack_offset);
+
+                            asm_block_instrs.push(asm::Instruction::SType {
+                                instr: asm::SType::store(dtype.clone()),
+                                rs1: asm::Register::Sp,
+                                rs2: asm::Register::T0,
+                                imm: asm::Immediate::Value(offset as u64),
+                            });
+                        } else {
+                            // ===== float 타입 =====
+                            // a <= b ⇔ !(a > b) ⇔ !(b < a)
+                            // → flt.d t0, ft2, ft1  → seqz t0, t0
+
+                            asm_block_instrs.push(asm::Instruction::RType {
+                                instr: asm::RType::flt(lhs.dtype()),
+                                rd: asm::Register::T0,
+                                rs1: t2_reg, // b < a
+                                rs2: Some(t1_reg),
+                            });
+
+                            asm_block_instrs.push(asm::Instruction::Pseudo(asm::Pseudo::Seqz {
+                                rd: asm::Register::T0,
+                                rs: asm::Register::T0,
+                            }));
+
+                            let offset = self.stack_allocator.allocate_stack_slot(&dst_rid, dtype);
+                            add_padding(&mut self.stack_allocator.next_stack_offset);
+
+                            asm_block_instrs.push(asm::Instruction::SType {
+                                instr: asm::SType::store(dtype.clone()),
+                                rs1: asm::Register::Sp,
+                                rs2: asm::Register::T0,
+                                imm: asm::Immediate::Value(offset as u64),
+                            });
+                        }
+                    }
+                    _ => {
+                        println!("TODO maybe | op {:?}", op);
+                    }
                 }
             }
             ir::Instruction::Load { ptr } => {
@@ -1496,10 +1750,21 @@ impl Asmgen {
                     // self.stack_allocator.next_stack_offset += get_dtype_size(&arg.dtype());
                     if i < 8 {
                         // a<i> ← T0
-                        asm_block_instrs.push(asm::Instruction::Pseudo(asm::Pseudo::Mv {
-                            rd: arg_reg,
-                            rs: t0_reg,
-                        }));
+                        let data_size = asm::DataSize::from_dtype(&arg.dtype());
+                        let pseudo = if t0_reg == asm::Register::T0 {
+                            asm::Pseudo::Mv {
+                                rd: arg_reg,
+                                rs: t0_reg,
+                            }
+                        } else {
+                            asm::Pseudo::Fmv {
+                                data_size,
+                                rd: arg_reg,
+                                rs: t0_reg,
+                            }
+                        };
+
+                        asm_block_instrs.push(asm::Instruction::Pseudo(pseudo));
                     } else {
                         // 8번째 이후는 스택 spill (지금 쓰고 있는 코드 재사용)
                         asm_block_instrs.push(asm::Instruction::SType {
@@ -1579,10 +1844,20 @@ impl Asmgen {
 
                     if i < 8 {
                         // a<i> ← T0
-                        asm_block_instrs.push(asm::Instruction::Pseudo(asm::Pseudo::Mv {
-                            rd: arg_reg,
-                            rs: t0_reg,
-                        }));
+                        let data_size = asm::DataSize::from_dtype(&arg.dtype());
+                        let pseudo = if t0_reg == asm::Register::T0 {
+                            asm::Pseudo::Mv {
+                                rd: arg_reg,
+                                rs: t0_reg,
+                            }
+                        } else {
+                            asm::Pseudo::Fmv {
+                                data_size,
+                                rd: arg_reg,
+                                rs: t0_reg,
+                            }
+                        };
+                        asm_block_instrs.push(asm::Instruction::Pseudo(pseudo));
                     } else {
                         // 8번째 이후는 스택 spill (지금 쓰고 있는 코드 재사용)
                         asm_block_instrs.push(asm::Instruction::SType {
