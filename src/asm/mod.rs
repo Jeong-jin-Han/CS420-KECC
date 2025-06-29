@@ -318,6 +318,7 @@ pub enum RType {
 
 impl RType {
     pub fn add(dtype: ir::Dtype) -> Self {
+        println!("adm | RType | add | dtype {}", dtype.clone());
         let data_size =
             DataSize::try_from(dtype).expect("`data_size` must be derived from `dtype`");
         assert!(matches!(data_size, DataSize::Word | DataSize::Double));
@@ -326,6 +327,8 @@ impl RType {
     }
 
     pub fn sub(dtype: ir::Dtype) -> Self {
+        println!("adm | RType | sub | dtype {}", dtype.clone());
+
         let data_size =
             DataSize::try_from(dtype).expect("`data_size` must be derived from `dtype`");
         assert!(matches!(data_size, DataSize::Word | DataSize::Double));
@@ -334,6 +337,8 @@ impl RType {
     }
 
     pub fn sll(dtype: ir::Dtype) -> Self {
+        println!("adm | RType | sll | dtype {}", dtype.clone());
+
         let data_size =
             DataSize::try_from(dtype).expect("`data_size` must be derived from `dtype`");
         assert!(matches!(data_size, DataSize::Word | DataSize::Double));
@@ -342,6 +347,8 @@ impl RType {
     }
 
     pub fn srl(dtype: ir::Dtype) -> Self {
+        println!("adm | RType | srl | dtype {}", dtype.clone());
+
         let data_size =
             DataSize::try_from(dtype).expect("`data_size` must be derived from `dtype`");
         assert!(matches!(data_size, DataSize::Word | DataSize::Double));
@@ -350,6 +357,8 @@ impl RType {
     }
 
     pub fn sra(dtype: ir::Dtype) -> Self {
+        println!("adm | RType | sra | dtype {}", dtype.clone());
+
         let data_size =
             DataSize::try_from(dtype).expect("`data_size` must be derived from `dtype`");
         assert!(matches!(data_size, DataSize::Word | DataSize::Double));
@@ -358,6 +367,8 @@ impl RType {
     }
 
     pub fn mul(dtype: ir::Dtype) -> Self {
+        println!("adm | RType | mul | dtype {}", dtype.clone());
+
         let data_size =
             DataSize::try_from(dtype).expect("`data_size` must be derived from `dtype`");
         assert!(matches!(data_size, DataSize::Word | DataSize::Double));
@@ -366,6 +377,8 @@ impl RType {
     }
 
     pub fn div(dtype: ir::Dtype, is_signed: bool) -> Self {
+        println!("adm | RType | div | dtype {}", dtype.clone());
+
         let data_size =
             DataSize::try_from(dtype).expect("`data_size` must be derived from `dtype`");
         assert!(matches!(data_size, DataSize::Word | DataSize::Double));
@@ -377,6 +390,8 @@ impl RType {
     }
 
     pub fn rem(dtype: ir::Dtype, is_signed: bool) -> Self {
+        println!("adm | RType | rem | dtype {}", dtype.clone());
+
         let data_size =
             DataSize::try_from(dtype).expect("`data_size` must be derived from `dtype`");
         assert!(matches!(data_size, DataSize::Word | DataSize::Double));
@@ -388,6 +403,8 @@ impl RType {
     }
 
     pub fn fadd(dtype: ir::Dtype) -> Self {
+        println!("adm | RType | fadd | dtype {}", dtype.clone());
+
         let data_size =
             DataSize::try_from(dtype).expect("`data_size` must be derived from `dtype`");
         assert!(data_size.is_floating_point());
@@ -396,6 +413,8 @@ impl RType {
     }
 
     pub fn fsub(dtype: ir::Dtype) -> Self {
+        println!("adm | RType | fsub | dtype {}", dtype.clone());
+
         let data_size =
             DataSize::try_from(dtype).expect("`data_size` must be derived from `dtype`");
         assert!(data_size.is_floating_point());
@@ -631,6 +650,8 @@ impl IType {
     pub const ADDI: Self = Self::Addi(DataSize::Double);
 
     pub fn load(dtype: ir::Dtype) -> Self {
+        println!("adm | IType | load | dtype {}", dtype.clone());
+
         let data_size =
             DataSize::try_from(dtype.clone()).expect("`data_size` must be derived from `dtype`");
 
@@ -727,6 +748,8 @@ impl SType {
     pub const SD: Self = Self::Store(DataSize::Double);
 
     pub fn store(dtype: ir::Dtype) -> Self {
+        println!("adm | SType | store | dtype {}", dtype.clone());
+
         let data_size =
             DataSize::try_from(dtype).expect("`data_size` must be derived from `dtype`");
         Self::Store(data_size)
@@ -846,6 +869,7 @@ pub enum Pseudo {
 
 impl Pseudo {
     pub fn neg(dtype: ir::Dtype, rd: Register, rs: Register) -> Self {
+        println!("adm | Pseudo | neg | dtype {}", dtype.clone());
         let data_size =
             DataSize::try_from(dtype).expect("`data_size` must be derived from `dtype`");
         assert!(matches!(data_size, DataSize::Word | DataSize::Double));
@@ -854,6 +878,8 @@ impl Pseudo {
     }
 
     pub fn fneg(dtype: ir::Dtype, rd: Register, rs: Register) -> Self {
+        println!("adm | Pseudo | fneg | dtype {}", dtype.clone());
+
         let data_size =
             DataSize::try_from(dtype).expect("`data_size` must be derived from `dtype`");
         assert!(data_size.is_floating_point());

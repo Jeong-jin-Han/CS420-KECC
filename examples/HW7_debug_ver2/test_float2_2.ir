@@ -1,0 +1,35 @@
+
+fun f32 @f1 () {
+init:
+  bid: b0
+  allocations: 
+    %l0:f32:a
+    %l1:f32:b
+
+block b0:
+  %b0:i0:unit = store 1.5:f32 %l0:f32*
+  %b0:i1:f32 = minus 2.299999952316284:f32
+  %b0:i2:unit = store %b0:i1:f32 %l1:f32*
+  %b0:i3:f32 = load %l0:f32*
+  %b0:i4:f32 = load %l1:f32*
+  %b0:i5:f32 = add %b0:i3:f32 %b0:i4:f32
+  ret %b0:i5:f32
+
+block b1:
+  ret undef:f32
+}
+
+fun i32 @main () {
+init:
+  bid: b0
+  allocations: 
+
+
+block b0:
+  %b0:i0:f32 = call @f1:[ret:f32 params:()]*()
+  %b0:i1:i32 = typecast %b0:i0:f32 to i32
+  ret %b0:i1:i32
+
+block b1:
+  ret 0:i32
+}

@@ -1,0 +1,48 @@
+struct Sub : { m1:i64, m2:i64 }
+
+fun struct Sub @foo (struct Sub) {
+init:
+  bid: b0
+  allocations: 
+    %l0:struct Sub:p1
+
+block b0:
+  %b0:p0:struct Sub:p1
+  %b0:i0:unit = store %b0:p0:struct Sub %l0:struct Sub*
+  %b0:i1:i64* = getelementptr %l0:struct Sub* offset 0:i64
+  %b0:i2:i64 = typecast 10:i32 to i64
+  %b0:i3:unit = store %b0:i2:i64 %b0:i1:i64*
+  %b0:i4:struct Sub = load %l0:struct Sub*
+  ret %b0:i4:struct Sub
+
+block b1:
+  ret undef:struct Sub
+}
+
+fun i32 @main () {
+init:
+  bid: b0
+  allocations: 
+    %l0:struct Sub:a
+    %l1:struct Sub:r
+
+block b0:
+  %b0:i0:i64* = getelementptr %l0:struct Sub* offset 0:i64
+  %b0:i1:i64 = typecast 1:i32 to i64
+  %b0:i2:unit = store %b0:i1:i64 %b0:i0:i64*
+  %b0:i3:i64* = getelementptr %l0:struct Sub* offset 8:i64
+  %b0:i4:i64 = typecast 2:i32 to i64
+  %b0:i5:unit = store %b0:i4:i64 %b0:i3:i64*
+  %b0:i6:struct Sub = load %l0:struct Sub*
+  %b0:i7:struct Sub = call @foo:[ret:struct Sub params:(struct Sub)]*(%b0:i6:struct Sub)
+  %b0:i8:unit = store %b0:i7:struct Sub %l1:struct Sub*
+  %b0:i9:i64* = getelementptr %l1:struct Sub* offset 0:i64
+  %b0:i10:i64 = load %b0:i9:i64*
+  %b0:i11:i64 = typecast 10:i32 to i64
+  %b0:i12:u1 = cmp eq %b0:i10:i64 %b0:i11:i64
+  %b0:i13:i32 = typecast %b0:i12:u1 to i32
+  ret %b0:i13:i32
+
+block b1:
+  ret 0:i32
+}

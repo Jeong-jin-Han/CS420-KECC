@@ -1,0 +1,154 @@
+fun i32 @func_21 () {
+init:
+  bid: b0
+  allocations: 
+
+
+block b0:
+  %b0:i0:u1 = cmp ne 1:i32 0:i32
+  br %b0:i0:u1, b7(), b8()
+
+block b1:
+  %b1:i0:u1 = cmp ne 0:i32 0:i32
+  br %b1:i0:u1, b19(), b20()
+
+block b2:
+  %b2:i0:u1 = cmp ne 1:i32 0:i32
+  br %b2:i0:u1, b31(), b32()
+
+block b3:
+  %b3:p0:i32:t12
+  %b3:i0:u1 = cmp eq %b3:p0:i32 1:i32
+  %b3:i1:i32 = typecast %b3:i0:u1 to i32
+  ret %b3:i1:i32
+
+block b4:
+  %b4:i0:u1 = cmp ne 0:i32 0:i32
+  br %b4:i0:u1, b10(), b11()
+
+block b5:
+  %b5:i0:u1 = cmp ne 0:i32 0:i32
+  br %b5:i0:u1, b13(), b14()
+
+block b6:
+  %b6:p0:i32:t3
+  %b6:i0:u1 = cmp ne %b6:p0:i32 0:i32
+  br %b6:i0:u1, b1(), b2()
+
+block b7:
+  j b9(1:i32)
+
+block b8:
+  j b9(0:i32)
+
+block b9:
+  %b9:p0:i32:t0
+  %b9:i0:u1 = cmp ne %b9:p0:i32 0:i32
+  br %b9:i0:u1, b4(), b5()
+
+block b10:
+  j b12(0:i32)
+
+block b11:
+  j b12(0:i32)
+
+block b12:
+  %b12:p0:i32:t1
+  j b6(%b12:p0:i32)
+
+block b13:
+  j b15(0:i32)
+
+block b14:
+  j b15(0:i32)
+
+block b15:
+  %b15:p0:i32:t2
+  j b6(%b15:p0:i32)
+
+block b16:
+  %b16:i0:u1 = cmp ne 0:i32 0:i32
+  br %b16:i0:u1, b22(), b23()
+
+block b17:
+  %b17:i0:u1 = cmp ne 0:i32 0:i32
+  br %b17:i0:u1, b25(), b26()
+
+block b18:
+  %b18:p0:i32:t7
+  j b3(%b18:p0:i32)
+
+block b19:
+  j b21(1:i32)
+
+block b20:
+  j b21(0:i32)
+
+block b21:
+  %b21:p0:i32:t4
+  %b21:i0:u1 = cmp ne %b21:p0:i32 0:i32
+  br %b21:i0:u1, b16(), b17()
+
+block b22:
+  j b24(1:i32)
+
+block b23:
+  j b24(0:i32)
+
+block b24:
+  %b24:p0:i32:t5
+  j b18(%b24:p0:i32)
+
+block b25:
+  j b27(0:i32)
+
+block b26:
+  j b27(1:i32)
+
+block b27:
+  %b27:p0:i32:t6
+  j b18(%b27:p0:i32)
+
+block b28:
+  %b28:i0:u1 = cmp ne 1:i32 0:i32
+  br %b28:i0:u1, b34(), b35()
+
+block b29:
+  %b29:i0:u1 = cmp ne 0:i32 0:i32
+  br %b29:i0:u1, b37(), b38()
+
+block b30:
+  %b30:p0:i32:t11
+  j b3(%b30:p0:i32)
+
+block b31:
+  j b33(1:i32)
+
+block b32:
+  j b33(1:i32)
+
+block b33:
+  %b33:p0:i32:t8
+  %b33:i0:u1 = cmp ne %b33:p0:i32 0:i32
+  br %b33:i0:u1, b28(), b29()
+
+block b34:
+  j b36(1:i32)
+
+block b35:
+  j b36(1:i32)
+
+block b36:
+  %b36:p0:i32:t9
+  j b30(%b36:p0:i32)
+
+block b37:
+  j b39(1:i32)
+
+block b38:
+  j b39(1:i32)
+
+block b39:
+  %b39:p0:i32:t10
+  j b30(%b39:p0:i32)
+}

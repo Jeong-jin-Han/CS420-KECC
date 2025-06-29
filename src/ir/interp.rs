@@ -1329,7 +1329,8 @@ impl<'i> State<'i> {
             .func_def
             .blocks
             .get(&arg.bid)
-            .expect("block matched with `arg.bid` must be exist");
+            .unwrap_or_else(|| panic!("block matched with `arg.bid` must be exist {}", arg.bid));
+        // .expect("block matched with `arg.bid` must be exist");
 
         assert_eq!(arg.args.len(), block.phinodes.len());
         for (a, d) in arg.args.iter().zip(&block.phinodes) {
@@ -1366,6 +1367,8 @@ impl<'i> State<'i> {
                 let value = self.interp_operand(condition)?;
                 let (value, width, _) = value.get_int().expect("`condition` must be `Value::Int`");
                 // Check if it is boolean
+                // println!("--------| [interp.rs] | width {}", width);
+
                 assert!(width == 1);
 
                 self.interp_jump(if value == 1 { arg_then } else { arg_else })
@@ -1473,6 +1476,13 @@ impl<'i> State<'i> {
                         a.dtype().set_const(false) == d.deref().clone().set_const(false)
                     }))
                 {
+                    // println!("interp_instruction | {}", block_init.phinodes.len()); // debug
+
+                    // let tmp = func_def.blocks.clone();
+                    // println!("BTreeMap BlockId {:?}", tmp);
+
+                    // println!("interp.rs | args: {:?}", args);
+                    // println!("interp.rs | block_init.phinodes: {:?}", block_init.phinodes);
                     panic!("dtype of args and phinodes of init block must be compatible");
                 }
 

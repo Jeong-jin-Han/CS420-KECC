@@ -226,6 +226,7 @@ def creduce(tests_dir, fuzz_arg, analyze):
             "./reduce-criteria.sh",
             "test_reduced.c",
         ]
+        
         proc = subprocess.Popen(
             args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, cwd=tests_dir
         )

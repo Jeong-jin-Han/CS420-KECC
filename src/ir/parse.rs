@@ -475,6 +475,18 @@ peg::parser! {
             = bid:bid() _ "(" _ args:(operand() ** (_ "," _)) _ ")" {
                 JumpArg { bid, args }
             }
+        // rule jump_arg() -> JumpArg =
+        //     bid:bid()
+        //     args:(
+        //         "(" _ inner:(operand() ** (_ "," _)) _ ")" { inner }
+        //     )?
+        //     {
+        //         JumpArg {
+        //             bid,
+        //             args: args.unwrap_or_else(Vec::new)
+        //         }
+        //     }
+
 
         rule switch_case() -> (Constant, JumpArg)
             = operand:operand() __ jump_arg:jump_arg() {

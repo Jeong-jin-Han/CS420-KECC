@@ -4,6 +4,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
+use asm::Asm;
 use lang_c::*;
 use rand::Rng;
 use tempfile::tempdir;
@@ -158,16 +159,14 @@ pub fn test_irgen(path: &Path) {
         .translate(&path)
         .unwrap_or_else(|_| panic!("parse failed {}", path.display()));
 
-    println!("--------test_irgen | unit {:?}--------", unit);
+    // println!("--------test_irgen | unit {:?}--------", unit);
     let mut ir = Irgen::default()
         .translate(&unit)
         .unwrap_or_else(|irgen_error| panic!("{}", irgen_error));
 
-
     let rand_num = rand::rng().random_range(1..100);
     let new_c = modify_c(path, rand_num);
     modify_ir(&mut ir, rand_num);
-
 
     // compile recolved c example
     let temp_dir = tempdir().expect("temp dir creation failed");
@@ -229,7 +228,6 @@ pub fn test_irgen(path: &Path) {
 
     let status = some_or_exit!(status.code(), SKIP_TEST);
 
-
     // use std::io::stdout;
     // use crate::write_base::WriteLine;
     // let mut output = stdout();
@@ -237,22 +235,23 @@ pub fn test_irgen(path: &Path) {
     //     Ok(_) => println!("---------test_irgen | IR (KECC format) ----------"),
     //     Err(_) => println!("write_ir failed to write IR."),
     // }
-    let ir_path = Path::new("/home/hanjeongjin/Workspace_ubuntu/cs420_ubuntu/kecc-private/examples/HW1_debug/hw2_debug.ir");
+    let ir_path = Path::new(
+        "/home/hanjeongjin/Workspace_ubuntu/cs420_ubuntu/kecc-private/examples/HW1_debug/hw2_debug.ir",
+    );
     save_ir_to_file(&ir, ir_path);
-
 
     // Interpret resolved ir
     let args = Vec::new();
 
-    println!("---------test_irgen | ir ----------\n{:?}\n\n", ir); // ME
+    // println!("---------test_irgen | ir ----------\n{:?}\n\n", ir); // ME
     // println!("---------test_irgen | ir ----------\n{:#?}\n\n", ir); // ME
     let result = ir::interp(&ir, args).unwrap_or_else(|interp_error| panic!("{interp_error}"));
     println!("---------test_irgen | result ------\n{:?}\n\n", result); // ME
-    
+
     // We only allow a main function whose return type is `int`
     let (value, width, is_signed) = result.get_int().expect("non-integer value occurs");
     // println!("test_irgen | result | value {}", value); // ME
-    
+
     assert_eq!(width, 32);
     assert!(is_signed);
 
@@ -348,7 +347,30 @@ pub fn test_opt<P1: AsRef<Path>, P2: AsRef<Path>, O: Optimize<ir::TranslationUni
     let to = ir::Parse::default()
         .translate(to)
         .expect("parse failed while parsing the output from implemented printer");
+
+    //
+    // use crate::ir::Visualizer;
+
+    // let dot_path = Path::new(
+    //     "/home/hanjeongjin/Workspace_ubuntu/cs420_ubuntu/kecc-private/examples/HW1_debug/hw5_debug.dot",
+    // );
+
+    // let mut visualizer = Visualizer::default();
+    // let dot_graph = visualizer.translate(&ir).unwrap();
+    // save_dot_to_file(&dot_graph.clone(), dot_path);
+    //
+
     let _ = opt.optimize(&mut ir);
+
+    // simplifycfg
+    // let ir_path = Path::new(
+    //     "/home/hanjeongjin/Workspace_ubuntu/cs420_ubuntu/kecc-private/examples/HW1_debug/hw3_debug.ir",
+    // );
+    let ir_path = Path::new(
+        "/home/hanjeongjin/Workspace_ubuntu/cs420_ubuntu/kecc-private/examples/HW1_debug/hw5_debug.ir",
+    );
+
+    save_ir_to_file(&ir, ir_path);
 
     if !ir.is_equiv(&to) {
         let mut stderr = io::stderr().lock();
@@ -372,15 +394,34 @@ pub fn test_opt<P1: AsRef<Path>, P2: AsRef<Path>, O: Optimize<ir::TranslationUni
 /// Tests asmgen.
 pub fn test_asmgen(path: &Path) {
     // Check if the file has .ir extension
-    assert_eq!(path.extension(), Some(std::ffi::OsStr::new("ir")));
+    assert_eq!(path.extension(), Some(std::ffi::OsStr::new("ir"))); //
     let mut ir = ir::Parse::default()
         .translate(&path)
         .unwrap_or_else(|_| panic!("parse failed {}", path.display()));
+
+    /* me */
+    // ref_asm_sol(&path);
 
     // Generate RISC-V assembly from IR
     let mut asm = Asmgen::default()
         .translate(&ir)
         .expect("fail to create riscv assembly code");
+
+    /* me */
+    let dir_name = path
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|os_str| os_str.to_str())
+        .unwrap_or("unknown");
+
+    // 📝 저장 경로 구성
+    let asm_path = PathBuf::from(format!(
+        "/home/hanjeongjin/Workspace_ubuntu/cs420_ubuntu/kecc-private/examples/HW7_debug/my_{}.s",
+        dir_name
+    ));
+
+    save_asm_to_file(&asm, &asm_path);
+    /* me */
 
     let rand_num = rand::rng().random_range(1..100);
     modify_ir(&mut ir, rand_num);
@@ -616,11 +657,10 @@ pub fn test_end_to_end(path: &Path) {
     assert_eq!(clang_status as u8, qemu_status as u8);
 }
 
-
 pub fn save_ir_to_file(ir: &ir::TranslationUnit, file_path: &Path) {
-    use std::fs::OpenOptions;
     use crate::write_base::WriteLine;
-    
+    use std::fs::OpenOptions;
+
     // 🔹 기존 파일을 열고 덮어쓰기 모드로 설정
     let mut file = OpenOptions::new()
         .write(true)
@@ -635,3 +675,59 @@ pub fn save_ir_to_file(ir: &ir::TranslationUnit, file_path: &Path) {
 
     println!("IR file successfully saved at: {}", file_path.display());
 }
+
+pub fn save_dot_to_file(dot_graph: &str, file_path: &Path) {
+    use crate::write_base::WriteLine;
+    use std::fs::OpenOptions;
+
+    // 🔹 기존 파일을 열고 덮어쓰기 모드로 설정
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create(true) // 파일이 없으면 생성
+        .truncate(true) // 기존 내용 삭제 후 덮어쓰기
+        .open(file_path)
+        .expect("Failed to open DOT file for writing");
+
+    // 🔹 IR 내용을 파일에 저장
+    write!(file, "{}", dot_graph).unwrap();
+
+    println!("DOT file successfully saved at: {}", file_path.display());
+}
+
+pub fn save_asm_to_file(asm: &asm::Asm, file_path: &Path) {
+    use crate::write_base::WriteLine;
+    use std::fs::OpenOptions;
+
+    // 🔹 기존 파일을 열고 덮어쓰기 모드로 설정
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create(true) // 파일이 없으면 생성
+        .truncate(true) // 기존 내용 삭제 후 덮어쓰기
+        .open(file_path)
+        .expect("Failed to open ASM file for writing");
+
+    // 🔹 IR 내용을 파일에 저장
+    asm.write_line(0, &mut file)
+        .expect("Failed to write ASM to file");
+
+    println!("ASM file successfully saved at: {}", file_path.display());
+}
+
+// pub fn ref_asm_sol(ir_path: &Path){
+//     use std::process::Command;
+
+//     let ref_asm_path = Path::new(
+//         "/home/hanjeongjin/Workspace_ubuntu/cs420_ubuntu/kecc-private/examples/ref.s",
+//     );
+
+//     let status = Command::new("./kecc-reference")
+//         .arg(ir_path)          // 기존 ir 파일 경로
+//         .arg("-o")
+//         .arg(ref_asm_path)  // 저장할 정답 asm 경로
+//         .status()
+//         .expect("Failed to run kecc-reference");
+
+//     assert!(status.success(), "kecc-reference failed to generate ref.s");
+
+//     // println!("✅ Reference ASM saved at: {}", ref_asm_path.display());
+// }

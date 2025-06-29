@@ -16,6 +16,7 @@ where
         let path = entry.path();
 
         if !(path.is_file() && path.extension() == Some(ext)) {
+            println!("test_dir | path {:?}", path);
             continue;
         }
 
@@ -512,28 +513,303 @@ fn test_examples_optimize() {
 
 #[test]
 fn test_examples_asmgen_small() {
-    for dir in ASMGEN_TEST_DIR_LIST.iter() {
-        test_dir(Path::new(dir), OsStr::new("ir"), |path| {
-            if path.to_str().unwrap().contains(HELLO_MAIN) {
-                println!("[testing asmgen for {path:?}]");
-                test_asmgen(path);
-            }
-        });
-    }
+    // let test_files = vec![
+    //     "test.ir", // pass
+    //               // "test6.ir", // {"add": 3, "make_point": 11, "main": 12} ->  {"make_point": 9, "main": 12, "add": 3}
+    //               // "test9.ir",
+    //               // "struct3_me.ir",
+    //               // "test3.ir", //  {"make_point": 4, "main": 5}
+    //               // "test10.ir", //  {"bar": 3, "square": 2, "main": 3, "foo": 3}
+    //               // "test8.ir", // {"make_point": 5, "main": 6} ->  {"make_point": 5, "main": 7} ??
+    //               // "test11.ir", //  {"make_point": 4, "main": 6}
+    //               // "test4.ir",
+    // ];
+
+    // for file in test_files {
+    //     test_asmgen(Path::new(&format!("examples/HW7_debug/asmgen/{file}")));
+    // }
+
+    /*
+    pointer.ir의 경우
+    phinode에서 ptr로 받아오는 경우가 존재함
+    arg도 ptr로 받아오는 경우가 존재함
+    이 부분을 수정해야 한다.
+    */
+
+    let test_files = vec![
+        "ir0/bar.ir",                  // pass
+        "ir0/bitwise.ir",              // pass
+        "ir0/cmp.ir",                  // fail
+        "ir0/comma.ir",                // pass
+        "ir0/complement.ir",           // pass
+        "ir0/complete_cond.ir",        // fail
+        "ir0/cond_and_loop.ir",        // fail
+        "ir0/cond.ir",                 // pass
+        "ir0/fib2.ir",                 // pass -> fail
+        "ir0/fib3.ir",                 // pass
+        "ir0/fib4.ir",                 // pass
+        "ir0/fib5.ir",                 // pass
+        "ir0/fibonacci.ir",            // pass
+        "ir0/float2.ir",               // fail
+        "ir0/foo.ir",                  // pass
+        "ir0/foo2.ir",                 // pass
+        "ir0/foo3.ir",                 // pass
+        "ir0/foo4.ir",                 // fail
+        "ir0/for_continue_break.ir",   // pass
+        "ir0/gcd.ir",                  // fail
+        "ir0/integer_literal.ir",      // pass
+        "ir0/integer_literal2.ir",     // pass
+        "ir0/logical_op.ir",           // pass
+        "ir0/lost_copy.ir",            // pass
+        "ir0/minus_constant.ir",       // fail  (simple?)
+        "ir0/negate.ir",               // pass -> fail
+        "ir0/pointer.ir",              // fail
+        "ir0/return_void.ir",          // fail
+        "ir0/shift.ir",                // fail
+        "ir0/simple_cond.ir",          // pass
+        "ir0/simple_for.ir",           // pass
+        "ir0/simple_if.ir",            // pass
+        "ir0/simple.ir",               // pass
+        "ir0/sizeof.ir",               // pass
+        "ir0/sizeof3.ir",              // pass
+        "ir0/sizeof4.ir",              // pass
+        "ir0/swap.ir",                 // fail
+        "ir0/switch-in-loop.ir",       // fail(not yet)
+        "ir0/switch.ir",               // fail(not yet)
+        "ir0/temp.ir",                 // pass
+        "ir0/test.ir",                 // pass
+        "ir0/typecast.ir",             // fail
+        "ir0/typedef.ir",              // pass
+        "ir0/unary.ir",                // passs
+        "ir0/while_continue_break.ir", // pass
+    ];
+
+    // /* fail 만 모은 것  */
+    // let test_files = vec![
+    //     "ir0/negate.ir", // pass
+    //     "ir0/cmp.ir",    // pass
+    //     "ir0/fib2.ir",   // pass
+    //     // "ir0/complete_cond.ir",  // fail
+    //     "ir0/cond_and_loop.ir", // fail -> pass
+    //     // "ir0/float2.ir",          // fail, float
+    //     "ir0/foo4.ir", // fail, jump -> pass -> fail??
+    //     "ir0/gcd.ir",  // fail -> pass
+    //     // "ir0/minus_constant.ir", // fail, float
+    //     // "ir0/pointer.ir",        // fail, phinode, pointer
+    //     "ir0/return_void.ir", // pass
+    //     "ir0/shift.ir",       // fail -> pass
+    //     // "ir0/swap.ir",           // fail
+    //     "ir0/switch-in-loop.ir", // fail, blockexit -> pass
+    //     "ir0/switch.ir",         // fail, blockexit -> pass
+    //     "ir0/typecast.ir",       // fail -> pass
+    //     "ir0/alignof.ir",        // pass
+    // ];
+
+    // let test_files = vec!["ir0/foo4.ir"];
+
+    // let test_files = vec![
+    //     // "ir0/complete_cond.ir", // fail // addi only 12bit -> pass
+    //     // "HW7_debug_ver2/test_complete_cond.ir", // pass
+    //     "ir0/float2.ir", // fail, float
+    //                      // "HW7_debug_ver2/test_float2_2.ir",
+    //                      // "HW7_debug_ver2/test_float2.ir",
+    //                      // "ir0/minus_constant.ir", // fail, float -> pass
+    //                      // "ir0/pointer.ir", // fail, phinode, pointer -> pass
+    //                      // "ir0/swap.ir", // fail, mul 구현 -> pass
+    // ];
+
+    let test_files = vec![
+        "ir1/bar.ir",                  // pass
+        "ir1/bitwise.ir",              // pass
+        "ir1/cmp.ir",                  // fail
+        "ir1/comma.ir",                // pass
+        "ir1/complement.ir",           // pass
+        "ir1/complete_cond.ir",        // fail
+        "ir1/cond_and_loop.ir",        // fail
+        "ir1/cond.ir",                 // pass
+        "ir1/fib2.ir",                 // pass -> fail
+        "ir1/fib3.ir",                 // pass
+        "ir1/fib4.ir",                 // pass
+        "ir1/fib5.ir",                 // pass
+        "ir1/fibonacci.ir",            // pass
+        "ir1/float2.ir",               // fail
+        "ir1/foo.ir",                  // pass
+        "ir1/foo2.ir",                 // pass
+        "ir1/foo3.ir",                 // pass
+        "ir1/foo4.ir",                 // fail
+        "ir1/for_continue_break.ir",   // pass
+        "ir1/gcd.ir",                  // fail
+        "ir1/integer_literal.ir",      // pass
+        "ir1/integer_literal2.ir",     // pass
+        "ir1/logical_op.ir",           // pass
+        "ir1/lost_copy.ir",            // pass
+        "ir1/minus_constant.ir",       // fail  (simple?)
+        "ir1/negate.ir",               // pass -> fail
+        "ir1/pointer.ir",              // fail
+        "ir1/return_void.ir",          // fail
+        "ir1/shift.ir",                // fail
+        "ir1/simple_cond.ir",          // pass
+        "ir1/simple_for.ir",           // pass
+        "ir1/simple_if.ir",            // pass
+        "ir1/simple.ir",               // pass
+        "ir1/sizeof.ir",               // pass
+        "ir1/sizeof3.ir",              // pass
+        "ir1/sizeof4.ir",              // pass
+        "ir1/swap.ir",                 // fail
+        "ir1/switch-in-loop.ir",       // fail(not yet)
+        "ir1/switch.ir",               // fail(not yet)
+        "ir1/temp.ir",                 // pass
+        "ir1/test.ir",                 // pass
+        "ir1/typecast.ir",             // fail
+        "ir1/typedef.ir",              // pass
+        "ir1/unary.ir",                // passs
+        "ir1/while_continue_break.ir", // pass
+    ];
+
+    // let test_files = vec![
+    //     "ir2/bar.ir",                  // pass
+    //     "ir2/bitwise.ir",              // pass
+    //     "ir2/cmp.ir",                  // fail -> pass
+    //     "ir2/comma.ir",                // pass
+    //     "ir2/complement.ir",           // pass
+    //     "ir2/complete_cond.ir",        // fail
+    //     "ir2/cond_and_loop.ir",        // fail
+    //     "ir2/cond.ir",                 // pass
+    //     "ir2/fib2.ir",                 // pass -> fail
+    //     "ir2/fib3.ir",                 // pass
+    //     "ir2/fib4.ir",                 // pass
+    //     "ir2/fib5.ir",                 // pass
+    //     "ir2/fibonacci.ir",            // pass
+    //     "ir2/float2.ir",               // fail
+    //     "ir2/foo.ir",                  // pass
+    //     "ir2/foo2.ir",                 // pass
+    //     "ir2/foo3.ir",                 // pass
+    //     "ir2/foo4.ir",                 // fail
+    //     "ir2/for_continue_break.ir",   // pass
+    //     "ir2/gcd.ir",                  // fail
+    //     "ir2/integer_literal.ir",      // pass
+    //     "ir2/integer_literal2.ir",     // pass
+    //     "ir2/logical_op.ir",           // pass
+    //     "ir2/lost_copy.ir",            // pass
+    //     "ir2/minus_constant.ir",       // fail  (simple?)
+    //     "ir2/negate.ir",               // pass -> fail
+    //     "ir2/pointer.ir",              // fail
+    //     "ir2/return_void.ir",          // fail
+    //     "ir2/shift.ir",                // fail
+    //     "ir2/simple_cond.ir",          // pass
+    //     "ir2/simple_for.ir",           // pass
+    //     "ir2/simple_if.ir",            // pass
+    //     "ir2/simple.ir",               // pass
+    //     "ir2/sizeof.ir",               // pass
+    //     "ir2/sizeof3.ir",              // pass
+    //     "ir2/sizeof4.ir",              // pass
+    //     "ir2/swap.ir",                 // fail
+    //     "ir2/switch-in-loop.ir",       // fail -> pass
+    //     "ir2/switch.ir",               // fail(not yet)
+    //     "ir2/temp.ir",                 // pass
+    //     "ir2/test.ir",                 // pass
+    //     "ir2/typecast.ir",             // fail
+    //     "ir2/typedef.ir",              // pass
+    //     "ir2/unary.ir",                // passs
+    //     "ir2/while_continue_break.ir", // fail
+    // ];
+
+    // let test_files = vec![
+    //     "ir3/bar.ir",                  // pass
+    //     "ir3/bitwise.ir",              // pass
+    //     "ir3/cmp.ir",                  // fail -> pass
+    //     "ir3/comma.ir",                // pass
+    //     "ir3/complement.ir",           // pass
+    //     "ir3/complete_cond.ir",        // fail
+    //     "ir3/cond_and_loop.ir",        // fail
+    //     "ir3/cond.ir",                 // pass
+    //     "ir3/fib2.ir",                 // pass -> fail
+    //     "ir3/fib3.ir",                 // pass
+    //     "ir3/fib4.ir",                 // pass
+    //     "ir3/fib5.ir",                 // pass
+    //     "ir3/fibonacci.ir",            // pass
+    //     "ir3/float2.ir",               // fail
+    //     "ir3/foo.ir",                  // pass
+    //     "ir3/foo2.ir",                 // pass
+    //     "ir3/foo3.ir",                 // pass
+    //     "ir3/foo4.ir",                 // fail
+    //     "ir3/for_continue_break.ir",   // pass
+    //     "ir3/gcd.ir",                  // fail
+    //     "ir3/integer_literal.ir",      // pass
+    //     "ir3/integer_literal2.ir",     // pass
+    //     "ir3/logical_op.ir",           // pass
+    //     "ir3/lost_copy.ir",            // pass
+    //     "ir3/minus_constant.ir",       // fail  (simple?)
+    //     "ir3/negate.ir",               // pass -> fail
+    //     "ir3/pointer.ir",              // fail
+    //     "ir3/return_void.ir",          // fail
+    //     "ir3/shift.ir",                // fail
+    //     "ir3/simple_cond.ir",          // pass
+    //     "ir3/simple_for.ir",           // pass
+    //     "ir3/simple_if.ir",            // pass
+    //     "ir3/simple.ir",               // pass
+    //     "ir3/sizeof.ir",               // pass
+    //     "ir3/sizeof3.ir",              // pass
+    //     "ir3/sizeof4.ir",              // pass
+    //     "ir3/swap.ir",                 // fail
+    //     "ir3/switch-in-loop.ir",       // fail -> pass
+    //     "ir3/switch.ir",               // fail(not yet)
+    //     "ir3/temp.ir",                 // pass
+    //     "ir3/test.ir",                 // pass
+    //     "ir3/typecast.ir",             // fail
+    //     "ir3/typedef.ir",              // pass
+    //     "ir3/unary.ir",                // passs
+    //     "ir3/while_continue_break.ir", // fail
+    // ];
+
+    // let test_files = vec![
+    //     // "ir0/array.ir", // pass
+    //     // "HW7_debug_ver3/test_array.ir", // pass
+    //     // "ir0/array2.ir", // pass
+    //     // "ir0/array3.ir", // pass
+    //     // "ir0/array4.ir", // pass
+    //     // "ir0/array5.ir", // pass
+    //     // "ir0/float.ir", // pass
+    //     // "ir0/sizeof2.ir", // pass
+    //     // "ir0/struct.ir",  // pass
+    //     // "ir0/struct2.ir", // pass
+    //     // "ir0/struct3.ir", // fail
+    //     "HW7_debug_ver3/test_struct3.ir",
+    //     // "ir0/struct4.ir", // fail
+    //     // "ir0/temp2.ir", // struct // pass
+    // ];
+
+    // let test_files = vec!["ir0/foo4.ir"];
+
+    // for file in test_files {
+    // println!("file: {file}");
+    // test_asmgen(Path::new(&format!("examples/{file}")));
+    // }
+
+    // // hello_main 만 하는 것
     // for dir in ASMGEN_TEST_DIR_LIST.iter() {
     //     test_dir(Path::new(dir), OsStr::new("ir"), |path| {
-    //         let file_name = &path
-    //             .file_name()
-    //             .expect("`path` must have a file name")
-    //             .to_str()
-    //             .expect("must be transformable to `&str`");
-    //         if !ASMGEN_SMALL_TEST_IGNORE_LIST.contains(file_name) && !file_name.contains(HELLO_MAIN)
-    //         {
+    //         if path.to_str().unwrap().contains(HELLO_MAIN) {
     //             println!("[testing asmgen for {path:?}]");
     //             test_asmgen(path);
     //         }
     //     });
     // }
+
+    for dir in ASMGEN_TEST_DIR_LIST.iter() {
+        test_dir(Path::new(dir), OsStr::new("ir"), |path| {
+            let file_name = &path
+                .file_name()
+                .expect("`path` must have a file name")
+                .to_str()
+                .expect("must be transformable to `&str`");
+            if !ASMGEN_SMALL_TEST_IGNORE_LIST.contains(file_name) && !file_name.contains(HELLO_MAIN)
+            {
+                println!("[testing asmgen for {path:?}]");
+                test_asmgen(path);
+            }
+        });
+    }
 }
 
 #[test]
