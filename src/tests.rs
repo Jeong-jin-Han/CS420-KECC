@@ -124,9 +124,7 @@ pub fn test_write_c(path: &Path) {
     println!("success to write");
 
     // 🔹 기존 `HW1_debug` 폴더에 복사
-    let debug_dir = PathBuf::from(
-        "/home/hanjeongjin/Workspace_ubuntu/cs420_ubuntu/kecc-private/examples/HW1_debug",
-    ); // ME
+    let debug_dir = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/HW1_debug")); // ME
     let debug_file_path = debug_dir.join("hw1_debug.c"); // ME
 
     let _ =
@@ -235,9 +233,11 @@ pub fn test_irgen(path: &Path) {
     //     Ok(_) => println!("---------test_irgen | IR (KECC format) ----------"),
     //     Err(_) => println!("write_ir failed to write IR."),
     // }
-    let ir_path = Path::new(
-        "/home/hanjeongjin/Workspace_ubuntu/cs420_ubuntu/kecc-private/examples/HW1_debug/hw2_debug.ir",
-    );
+    let ir_path = PathBuf::from(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/examples/HW1_debug/hw2_debug.ir"
+    ));
+    let ir_path = ir_path.as_path();
     save_ir_to_file(&ir, ir_path);
 
     // Interpret resolved ir
@@ -366,9 +366,11 @@ pub fn test_opt<P1: AsRef<Path>, P2: AsRef<Path>, O: Optimize<ir::TranslationUni
     // let ir_path = Path::new(
     //     "/home/hanjeongjin/Workspace_ubuntu/cs420_ubuntu/kecc-private/examples/HW1_debug/hw3_debug.ir",
     // );
-    let ir_path = Path::new(
-        "/home/hanjeongjin/Workspace_ubuntu/cs420_ubuntu/kecc-private/examples/HW1_debug/hw5_debug.ir",
-    );
+    let ir_path = PathBuf::from(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/examples/HW1_debug/hw5_debug.ir"
+    ));
+    let ir_path = ir_path.as_path();
 
     save_ir_to_file(&ir, ir_path);
 
@@ -416,7 +418,8 @@ pub fn test_asmgen(path: &Path) {
 
     // 📝 저장 경로 구성
     let asm_path = PathBuf::from(format!(
-        "/home/hanjeongjin/Workspace_ubuntu/cs420_ubuntu/kecc-private/examples/HW7_debug/my_{}.s",
+        "{}/examples/HW7_debug/my_{}.s",
+        env!("CARGO_MANIFEST_DIR"),
         dir_name
     ));
 

@@ -3,3 +3,5 @@ target
 rustfmt.toml
 **/*.rs.bk
 csmith
+tmp/
+__pycache__/
