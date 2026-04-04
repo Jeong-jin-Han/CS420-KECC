@@ -1069,19 +1069,18 @@ impl Asmgen {
 
                 // When both arms target the same phi block, use branch-specific labels to
                 // produce two distinct phi-move blocks (one for then-args, one for else-args).
-                let (else_label, then_label) = if arg_then.bid == arg_else.bid
-                    && phinodes.contains(&arg_then.bid)
-                {
-                    (
-                        asm::Label::new_pred_branch(name, *bid, arg_else.bid, false),
-                        asm::Label::new_pred_branch(name, *bid, arg_then.bid, true),
-                    )
-                } else {
-                    (
-                        make_label(name, arg_else, bid, &phinodes),
-                        make_label(name, arg_then, bid, &phinodes),
-                    )
-                };
+                let (else_label, then_label) =
+                    if arg_then.bid == arg_else.bid && phinodes.contains(&arg_then.bid) {
+                        (
+                            asm::Label::new_pred_branch(name, *bid, arg_else.bid, false),
+                            asm::Label::new_pred_branch(name, *bid, arg_then.bid, true),
+                        )
+                    } else {
+                        (
+                            make_label(name, arg_else, bid, &phinodes),
+                            make_label(name, arg_then, bid, &phinodes),
+                        )
+                    };
 
                 asm_block_instrs.push(asm::Instruction::BType {
                     instr: asm::BType::Beq,
