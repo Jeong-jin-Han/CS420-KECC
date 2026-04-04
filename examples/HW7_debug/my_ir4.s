@@ -1,43 +1,234 @@
-        .globl	fibonacci
+        .globl	init
         .section	.text
-        .type	fibonacci, @function
-fibonacci:
-        addi	sp,sp,-32
+        .type	init, @function
+init:
+        addi	sp,sp,-152
         sd	s0,0(sp)
-        addi	s0,sp,32
+        addi	s0,sp,152
         sw	a0,8(sp)
-        lw	t1,8(sp)
+        sw	a1,12(sp)
+        sd	a2,16(sp)
+        j	.init_L0_to_L_2_fake
+.init_L2:
+        lw	t1,24(sp)
         lw	t2,8(sp)
+        slt	t0,t1,t2
+        sb	t0,28(sp)
+        lbu	t0,28(sp)
+        beq	t0,zero, .init_L5
+        j	.init_L3
+.init_L3:
+        j	.init_L3_to_L_7_fake
+.init_L5:
+        ld	s0,0(sp)
+        addi	sp,sp,152
+        ret
+.init_L7:
+        lw	t1,32(sp)
+        lw	t2,12(sp)
+        slt	t0,t1,t2
+        sb	t0,36(sp)
+        lbu	t0,36(sp)
+        beq	t0,zero, .init_L10
+        j	.init_L8
+.init_L8:
+        lw	t1,24(sp)
+        mv	t2,t1
+        sd	t2,40(sp)
+        ld	t1,40(sp)
+        li	t2,20
+        mul	t0,t1,t2
+        sd	t0,48(sp)
+        ld	t0,16(sp)
+        ld	t1,48(sp)
+        add	t0,t0,t1
+        sd	t0,56(sp)
+        ld	t0,56(sp)
+        li	t1,0
+        add	t0,t0,t1
+        sd	t0,64(sp)
+        lw	t1,32(sp)
+        mv	t2,t1
+        sd	t2,72(sp)
+        ld	t1,72(sp)
+        li	t2,4
+        mul	t0,t1,t2
+        sd	t0,80(sp)
+        ld	t0,64(sp)
+        ld	t1,80(sp)
+        add	t0,t0,t1
+        sd	t0,88(sp)
+        lw	t1,24(sp)
+        lw	t2,32(sp)
+        mulw	t0,t1,t2
+        sw	t0,96(sp)
+        ld	t0,88(sp)
+        lw	t1,96(sp)
+        sw	t1,0(t0)
+        lw	t1,32(sp)
+        li	t2,1
         addw	t0,t1,t2
-        sw	t0,16(sp)
-        lw	t1,16(sp)
-        li	t2,0
-        xor	t0,t1,t2
-        snez	t0,t0
-        sb	t0,24(sp)
-        lbu	t0,24(sp)
-        beq	t0,zero, .fibonacci_L3
-        j	.fibonacci_L2
-.fibonacci_L2:
-        lw	a0,8(sp)
-        sw	a0,-8(s1)
-        ld	s0,0(sp)
-        addi	sp,sp,32
-        ret
-.fibonacci_L3:
-        li	a0,0
-        sw	a0,-8(s1)
-        ld	s0,0(sp)
-        addi	sp,sp,32
-        ret
+        sw	t0,104(sp)
+        j	.init_L8_to_L_7_fake
+.init_L10:
+        lw	t1,24(sp)
+        li	t2,1
+        addw	t0,t1,t2
+        sw	t0,112(sp)
+        j	.init_L10_to_L_2_fake
+.init_L0_to_L_2_fake:
+        li	t3,0
+        sw	t3,120(sp)
+        lw	t3,120(sp)
+        sw	t3,24(sp)
+        j	.init_L2
+.init_L3_to_L_7_fake:
+        li	t3,0
+        sw	t3,128(sp)
+        lw	t3,128(sp)
+        sw	t3,32(sp)
+        j	.init_L7
+.init_L8_to_L_7_fake:
+        lw	t3,104(sp)
+        sw	t3,136(sp)
+        lw	t3,136(sp)
+        sw	t3,32(sp)
+        j	.init_L7
+.init_L10_to_L_2_fake:
+        lw	t3,112(sp)
+        sw	t3,144(sp)
+        lw	t3,144(sp)
+        sw	t3,24(sp)
+        j	.init_L2
         .globl	main
         .section	.text
         .type	main, @function
 main:
-        addi	sp,sp,-8
+        addi	sp,sp,-440
         sd	s0,0(sp)
-        addi	s0,sp,8
-        li	a0,1
+        sd	ra,8(sp)
+        sd	s1,16(sp)
+        addi	s0,sp,440
+        addi	t0,sp,24
+        sd	t0,216(sp)
+        addi	t0,sp,120
+        sd	t0,224(sp)
+        ld	t0,216(sp)
+        li	t1,4
+        add	t0,t0,t1
+        sd	t0,232(sp)
+        ld	t0,232(sp)
+        li	t1,0
+        add	t0,t0,t1
+        sd	t0,240(sp)
+        addi	s1,sp,248
+        li	t0,4
+        mv	a0,t0
+        li	t0,5
+        mv	a1,t0
+        ld	t0,240(sp)
+        mv	a2,t0
+        call	init
+        ld	t0,216(sp)
+        addi	t1,sp,248
+        ld	t2,0(t0)
+        sd	t2,0(t1)
+        ld	t2,8(t0)
+        sd	t2,8(t1)
+        ld	t2,16(t0)
+        sd	t2,16(t1)
+        ld	t2,24(t0)
+        sd	t2,24(t1)
+        ld	t2,32(t0)
+        sd	t2,32(t1)
+        ld	t2,40(t0)
+        sd	t2,40(t1)
+        ld	t2,48(t0)
+        sd	t2,48(t1)
+        ld	t2,56(t0)
+        sd	t2,56(t1)
+        ld	t2,64(t0)
+        sd	t2,64(t1)
+        ld	t2,72(t0)
+        sd	t2,72(t1)
+        ld	t2,80(t0)
+        sd	t2,80(t1)
+        ld	t2,88(t0)
+        sd	t2,88(t1)
+        ld	t0,224(sp)
+        addi	t1,sp,248
+        ld	t2,0(t1)
+        sd	t2,0(t0)
+        ld	t2,8(t1)
+        sd	t2,8(t0)
+        ld	t2,16(t1)
+        sd	t2,16(t0)
+        ld	t2,24(t1)
+        sd	t2,24(t0)
+        ld	t2,32(t1)
+        sd	t2,32(t0)
+        ld	t2,40(t1)
+        sd	t2,40(t0)
+        ld	t2,48(t1)
+        sd	t2,48(t0)
+        ld	t2,56(t1)
+        sd	t2,56(t0)
+        ld	t2,64(t1)
+        sd	t2,64(t0)
+        ld	t2,72(t1)
+        sd	t2,72(t0)
+        ld	t2,80(t1)
+        sd	t2,80(t0)
+        ld	t2,88(t1)
+        sd	t2,88(t0)
+        ld	t0,224(sp)
+        li	t1,4
+        add	t0,t0,t1
+        sd	t0,344(sp)
+        ld	t0,344(sp)
+        li	t1,0
+        add	t0,t0,t1
+        sd	t0,352(sp)
+        li	t1,2
+        mv	t2,t1
+        sd	t2,360(sp)
+        ld	t1,360(sp)
+        li	t2,20
+        mul	t0,t1,t2
+        sd	t0,368(sp)
+        ld	t0,352(sp)
+        ld	t1,368(sp)
+        add	t0,t0,t1
+        sd	t0,376(sp)
+        ld	t0,376(sp)
+        li	t1,0
+        add	t0,t0,t1
+        sd	t0,384(sp)
+        li	t1,3
+        mv	t2,t1
+        sd	t2,392(sp)
+        ld	t1,392(sp)
+        li	t2,4
+        mul	t0,t1,t2
+        sd	t0,400(sp)
+        ld	t0,384(sp)
+        ld	t1,400(sp)
+        add	t0,t0,t1
+        sd	t0,408(sp)
+        ld	t0,408(sp)
+        lw	t0,0(t0)
+        sw	t0,416(sp)
+        lw	t1,416(sp)
+        li	t2,6
+        xor	t0,t1,t2
+        seqz	t0,t0
+        sb	t0,424(sp)
+        lbu	t1,424(sp)
+        mv	t2,t1
+        sw	t2,432(sp)
+        lw	a0,432(sp)
+        ld	s1,16(sp)
+        ld	ra,8(sp)
         ld	s0,0(sp)
-        addi	sp,sp,8
+        addi	sp,sp,440
         ret

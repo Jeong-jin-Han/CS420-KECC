@@ -497,18 +497,21 @@ fn split_large_memory_offset(instr: asm::Instruction) -> Option<Vec<asm::Instruc
 }
 
 // bid -> arg.bid (phinode 존재하는 bid)
+// branch_tag: None   = normal (Jump / distinct ConditionalJump targets)
+//             Some(true)  = then-arm when both ConditionalJump targets are the same block
+//             Some(false) = else-arm when both ConditionalJump targets are the same block
 fn insert_argbid(
     arg_bid: &ir::BlockId,
     bid: &ir::BlockId,
     phinodes: Vec<ir::BlockId>,
     phinodes_to_predecessor: &mut HashMap<ir::BlockId, Vec<ir::BlockId>>,
-    predecessor_to_phinodes: &mut Vec<(ir::BlockId, ir::BlockId)>,
+    predecessor_to_phinodes: &mut Vec<(ir::BlockId, ir::BlockId, Option<bool>)>,
+    branch_tag: Option<bool>,
 ) {
     if phinodes.contains(arg_bid) {
         let bid_entry = phinodes_to_predecessor.entry(*arg_bid).or_default();
         bid_entry.push(*bid);
-
-        predecessor_to_phinodes.push((*bid, *arg_bid));
+        predecessor_to_phinodes.push((*bid, *arg_bid, branch_tag));
     }
 }
 
@@ -601,24 +604,10 @@ impl Asmgen {
         name: &str,
         phinodes: &[ir::BlockId],
         blocks: &BTreeMap<ir::BlockId, ir::Block>,
-        predecessor_to_phinodes: &[(ir::BlockId, ir::BlockId)],
+        predecessor_to_phinodes: &[(ir::BlockId, ir::BlockId, Option<bool>)],
         asm_blocks: &mut Vec<asm::Block>,
     ) {
-        // for phinode in phinodes {
-        //     let block_label = asm::Label::new_phi(name, *phinode);
-        //     let true_label = asm::Label::new(name, *phinode);
-        //     // let mut asm_block_instrs = Vec::new();
-
-        //     // asm_block_instrs.push(asm::Instruction::Pseudo(asm::Pseudo::J {
-        //     //     offset: true_label,
-        //     // }));
-        //     let asm_block_instrs = vec![asm::Instruction::Pseudo(asm::Pseudo::J {
-        //         offset: true_label,
-        //     })];
-        //     let asm_block = asm::Block::new(Some(block_label), asm_block_instrs);
-        //     asm_blocks.push(asm_block);
-        // }
-        for (predecessor, phinode) in predecessor_to_phinodes {
+        for (predecessor, phinode, branch_tag) in predecessor_to_phinodes {
             let exit = blocks.get(predecessor).unwrap().exit.clone();
             let phinodes_dtype = &blocks.get(phinode).unwrap().phinodes.clone();
 
@@ -626,13 +615,18 @@ impl Asmgen {
             debug_print!("exit {}", exit);
             debug_print!("phinodes {:?}", phinodes);
 
-            let block_label = asm::Label::new_pred(name, *predecessor, *phinode);
+            // Choose label: normal or branch-specific (when both ConditionalJump targets are same)
+            let block_label = match branch_tag {
+                None => asm::Label::new_pred(name, *predecessor, *phinode),
+                Some(is_then) => {
+                    asm::Label::new_pred_branch(name, *predecessor, *phinode, *is_then)
+                }
+            };
             let true_label = asm::Label::new(name, *phinode);
             let mut asm_block_instrs = Vec::new();
 
             match &exit {
                 ir::BlockExit::Jump { arg } => {
-                    /* predecessor */
                     self.translate_function_phinodes_jumparg(
                         arg,
                         phinode,
@@ -641,15 +635,20 @@ impl Asmgen {
                     );
                 }
                 ir::BlockExit::ConditionalJump {
-                    /* 둘 중에 누가 predecessor인지 그리고 해당 predecessor에 대해서만 */
                     condition,
                     arg_then,
                     arg_else,
                 } => {
-                    let jumpargs = vec![arg_then.clone(), arg_else.clone()];
-
-                    let jumparg = amongus_jumparg(&jumpargs, phinode);
-
+                    // When branch_tag is set, pick the exact arm; otherwise use
+                    // amongus_jumparg (safe when the two targets are distinct).
+                    let jumparg = match branch_tag {
+                        Some(true) => arg_then.clone(),
+                        Some(false) => arg_else.clone(),
+                        None => {
+                            let jumpargs = vec![arg_then.clone(), arg_else.clone()];
+                            amongus_jumparg(&jumpargs, phinode)
+                        }
+                    };
                     self.translate_function_phinodes_jumparg(
                         &jumparg,
                         phinode,
@@ -662,14 +661,11 @@ impl Asmgen {
                     default,
                     cases,
                 } => {
-                    let mut jumpargs = Vec::new();
-                    jumpargs.push(default.clone());
+                    let mut jumpargs = vec![default.clone()];
                     for (_, case) in cases {
                         jumpargs.push(case.clone());
                     }
-
                     let jumparg = amongus_jumparg(&jumpargs, phinode);
-
                     self.translate_function_phinodes_jumparg(
                         &jumparg,
                         phinode,
@@ -684,21 +680,6 @@ impl Asmgen {
                 offset: true_label,
             }));
 
-            /*
-            어떤 것을 load pred blcok의 jump arg
-
-            추가해야할 logic
-            for loop1 {
-                Load
-                Store t4_reg
-            }
-
-            누구의 rid 대상으로 Store?? -> Phinode 대상으로 Store
-            for loop2 {
-                Load t4_reg
-                Store
-            }
-            */
             add_padding(&mut self.stack_allocator.next_stack_offset);
 
             let asm_block = asm::Block::new(Some(block_label), asm_block_instrs);
@@ -1086,8 +1067,21 @@ impl Asmgen {
 
                 self.translate_operand(condition.clone(), asm::Register::T0, asm_block_instrs);
 
-                let else_label = make_label(name, arg_else, bid, &phinodes);
-                let then_label = make_label(name, arg_then, bid, &phinodes);
+                // When both arms target the same phi block, use branch-specific labels to
+                // produce two distinct phi-move blocks (one for then-args, one for else-args).
+                let (else_label, then_label) = if arg_then.bid == arg_else.bid
+                    && phinodes.contains(&arg_then.bid)
+                {
+                    (
+                        asm::Label::new_pred_branch(name, *bid, arg_else.bid, false),
+                        asm::Label::new_pred_branch(name, *bid, arg_then.bid, true),
+                    )
+                } else {
+                    (
+                        make_label(name, arg_else, bid, &phinodes),
+                        make_label(name, arg_then, bid, &phinodes),
+                    )
+                };
 
                 asm_block_instrs.push(asm::Instruction::BType {
                     instr: asm::BType::Beq,
@@ -2097,6 +2091,7 @@ impl Asmgen {
                         phinodes.clone(),
                         &mut phinodes_to_predecessor,
                         &mut predecessor_to_phinodes,
+                        None,
                     );
                 }
                 ir::BlockExit::ConditionalJump {
@@ -2104,20 +2099,42 @@ impl Asmgen {
                     arg_then,
                     arg_else,
                 } => {
-                    insert_argbid(
-                        &arg_then.bid,
-                        bid,
-                        phinodes.clone(),
-                        &mut phinodes_to_predecessor,
-                        &mut predecessor_to_phinodes,
-                    );
-                    if arg_else.bid != arg_then.bid {
+                    if arg_then.bid == arg_else.bid {
+                        // Both branches target the same phi block with different args —
+                        // register two entries with branch tags so distinct fake blocks
+                        // are generated.
+                        insert_argbid(
+                            &arg_then.bid,
+                            bid,
+                            phinodes.clone(),
+                            &mut phinodes_to_predecessor,
+                            &mut predecessor_to_phinodes,
+                            Some(true),
+                        );
                         insert_argbid(
                             &arg_else.bid,
                             bid,
                             phinodes.clone(),
                             &mut phinodes_to_predecessor,
                             &mut predecessor_to_phinodes,
+                            Some(false),
+                        );
+                    } else {
+                        insert_argbid(
+                            &arg_then.bid,
+                            bid,
+                            phinodes.clone(),
+                            &mut phinodes_to_predecessor,
+                            &mut predecessor_to_phinodes,
+                            None,
+                        );
+                        insert_argbid(
+                            &arg_else.bid,
+                            bid,
+                            phinodes.clone(),
+                            &mut phinodes_to_predecessor,
+                            &mut predecessor_to_phinodes,
+                            None,
                         );
                     }
                 }
@@ -2135,6 +2152,7 @@ impl Asmgen {
                         phinodes.clone(),
                         &mut phinodes_to_predecessor,
                         &mut predecessor_to_phinodes,
+                        None,
                     );
                     for (_, arg) in cases {
                         if seen_switch_targets.insert(arg.bid) {
@@ -2144,6 +2162,7 @@ impl Asmgen {
                                 phinodes.clone(),
                                 &mut phinodes_to_predecessor,
                                 &mut predecessor_to_phinodes,
+                                None,
                             );
                         }
                     }
@@ -2532,5 +2551,18 @@ impl asm::Label {
         let id = block_id.0;
         let phi_id = phi_id.0;
         Self(format!(".{name}_L{id}_to_L_{phi_id}_fake"))
+    }
+    /// Used when both ConditionalJump branches target the same phi block —
+    /// we need distinct labels for the then-arm and else-arm phi-move blocks.
+    pub fn new_pred_branch(
+        name: &str,
+        block_id: ir::BlockId,
+        phi_id: ir::BlockId,
+        is_then: bool,
+    ) -> Self {
+        let id = block_id.0;
+        let phi_id = phi_id.0;
+        let arm = if is_then { "then" } else { "else" };
+        Self(format!(".{name}_L{id}_to_L_{phi_id}_{arm}_fake"))
     }
 }

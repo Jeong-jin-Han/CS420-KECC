@@ -155,7 +155,7 @@ init:
 
 block b0:
   %b0:i0:u1 = cmp ne 0:i32 0:i32
-  br %b0:i0:u1, b4(), b5()
+  br %b0:i0:u1, b3(1:i32), b2()
 
 block b2:
   %b2:i0:u1 = cmp ne 1:i32 0:i32
@@ -166,12 +166,6 @@ block b3:
   %b3:i0:u1 = cmp eq %b3:p0:i32 0:i32
   %b3:i1:i32 = typecast %b3:i0:u1 to i32
   ret %b3:i1:i32
-
-block b4:
-  br %b0:i0:u1, b3(1:i32), b2()
-
-block b5:
-  br %b0:i0:u1, b3(1:i32), b2()
 
 block b30:
   %b30:p0:i32:t11
@@ -888,7 +882,7 @@ block b0:
   br %b0:i0:u1, b9(1:i32), b9(0:i32)
 
 block b1:
-  br %b6:p0:u1, b21(1:i32), b21(0:i32)
+  br %b5:i0:u1, b21(1:i32), b21(0:i32)
 
 block b3:
   %b3:p0:i32:t12
@@ -897,16 +891,11 @@ block b3:
   ret %b3:i1:i32
 
 block b4:
-  %b4:i0:u1 = cmp ne 0:i32 0:i32
-  j b6(%b4:i0:u1)
+  br %b5:i0:u1, b1(), b3(1:i32)
 
 block b5:
   %b5:i0:u1 = cmp ne 0:i32 0:i32
-  j b6(%b5:i0:u1)
-
-block b6:
-  %b6:p0:u1
-  br %b6:p0:u1, b1(), b3(1:i32)
+  br %b5:i0:u1, b1(), b3(1:i32)
 
 block b9:
   %b9:p0:i32:t0
@@ -914,10 +903,10 @@ block b9:
   br %b9:i0:u1, b4(), b5()
 
 block b16:
-  br %b6:p0:u1, b24(1:i32), b24(0:i32)
+  br %b5:i0:u1, b24(1:i32), b24(0:i32)
 
 block b17:
-  br %b6:p0:u1, b27(0:i32), b27(1:i32)
+  br %b5:i0:u1, b27(0:i32), b27(1:i32)
 
 block b18:
   %b18:p0:i32:t7
@@ -3916,7 +3905,7 @@ init:
 
 block b0:
   %b0:i0:u1 = cmp ne 1:i32 0:i32
-  br %b0:i0:u1, b4(), b5()
+  br %b0:i0:u1, b1(), b2()
 
 block b1:
   %b1:i0:u1 = cmp ne 0:i32 0:i32
@@ -3931,12 +3920,6 @@ block b3:
   %b3:i0:u1 = cmp eq %b3:p0:i32 1:i32
   %b3:i1:i32 = typecast %b3:i0:u1 to i32
   ret %b3:i1:i32
-
-block b4:
-  br %b0:i0:u1, b1(), b2()
-
-block b5:
-  br %b0:i0:u1, b1(), b2()
 
 block b16:
   br %b0:i0:u1, b24(0:i32), b24(1:i32)
@@ -4374,7 +4357,7 @@ init:
 block b0:
   %b0:i0:u1 = cmp ne 1:i32 0:i32
   %b0:i1:u1 = cmp ne 0:i32 0:i32
-  br %b0:i1:u1, b4(), b5()
+  br %b0:i1:u1, b3(0:i32), b2()
 
 block b2:
   br %b0:i0:u1, b33(0:i32), b33(1:i32)
@@ -4384,12 +4367,6 @@ block b3:
   %b3:i0:u1 = cmp eq %b3:p0:i32 1:i32
   %b3:i1:i32 = typecast %b3:i0:u1 to i32
   ret %b3:i1:i32
-
-block b4:
-  br %b0:i1:u1, b3(0:i32), b2()
-
-block b5:
-  br %b0:i1:u1, b3(0:i32), b2()
 
 block b29:
   br %b0:i1:u1, b39(0:i32), b39(1:i32)
@@ -5531,8 +5508,7 @@ init:
 
 block b0:
   %b0:i0:u1 = cmp ne 0:i32 0:i32
-  %b0:i1:u1 = cmp ne 1:i32 0:i32
-  br %b0:i1:u1, b4(), b5()
+  br %b0:i0:u1, b1(), b3(1:i32)
 
 block b1:
   br %b0:i0:u1, b21(1:i32), b21(0:i32)
@@ -5542,12 +5518,6 @@ block b3:
   %b3:i0:u1 = cmp eq %b3:p0:i32 1:i32
   %b3:i1:i32 = typecast %b3:i0:u1 to i32
   ret %b3:i1:i32
-
-block b4:
-  br %b0:i0:u1, b1(), b3(1:i32)
-
-block b5:
-  br %b0:i0:u1, b1(), b3(1:i32)
 
 block b17:
   br %b0:i0:u1, b27(1:i32), b27(0:i32)
@@ -5732,7 +5702,7 @@ init:
 block b0:
   %b0:i0:u1 = cmp ne 0:i32 0:i32
   %b0:i1:u1 = cmp ne 1:i32 0:i32
-  br %b0:i1:u1, b4(), b5()
+  br %b0:i1:u1, b3(0:i32), b2()
 
 block b2:
   br %b0:i1:u1, b30(0:i32), b29()
@@ -5742,12 +5712,6 @@ block b3:
   %b3:i0:u1 = cmp eq %b3:p0:i32 0:i32
   %b3:i1:i32 = typecast %b3:i0:u1 to i32
   ret %b3:i1:i32
-
-block b4:
-  br %b0:i1:u1, b3(0:i32), b2()
-
-block b5:
-  br %b0:i1:u1, b3(0:i32), b2()
 
 block b29:
   br %b0:i0:u1, b39(0:i32), b39(1:i32)
@@ -5928,7 +5892,7 @@ init:
 block b0:
   %b0:i0:u1 = cmp ne 0:i32 0:i32
   %b0:i1:u1 = cmp ne 1:i32 0:i32
-  br %b0:i1:u1, b4(), b5()
+  br %b0:i0:u1, b1(), b2()
 
 block b1:
   br %b0:i1:u1, b21(1:i32), b21(0:i32)
@@ -5941,12 +5905,6 @@ block b3:
   %b3:i0:u1 = cmp eq %b3:p0:i32 0:i32
   %b3:i1:i32 = typecast %b3:i0:u1 to i32
   ret %b3:i1:i32
-
-block b4:
-  br %b0:i0:u1, b1(), b2()
-
-block b5:
-  br %b0:i0:u1, b1(), b2()
 
 block b17:
   br %b0:i1:u1, b27(1:i32), b27(0:i32)
@@ -6299,16 +6257,11 @@ block b3:
   ret %b3:i1:i32
 
 block b4:
-  %b4:i0:u1 = cmp ne 0:i32 0:i32
-  j b6(%b4:i0:u1)
+  br %b5:i0:u1, b1(), b2()
 
 block b5:
   %b5:i0:u1 = cmp ne 0:i32 0:i32
-  j b6(%b5:i0:u1)
-
-block b6:
-  %b6:p0:u1
-  br %b6:p0:u1, b1(), b2()
+  br %b5:i0:u1, b1(), b2()
 
 block b9:
   %b9:p0:i32:t0
