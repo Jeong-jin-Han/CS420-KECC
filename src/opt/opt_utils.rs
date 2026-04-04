@@ -162,9 +162,9 @@ impl Walk for Operand {
     where
         F: FnMut(&mut Operand) -> bool,
     {
-        // println!("WALK Operand: {:?}", self);
+        // debug_print!("WALK Operand: {:?}", self);
         // let tmp = f(self);
-        // println!("Operand tmp: {:?}", tmp);
+        // debug_print!("Operand tmp: {:?}", tmp);
         // tmp
         f(self)
     }
@@ -346,7 +346,7 @@ impl Domtree {
                 let mut runner = *bid_prev;
                 while !Self::dominates(&idoms, runner, *bid) {
                     frontiers.entry(runner).or_insert_with(Vec::new).push(*bid);
-                    println!("runner: {}, bid: {}, idom: {}", runner, bid, idom);
+                    debug_print!("runner: {}, bid: {}, idom: {}", runner, bid, idom);
                     runner = *idoms.get(&runner).unwrap();
                 }
             }

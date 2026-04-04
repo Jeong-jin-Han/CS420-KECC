@@ -51,7 +51,14 @@ impl<T, O: Optimize<T>> Optimize<T> for Repeat<O> {
             return false;
         }
 
-        while self.inner.optimize(code) {} // later fix
+        let mut iters = 0usize;
+        while self.inner.optimize(code) {
+            iters += 1;
+            if iters >= 500 {
+                eprintln!("[Repeat] WARNING: hit 500-iteration safety cap — possible oscillation");
+                break;
+            }
+        }
         true
     }
 }

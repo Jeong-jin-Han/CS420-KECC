@@ -88,12 +88,12 @@ impl StackAllocator {
         dtype: &ir::Dtype,
         structs: &HashMap<String, Option<ir::Dtype>>,
     ) -> i32 {
-        println!("allocat_stack_slot {}", self.next_stack_offset);
+        debug_print!("allocat_stack_slot {}", self.next_stack_offset);
 
         match self.stack_map.get(rid) {
             Some(Loc::Stack(off)) => *off,
             Some(Loc::Reg(_)) => {
-                println!("allocate_stack_slot | Reg");
+                debug_print!("allocate_stack_slot | Reg");
                 0
             } // 레지스터면 offset 의미 0 (안 씀)
             None => {
@@ -196,9 +196,10 @@ impl Translate<ir::TranslationUnit> for Asmgen {
                 // }
                 ir::Declaration::Variable { dtype, initializer } => {
                     let label = asm::Label(name.clone());
-                    println!(
+                    debug_print!(
                         "init_value_opt | dtype {} initializer {:?}",
-                        dtype, initializer
+                        dtype,
+                        initializer
                     );
 
                     // 초기값 파싱
@@ -242,11 +243,11 @@ impl Translate<ir::TranslationUnit> for Asmgen {
                         None
                     };
 
-                    println!("name {} init_valu_opt {:?}", name, init_value_opt);
+                    debug_print!("name {} init_valu_opt {:?}", name, init_value_opt);
                     let init_value: u64 = match init_value_opt {
                         Some(ir::Constant::Int { value, .. }) => value as u64,
                         Some(ir::Constant::Float { value, width }) => {
-                            println!("value.0.to_bits() {}", value.0.to_bits());
+                            debug_print!("value.0.to_bits() {}", value.0.to_bits());
                             match width {
                                 32 => {
                                     let f: f32 = value.0 as f32;
@@ -259,7 +260,7 @@ impl Translate<ir::TranslationUnit> for Asmgen {
                         _ => 0,
                     };
 
-                    println!("name {} init_value {}", name, init_value);
+                    debug_print!("name {} init_value {}", name, init_value);
 
                     let data_directives: Vec<asm::Directive> = if let ir::Dtype::Array {
                         inner,
@@ -379,8 +380,8 @@ impl Translate<ir::TranslationUnit> for Asmgen {
             }
         }
 
-        // println!("====translate===");
-        // println!("self.function_name_list {:?}", self.function_name_list);
+        // debug_print!("====translate===");
+        // debug_print!("self.function_name_list {:?}", self.function_name_list);
 
         let asm_unit = asm::TranslationUnit {
             functions,
@@ -497,17 +498,12 @@ fn split_large_memory_offset(instr: asm::Instruction) -> Option<Vec<asm::Instruc
 
 // bid -> arg.bid (phinode 존재하는 bid)
 fn insert_argbid(
-    // arg: &JumpArg,
     arg_bid: &ir::BlockId,
     bid: &ir::BlockId,
     phinodes: Vec<ir::BlockId>,
     phinodes_to_predecessor: &mut HashMap<ir::BlockId, Vec<ir::BlockId>>,
     predecessor_to_phinodes: &mut Vec<(ir::BlockId, ir::BlockId)>,
 ) {
-    // if phinodes.contains(&arg.bid) {
-    //     let bid_entry = phinodes_to_predecessor.entry(arg.bid).or_default();
-    //     bid_entry.push(*bid);
-    // }
     if phinodes.contains(arg_bid) {
         let bid_entry = phinodes_to_predecessor.entry(*arg_bid).or_default();
         bid_entry.push(*bid);
@@ -626,9 +622,9 @@ impl Asmgen {
             let exit = blocks.get(predecessor).unwrap().exit.clone();
             let phinodes_dtype = &blocks.get(phinode).unwrap().phinodes.clone();
 
-            println!("translate_function_phinodes");
-            println!("exit {}", exit);
-            println!("phinodes {:?}", phinodes);
+            debug_print!("translate_function_phinodes");
+            debug_print!("exit {}", exit);
+            debug_print!("phinodes {:?}", phinodes);
 
             let block_label = asm::Label::new_pred(name, *predecessor, *phinode);
             let true_label = asm::Label::new(name, *phinode);
@@ -771,7 +767,7 @@ impl Asmgen {
             }) = block_init.instructions.first_mut()
             {
                 *imm = asm::Immediate::Value((-self.stack_allocator.next_stack_offset) as u64);
-                println!(
+                debug_print!(
                     "Patched initial sp offset to {}",
                     (-self.stack_allocator.next_stack_offset) as u64
                 );
@@ -789,7 +785,7 @@ impl Asmgen {
                     }
                     _ => {
                         // panic!("not yet implemented");
-                        // println!();
+                        // debug_print!();
                     }
                 }
             }
@@ -901,7 +897,7 @@ impl Asmgen {
                     .allocate_stack_slot(&local_rid, &ptr_dtype, &self.structs);
 
             // let t0_reg = asm_register_instruction(0, dtype);
-            // println!("translate_function_prelogue | t0_reg {t0_reg}");
+            // debug_print!("translate_function_prelogue | t0_reg {t0_reg}");
             asm_block_instrs.push(asm::Instruction::IType {
                 instr: asm::IType::Addi(asm::DataSize::Double),
                 rd: asm::Register::T0,
@@ -977,7 +973,7 @@ impl Asmgen {
                 let offset = self
                     .stack_allocator
                     .allocate_stack_slot(rid, dtype, &self.structs);
-                println!("translate_operand | offset {}", offset);
+                debug_print!("translate_operand | offset {}", offset);
                 asm_block_instrs.push(asm::Instruction::IType {
                     instr: load_instr_for_dtype(&operand.dtype(), &self.structs),
                     rd,
@@ -986,7 +982,7 @@ impl Asmgen {
                 });
             }
             ir::Operand::Constant(c) => {
-                println!("translate_operand | Constant c {}", c);
+                debug_print!("translate_operand | Constant c {}", c);
                 // c
                 // undef  -> Li
                 // global -> La
@@ -1040,7 +1036,7 @@ impl Asmgen {
                         });
                     }
                     _ => {
-                        println!("TODO")
+                        debug_print!("TODO")
                     }
                 }
             }
@@ -1059,7 +1055,7 @@ impl Asmgen {
     ) {
         match &block.exit {
             ir::BlockExit::Jump { arg } => {
-                println!(
+                debug_print!(
                     "blockexit {} \n argbid {} | argbid contains in phinodes {}",
                     block.exit,
                     arg.bid,
@@ -1075,13 +1071,13 @@ impl Asmgen {
                 arg_then,
                 arg_else,
             } => {
-                println!(
+                debug_print!(
                     "blockexit {} \n argbid {} | argbid contains in phinodes {}",
                     block.exit,
                     arg_then.bid,
                     phinodes.contains(&arg_then.bid)
                 );
-                println!(
+                debug_print!(
                     "blockexit {} \n argbid {} | argbid contains in phinodes {}",
                     block.exit,
                     arg_else.bid,
@@ -1106,7 +1102,7 @@ impl Asmgen {
             }
             ir::BlockExit::Return { value } => {
                 // add_padding(&mut self.stack_allocator.next_stack_offset);
-                println!("translate_functino_epilogue | value {}", value);
+                debug_print!("translate_functino_epilogue | value {}", value);
 
                 let a0_reg = asm_register_args(0, &value.dtype());
                 // asm::Register::A0 -> a0_reg
@@ -1180,14 +1176,14 @@ impl Asmgen {
                 default,
                 cases,
             } => {
-                println!(
+                debug_print!(
                     "blockexit {} \n argbid {} | argbid contains in phinodes {}",
                     block.exit,
                     default.bid,
                     phinodes.contains(&default.bid)
                 );
                 for (_, arg) in cases {
-                    println!(
+                    debug_print!(
                         "blockexit {} \n argbid {} | argbid contains in phinodes {}",
                         block.exit,
                         arg.bid,
@@ -1246,9 +1242,9 @@ impl Asmgen {
         asm_block_instrs: &mut Vec<asm::Instruction>,
     ) {
         let dst_rid = ir::RegisterId::temp(bid, iid);
-        println!("\n======= translate_function_instruction ========\n");
-        println!("instruction {} dst_rid {}", instruction, dst_rid);
-        println!("\n================================================\n");
+        debug_print!("\n======= translate_function_instruction ========\n");
+        debug_print!("instruction {} dst_rid {}", instruction, dst_rid);
+        debug_print!("\n================================================\n");
         match instruction.deref() {
             ir::Instruction::UnaryOp {
                 op,
@@ -1270,7 +1266,7 @@ impl Asmgen {
                     let t0_reg = asm_register_instruction(0, dtype);
 
                     self.translate_operand(operand.clone(), t0_reg, asm_block_instrs);
-                    println!(
+                    debug_print!(
                         "Unaryop Minus | operand.dtype {} instr dtype {} t0_reg {}",
                         operand.dtype(),
                         dtype,
@@ -1287,7 +1283,7 @@ impl Asmgen {
                     let offset =
                         self.stack_allocator
                             .allocate_stack_slot(&dst_rid, dtype, &self.structs);
-                    println!("unaryop offset {}", offset);
+                    debug_print!("unaryop offset {}", offset);
                     add_padding(&mut self.stack_allocator.next_stack_offset);
                     asm_block_instrs.push(asm::Instruction::SType {
                         instr: store_instr_for_dtype(dtype, &self.structs),
@@ -1310,7 +1306,7 @@ impl Asmgen {
                     let offset =
                         self.stack_allocator
                             .allocate_stack_slot(&dst_rid, dtype, &self.structs);
-                    println!("unaryop negate offset {}", offset);
+                    debug_print!("unaryop negate offset {}", offset);
                     add_padding(&mut self.stack_allocator.next_stack_offset);
 
                     asm_block_instrs.push(asm::Instruction::SType {
@@ -1321,7 +1317,7 @@ impl Asmgen {
                     });
                 }
                 _ => {
-                    println!("TODO unaryop {:?}", op);
+                    debug_print!("TODO unaryop {:?}", op);
                 }
             },
             ir::Instruction::BinOp {
@@ -1343,7 +1339,7 @@ impl Asmgen {
                     is_signed = dtype.is_int_signed();
                 }
 
-                println!("instruction {} is_signed {}", instruction, is_signed);
+                debug_print!("instruction {} is_signed {}", instruction, is_signed);
 
                 if let Some(rtype) = ast_binop_to_rtype(op, dtype.clone(), is_signed) {
                     asm_block_instrs.push(asm::Instruction::RType {
@@ -1353,13 +1349,13 @@ impl Asmgen {
                         rs2: Some(t2_reg),
                     });
 
-                    println!("\n===== binop alloc =====\n");
+                    debug_print!("\n===== binop alloc =====\n");
                     // dst_rid에 대해서 T0를 저장해야 함
                     let offset =
                         self.stack_allocator
                             .allocate_stack_slot(&dst_rid, dtype, &self.structs);
                     add_padding(&mut self.stack_allocator.next_stack_offset);
-                    println!("\n=======================\n");
+                    debug_print!("\n=======================\n");
 
                     // // binop test
                     // asm_block_instrs.push(asm::Instruction::IType {
@@ -1376,7 +1372,7 @@ impl Asmgen {
                         imm: asm::Immediate::Value(offset as u64),
                     });
                 } else {
-                    println!("TODO maybe | instruction {}", instruction);
+                    debug_print!("TODO maybe | instruction {}", instruction);
                 }
                 let t0_reg = asm_register_instruction(0, dtype);
                 let t1_reg = asm_register_instruction(1, &lhs.dtype());
@@ -1386,7 +1382,7 @@ impl Asmgen {
 
                     // }
                     ast::BinaryOperator::Equals => {
-                        println!("binop op {:?}", op);
+                        debug_print!("binop op {:?}", op);
                         if let ir::Dtype::Float { .. } = lhs.dtype() {
                             let data_size = asm::DataSize::from_dtype(&lhs.dtype());
                             asm_block_instrs.push(asm::Instruction::RType {
@@ -1410,7 +1406,7 @@ impl Asmgen {
                             }));
                         }
 
-                        println!("\n===== binop alloc =====\n");
+                        debug_print!("\n===== binop alloc =====\n");
                         // dst_rid에 대해서 T0를 저장해야 함
                         let offset = self.stack_allocator.allocate_stack_slot(
                             &dst_rid,
@@ -1418,7 +1414,7 @@ impl Asmgen {
                             &self.structs,
                         );
                         add_padding(&mut self.stack_allocator.next_stack_offset);
-                        println!("\n=======================\n");
+                        debug_print!("\n=======================\n");
 
                         asm_block_instrs.push(asm::Instruction::SType {
                             instr: store_instr_for_dtype(dtype, &self.structs),
@@ -1748,7 +1744,7 @@ impl Asmgen {
                 args,
                 return_type,
             } => {
-                println!(
+                debug_print!(
                     "translate_function_instruction | before ret | next_stack_offset {}",
                     self.stack_allocator.next_stack_offset
                 );
@@ -1762,7 +1758,7 @@ impl Asmgen {
 
                 add_padding(&mut self.stack_allocator.next_stack_offset);
 
-                println!(
+                debug_print!(
                     "translate_function_instruction | after ret | next_stack_offset {}",
                     self.stack_allocator.next_stack_offset
                 );
@@ -1820,7 +1816,7 @@ impl Asmgen {
                     }
                 }
                 add_padding(&mut self.stack_allocator.next_stack_offset);
-                println!(
+                debug_print!(
                     "translate_function_instruction next_stack_offset {}",
                     self.stack_allocator.next_stack_offset
                 );
@@ -1852,7 +1848,7 @@ impl Asmgen {
                     rid: *rid,
                     dtype: dtype.clone(),
                 };
-                println!(
+                debug_print!(
                     "translate_function_instruction | before ret | next_stack_offset {}",
                     self.stack_allocator.next_stack_offset
                 );
@@ -1866,7 +1862,7 @@ impl Asmgen {
 
                 add_padding(&mut self.stack_allocator.next_stack_offset);
 
-                println!(
+                debug_print!(
                     "translate_function_instruction | after ret | next_stack_offset {}",
                     self.stack_allocator.next_stack_offset
                 );
@@ -1924,7 +1920,7 @@ impl Asmgen {
                     }
                 }
                 add_padding(&mut self.stack_allocator.next_stack_offset);
-                println!(
+                debug_print!(
                     "translate_function_instruction next_stack_offset {}",
                     self.stack_allocator.next_stack_offset
                 );
@@ -2061,7 +2057,7 @@ impl Asmgen {
                 add_padding(&mut self.stack_allocator.next_stack_offset);
             }
             _ => {
-                println!("todo insturction {}", instruction);
+                debug_print!("todo insturction {}", instruction);
             }
         }
     }
@@ -2115,13 +2111,15 @@ impl Asmgen {
                         &mut phinodes_to_predecessor,
                         &mut predecessor_to_phinodes,
                     );
-                    insert_argbid(
-                        &arg_else.bid,
-                        bid,
-                        phinodes.clone(),
-                        &mut phinodes_to_predecessor,
-                        &mut predecessor_to_phinodes,
-                    );
+                    if arg_else.bid != arg_then.bid {
+                        insert_argbid(
+                            &arg_else.bid,
+                            bid,
+                            phinodes.clone(),
+                            &mut phinodes_to_predecessor,
+                            &mut predecessor_to_phinodes,
+                        );
+                    }
                 }
                 ir::BlockExit::Return { value } => {}
                 ir::BlockExit::Switch {
@@ -2192,17 +2190,17 @@ impl Asmgen {
             let asm_block = asm::Block::new(Some(block_label), asm_block_instrs);
             asm_blocks.push(asm_block);
 
-            println!("======== bid {} =========", bid);
-            println!("[DEBUG] stack_map = {{");
+            debug_print!("======== bid {} =========", bid);
+            debug_print!("[DEBUG] stack_map = {{");
             for (operand, offset) in &self.stack_allocator.stack_map {
-                println!("  {:?} => {:?}", operand, offset);
+                debug_print!("  {:?} => {:?}", operand, offset);
             }
-            println!("}}");
-            println!("=========================");
+            debug_print!("}}");
+            debug_print!("=========================");
         }
-        println!("phinodes {:?}", phinodes);
-        println!("phinodes_to_predecessor {:?}", phinodes_to_predecessor);
-        println!("predecessor_to_phinodes {:?}", predecessor_to_phinodes);
+        debug_print!("phinodes {:?}", phinodes);
+        debug_print!("phinodes_to_predecessor {:?}", phinodes_to_predecessor);
+        debug_print!("predecessor_to_phinodes {:?}", predecessor_to_phinodes);
         self.translate_function_phinodes(
             name,
             &phinodes.clone(),
@@ -2456,7 +2454,7 @@ fn add_padding(next_offset: &mut i32) {
     if remainder == 0 {
         remainder = 8;
     }
-    println!("add_padding: + how much {}", 8 - remainder);
+    debug_print!("add_padding: + how much {}", 8 - remainder);
     *next_offset += 8 - remainder;
 }
 

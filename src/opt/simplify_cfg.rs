@@ -86,7 +86,7 @@ impl Optimize<FunctionDefinition> for SimplifyCfgReach {
 impl Optimize<FunctionDefinition> for SimplifyCfgMerge {
     fn optimize(&mut self, code: &mut FunctionDefinition) -> bool {
         let graph: HashMap<BlockId, Vec<JumpArg>> = make_cfg(code);
-        // println!("SimplifyCfgMerge | optimize | graph {:#?}", graph.clone());
+        // debug_print!("SimplifyCfgMerge | optimize | graph {:#?}", graph.clone());
         // let reverse_graph = reverse_cfg(&graph.clone());
         let mut postorder = PostOrder {
             visited: HashSet::new(),
@@ -168,10 +168,10 @@ impl Optimize<FunctionDefinition> for SimplifyCfgMerge {
             // Move block exit // change the exit
             block_from.exit = block_to.exit;
 
-            // println!("SimplifyCfgMerge | optimize\n");
-            // println!("code {:?}\n", code.clone());
+            // debug_print!("SimplifyCfgMerge | optimize\n");
+            // debug_print!("code {:?}\n", code.clone());
 
-            // println!("replaces {:?}\n\n", replaces.clone());
+            // debug_print!("replaces {:?}\n\n", replaces.clone());
 
             // Replaces removed registers
             let _ = code.walk(|operand| replace_operands(operand, &replaces));
@@ -334,9 +334,7 @@ impl SimplifyCfgEmpty {
         */
         let block = some_or!(empty_blocks.get(&arg.bid), return false);
 
-        // An empty block has no phinodes
-        assert!(arg.args.is_empty());
-
+        // An empty block has no phinodes; stale args are dropped by the redirect below
         if let BlockExit::Jump { arg: a } = &block.exit {
             *arg = a.clone();
             true
@@ -373,9 +371,8 @@ impl SimplifyCfgEmpty {
                 let changed1 = self.simplify_jump_arg(default, empty_blocks);
                 let changed2 = cases
                     .iter_mut()
-                    .any(|c| self.simplify_jump_arg(&mut c.1, empty_blocks));
-                // .map(|c| self.simplify_jump_arg(&mut c.1, empty_blocks))
-                // .fold(false, |l, r| l || r);
+                    .map(|c| self.simplify_jump_arg(&mut c.1, empty_blocks))
+                    .fold(false, |l, r| l | r);
                 changed1 || changed2
             }
             BlockExit::Return { .. } | BlockExit::Unreachable => false,

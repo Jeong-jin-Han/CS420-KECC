@@ -33,10 +33,10 @@ impl Optimize<FunctionDefinition> for DeadcodeInner {
         phinode의 경우 단순히 block안에서만 사용여부를 판단할 수 없음
         reverse_cfg가 필요하다.
         */
-        // println!("code {:?}", code);
+        // debug_print!("code {:?}", code);
         let cfg = make_cfg(code);
         let reverse_cfg = reverse_cfg(&cfg);
-        println!("reverse_cfg {:?}", reverse_cfg);
+        debug_print!("reverse_cfg {:?}", reverse_cfg);
         let domtree = Domtree::new(code.bid_init, &cfg, &reverse_cfg);
 
         let mut declare_reg = HashSet::<RegisterId>::new();
@@ -55,9 +55,9 @@ impl Optimize<FunctionDefinition> for DeadcodeInner {
             }
         }
 
-        // println!("code {:?}\n", code);
-        // println!("declare_reg {:#?}", declare_reg);
-        // println!("size of declare_reg {:?}", declare_reg.len());
+        // debug_print!("code {:?}\n", code);
+        // debug_print!("declare_reg {:#?}", declare_reg);
+        // debug_print!("size of declare_reg {:?}", declare_reg.len());
 
         /*
         instruction -> temp reg
@@ -68,7 +68,7 @@ impl Optimize<FunctionDefinition> for DeadcodeInner {
         let mut call_reg = HashSet::<RegisterId>::new();
         /* call에서만 예외적으로 unused_reg에서 제외 */
         for (bid, block) in &code.blocks {
-            println!("used_insertion");
+            debug_print!("used_insertion");
             for (iid, instr) in block.instructions.iter().enumerate() {
                 match instr.deref() {
                     Instruction::BinOp {
@@ -114,7 +114,6 @@ impl Optimize<FunctionDefinition> for DeadcodeInner {
                     Instruction::GetElementPtr { ptr, offset, dtype } => {
                         insert_register(ptr, &mut used_reg);
                         insert_register(offset, &mut used_reg);
-                        let _unused = used_reg.insert(RegisterId::temp(*bid, iid));
                     }
                     Instruction::Nop => {
                         let nop_rid = RegisterId::temp(*bid, iid);
@@ -145,7 +144,7 @@ impl Optimize<FunctionDefinition> for DeadcodeInner {
                     })
                 }
                 BlockExit::Return { value } => {
-                    println!("return value {:?}", value);
+                    debug_print!("return value {:?}", value);
                     insert_register(value, &mut used_reg);
                 }
                 BlockExit::Jump { arg } => {
@@ -159,12 +158,12 @@ impl Optimize<FunctionDefinition> for DeadcodeInner {
         /*
         nop을 사용하고 있는 operand를 지워주기
         */
-        println!("nop_reg {:?}", nop_reg);
+        debug_print!("nop_reg {:?}", nop_reg);
         if !nop_reg.is_empty() {
             changed |= code.walk(|op| {
                 if let Operand::Register { rid, dtype } = op {
                     if nop_reg.contains(rid) {
-                        // println!("nop_reg rid {:?}", rid);
+                        // debug_print!("nop_reg rid {:?}", rid);
                         *op = Operand::Constant(Constant::unit());
                         return true;
                     }
@@ -183,7 +182,7 @@ impl Optimize<FunctionDefinition> for DeadcodeInner {
             .cloned()
             .collect::<HashSet<_>>();
 
-        println!("unused insertion");
+        debug_print!("unused insertion");
         for (bid, block) in &mut code.blocks {
             for (iid, instr) in block.instructions.iter().enumerate().rev() {
                 let temp = RegisterId::temp(*bid, iid);
@@ -241,14 +240,19 @@ impl Optimize<FunctionDefinition> for DeadcodeInner {
             }
         }
 
+        // Re-subtract used_reg: operands of dead instructions may also be used by live ones
+        let unused_reg = unused_reg
+            .difference(&used_reg)
+            .cloned()
+            .collect::<HashSet<_>>();
         let mut unused_reg = unused_reg
             .difference(&call_reg)
             .cloned()
             .collect::<HashSet<_>>();
 
-        // println!("declare_reg {:#?}\n\n", declare_reg);
-        // println!("used_reg {:#?}\n\n", used_reg);
-        // println!("[opt] unused_reg {:#?}\n\n", unused_reg);
+        // debug_print!("declare_reg {:#?}\n\n", declare_reg);
+        // debug_print!("used_reg {:#?}\n\n", used_reg);
+        // debug_print!("[opt] unused_reg {:#?}\n\n", unused_reg);
 
         // If all register used, bail out
         if unused_reg.is_empty() {
@@ -294,7 +298,7 @@ impl Optimize<FunctionDefinition> for DeadcodeInner {
                     .filter_map(|(aid, phi)| {
                         let reg = RegisterId::arg(*bid, aid);
                         if unused_reg.contains(&reg) {
-                            println!("unused phinodes | reg {:?}", reg);
+                            debug_print!("unused phinodes | reg {:?}", reg);
                             arg_tracker += 1;
                             changed = true;
                             /*
@@ -318,7 +322,7 @@ impl Optimize<FunctionDefinition> for DeadcodeInner {
             }
         }
 
-        println!("removed phinode_arg_places {:?}", phinode_arg_places);
+        debug_print!("removed phinode_arg_places {:?}", phinode_arg_places);
 
         let mut sorted_places: Vec<_> = phinode_arg_places.into_iter().collect();
         sorted_places.sort_by(|(bid1, aid1, _), (bid2, aid2, _)| {
@@ -327,23 +331,26 @@ impl Optimize<FunctionDefinition> for DeadcodeInner {
 
         // -> 어디서 사라지는 확인
         // aid가 큰 것부터 지워주기
-        let mut phi_remover_tracer = HashMap::<&BlockId, usize>::new();
+        let mut phi_remover_tracer = HashMap::<(&BlockId, BlockId), usize>::new();
         for (bid, aid, phi_len) in sorted_places {
             // prev_bid
-            println!("phi_remover_tracer {:?}", phi_remover_tracer);
+            debug_print!("phi_remover_tracer {:?}", phi_remover_tracer);
             for (prev_bid, _phinode_arg_places) in reverse_cfg.get(&bid).unwrap() {
-                println!("prev_bid {:?} aid {:?} bid {:?}", prev_bid, aid, bid);
+                debug_print!("prev_bid {:?} aid {:?} bid {:?}", prev_bid, aid, bid);
                 let prev_block = code.blocks.get_mut(prev_bid).unwrap();
                 prev_block.exit.walk_jump_args(|arg| {
-                    // println!("phi_len {:?} arg.args.len() {:?}", phi_len, arg.args.len());
-                    let tracer = phi_remover_tracer.entry(prev_bid).or_insert(0);
-                    if phi_len == (arg.args.len() + *tracer) && !arg.args.is_empty() {
-                        println!("phi_len == arg.args.len()");
-                        // println!("removed prev_bid {:?}, arg {:?}", prev_bid, arg);
-                        let _unused = arg.args.remove(aid);
-                        *phi_remover_tracer.entry(prev_bid).or_insert(0) += 1;
+                    if arg.bid != bid {
+                        return;
                     }
-                    println!("phi_len {:?} arg.args.len() {:?}", phi_len, arg.args.len());
+                    // debug_print!("phi_len {:?} arg.args.len() {:?}", phi_len, arg.args.len());
+                    let tracer = phi_remover_tracer.entry((prev_bid, bid)).or_insert(0);
+                    if phi_len == (arg.args.len() + *tracer) && !arg.args.is_empty() {
+                        debug_print!("phi_len == arg.args.len()");
+                        // debug_print!("removed prev_bid {:?}, arg {:?}", prev_bid, arg);
+                        let _unused = arg.args.remove(aid);
+                        *phi_remover_tracer.entry((prev_bid, bid)).or_insert(0) += 1;
+                    }
+                    debug_print!("phi_len {:?} arg.args.len() {:?}", phi_len, arg.args.len());
                 });
             }
         }
@@ -404,7 +411,7 @@ impl Optimize<FunctionDefinition> for DeadcodeInner {
             false
         });
 
-        // println!("changed {:?}", changed);
+        // debug_print!("changed {:?}", changed);
         changed
         // true // 무한 루프??
         // todo!()
@@ -413,7 +420,7 @@ impl Optimize<FunctionDefinition> for DeadcodeInner {
 
 fn insert_register(op: &Operand, used_reg: &mut HashSet<RegisterId>) {
     if let Some(reg) = op.get_register() {
-        println!("op: {:?}, reg.0: {:?}", op, *reg.0);
+        debug_print!("op: {:?}, reg.0: {:?}", op, *reg.0);
         let _unused = used_reg.insert(*reg.0);
     }
 }
@@ -435,7 +442,7 @@ fn should_add_to_unused(reg: &RegisterId) -> bool {
 
 fn insert_register_conditional(op: &Operand, used_reg: &mut HashSet<RegisterId>) {
     if let Some(reg) = op.get_register() {
-        println!("op: {:?}, reg.0: {:?}", op, *reg.0);
+        debug_print!("op: {:?}, reg.0: {:?}", op, *reg.0);
         if should_add_to_unused(reg.0) {
             let _unused = used_reg.insert(*reg.0);
         }

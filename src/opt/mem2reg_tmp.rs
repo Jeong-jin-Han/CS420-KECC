@@ -39,12 +39,12 @@ impl OperandVar {
         dtype: &Dtype,
         phinode_indexes: &HashMap<(usize, BlockId), usize>,
     ) -> Operand {
-        println!("=== OperandVar lookup ===");
-        println!("phinode_indexes keys: {:?}", phinode_indexes.keys());
+        debug_print!("=== OperandVar lookup ===");
+        debug_print!("phinode_indexes keys: {:?}", phinode_indexes.keys());
         match self {
             OperandVar::Operand(o) => o.clone(),
             OperandVar::Phi(var) => {
-                println!("LOOKUP PHI {:?} → {:?}", var, phinode_indexes.get(var));
+                debug_print!("LOOKUP PHI {:?} → {:?}", var, phinode_indexes.get(var));
                 if let Some(index) = phinode_indexes.get(var) {
                     Operand::register(RegisterId::arg(var.1, *index), dtype.clone())
                 } else {
@@ -178,7 +178,7 @@ impl Optimize<FunctionDefinition> for Mem2regInner {
         let reverse_cfg = reverse_cfg(&cfg);
         let domtree = Domtree::new(code.bid_init, &cfg, &reverse_cfg);
 
-        println!("stores: {:?}", stores);
+        debug_print!("stores: {:?}", stores);
 
         // B1 -> B2 in CFG
         // B2 -> B1 in reverse CFG
@@ -205,7 +205,7 @@ impl Optimize<FunctionDefinition> for Mem2regInner {
             })
             .collect();
         for (aid, bids) in &joins {
-            println!("JOINS: ({:?}, {:?})", aid, bids);
+            debug_print!("JOINS: ({:?}, {:?})", aid, bids);
         }
 
         let flatten_joins: HashSet<(usize, BlockId)> = joins
@@ -213,7 +213,7 @@ impl Optimize<FunctionDefinition> for Mem2regInner {
             .flat_map(|(aid, bids)| bids.iter().map(move |bid| (*aid, *bid)))
             .collect();
         for (aid, bid) in &flatten_joins {
-            println!("FLATTEN JOIN: ({:?}, {:?})", aid, bid);
+            debug_print!("FLATTEN JOIN: ({:?}, {:?})", aid, bid);
         }
 
         // Table for the nearest join block according to the dominator tree.
@@ -260,7 +260,7 @@ impl Optimize<FunctionDefinition> for Mem2regInner {
                             let register_id = RegisterId::temp(*bid, i);
                             let operand_var = var.clone();
                             let result = replaces.insert(register_id, operand_var.clone());
-                            println!("INSERT replace: {:?} => {:?}", register_id, operand_var);
+                            debug_print!("INSERT replace: {:?} => {:?}", register_id, operand_var);
 
                             assert_eq!(result, None);
                         }
@@ -310,7 +310,7 @@ impl Optimize<FunctionDefinition> for Mem2regInner {
                 .phinodes
                 .push(Named::new(name.cloned(), dtype.clone()));
             let _unused = phinode_indexes.insert((*aid, *bid), index);
-            println!("INSERT PHINODE {:?} → {:?}", (aid, bid), index);
+            debug_print!("INSERT PHINODE {:?} → {:?}", (aid, bid), index);
         }
 
         // Inserts phinode arguments
@@ -328,25 +328,25 @@ impl Optimize<FunctionDefinition> for Mem2regInner {
             }
         }
 
-        println!("Before walk | code {:?}", code);
-        println!("Before walk | replaces {:?}", replaces);
+        debug_print!("Before walk | code {:?}", code);
+        debug_print!("Before walk | replaces {:?}", replaces);
         // Replaces the values loaded from promotable allocations
         // let _unused = code.walk(|operand| {
-        //     println!("Test WALK {:?}", operand.clone());
+        //     debug_print!("Test WALK {:?}", operand.clone());
         //     true
         // });
 
         let _unused = code.walk(|operand| {
-            println!("WALK | operand {:?} ", operand.clone());
+            debug_print!("WALK | operand {:?} ", operand.clone());
             let (rid, dtype) = some_or!(operand.get_register(), return false);
-            println!("WALK | (rid, dtype) {:?}", (rid, dtype));
-            // println!("WALK | replaces {:?}", replaces);
+            debug_print!("WALK | (rid, dtype) {:?}", (rid, dtype));
+            // debug_print!("WALK | replaces {:?}", replaces);
             let tmp = replaces.get(rid);
-            println!("WALK | tmp {:?}", tmp.clone());
+            debug_print!("WALK | tmp {:?}", tmp.clone());
             let operand_var = some_or!(tmp, return false);
-            println!("WALK | {:?} → {:?}", operand.clone(), operand_var.clone());
+            debug_print!("WALK | {:?} → {:?}", operand.clone(), operand_var.clone());
             let tmp = operand_var.lookup(dtype, &phinode_indexes);
-            println!("WALK | lookup result: {:?}", tmp);
+            debug_print!("WALK | lookup result: {:?}", tmp);
             *operand = tmp.clone();
             true
         });

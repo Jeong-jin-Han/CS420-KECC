@@ -49,12 +49,12 @@ impl OperandVar {
         /*
         OperandVar -> Operand로 알맞게 반환해주는 것이 역할
         */
-        // println!("=== OperandVar lookup ===");
-        // println!("phinode_indexes keys: {:?}", phinode_indexes.keys());
+        // debug_print!("=== OperandVar lookup ===");
+        // debug_print!("phinode_indexes keys: {:?}", phinode_indexes.keys());
         match self {
             OperandVar::Operand(o) => o.clone(),
             OperandVar::Phi(var) => {
-                // println!("LOOKUP PHI {:?} → {:?}", var, phinode_indexes.get(var));
+                // debug_print!("LOOKUP PHI {:?} → {:?}", var, phinode_indexes.get(var));
                 if let Some(index) = phinode_indexes.get(var) {
                     /* ClassNum, blockId -> usize */
                     /* usize가 가지고 있는 의미?? */
@@ -100,11 +100,11 @@ impl Optimize<FunctionDefinition> for GvnInner {
         let reverse_cfg = reverse_cfg(&cfg);
         let domtree = Domtree::new(code.bid_init, &cfg, &reverse_cfg);
 
-        // println!("code {:?}", code);
-        // println!("cfg {:?}", cfg);
+        // debug_print!("code {:?}", code);
+        // debug_print!("cfg {:?}", cfg);
 
-        // println!("reverse_cfg {:?}", reverse_cfg);
-        // println!(
+        // debug_print!("reverse_cfg {:?}", reverse_cfg);
+        // debug_print!(
         //     "domtree.reverse_post_order {:?}",
         //     domtree.reverse_post_order
         // );
@@ -194,7 +194,7 @@ impl Optimize<FunctionDefinition> for GvnInner {
                                 cn_list.push(*classnum);
                                 let _unused = mem2reg_cns.insert(*classnum);
                                 arg_operand = operand_var.clone();
-                                // println!(
+                                // debug_print!(
                                 //     "bid {:?} jumpbid {:?} arg_op {:?} arg_operand {:?}",
                                 //     bid,
                                 //     prev_bid,
@@ -221,13 +221,13 @@ impl Optimize<FunctionDefinition> for GvnInner {
                                 cn_list.push(classnum);
                                 let _unused = mem2reg_cns.insert(classnum);
                                 arg_operand = new_operand;
-                                // println!("Missing classnum for operand {:?}", arg_op); // maybe
+                                // debug_print!("Missing classnum for operand {:?}", arg_op); // maybe
                             }
                         }
                     }
                 }
 
-                // println!("bid {:?}, mem2reg_cns  {:?}", bid, mem2reg_cns);
+                // debug_print!("bid {:?}, mem2reg_cns  {:?}", bid, mem2reg_cns);
                 /*
                 replace할 때 arg_op를 하는게 아니라 해당 block의 LT로 가서 적절한 op를 받아와야 한다. 단순히 LT로 보는게 아니라
                 */
@@ -245,11 +245,11 @@ impl Optimize<FunctionDefinition> for GvnInner {
                         }
                         let _unused = current_lt.insert(*first_cn, phi_op_var);
 
-                        // println!(
+                        // debug_print!(
                         //     "Assigning PHI result {:?} to classnum {:?} (from args) {:?} new_op",
                         //     phi_op, first_cn, new_op
                         // );
-                        // println!("cn list {:?} all_same_const {:?}", cn_list, all_same_const);
+                        // debug_print!("cn list {:?} all_same_const {:?}", cn_list, all_same_const);
                     } else {
                         mem2reg_cns = HashSet::new();
                     }
@@ -262,7 +262,7 @@ impl Optimize<FunctionDefinition> for GvnInner {
             let mut cphi_flag = false;
 
             // let mut phichecker_ct: HashSet<ClassNum> = HashSet::new();
-            // println!("bid {:?} | current LT {:?}", bid, current_lt);
+            // debug_print!("bid {:?} | current LT {:?}", bid, current_lt);
             // 2. 각 명령어 처리
             for (instr_idx, instr) in code.blocks[bid].instructions.iter().enumerate() {
                 cphi_flag = false;
@@ -284,12 +284,14 @@ impl Optimize<FunctionDefinition> for GvnInner {
                         };
 
                         let classnum = *ctx.et.entry(expr.clone()).or_insert_with(|| {
-                            println!("ET new {:?} | ", expr.clone());
+                            debug_print!("ET new {:?} | ", expr.clone());
                             ctx.class_gen.fresh()
                         });
-                        println!(
+                        debug_print!(
                             "bid : {:?} | classnum : {:?} | instr : {:?} ",
-                            bid, instr, classnum
+                            bid,
+                            instr,
+                            classnum
                         );
 
                         let rid = RegisterId::temp(*bid, instr_idx);
@@ -303,7 +305,7 @@ impl Optimize<FunctionDefinition> for GvnInner {
 
                         // LT에 리더 없으면 등록
                         let _unused = current_lt.entry(classnum).or_insert_with(|| {
-                            println!("LT new | classnum : {:?}", classnum); // 존재할 때는 실행 안 됨!
+                            debug_print!("LT new | classnum : {:?}", classnum); // 존재할 때는 실행 안 됨!
                             cphi_flag = true;
                             let _unused = current_ct.insert(classnum);
                             operandvar
@@ -319,12 +321,14 @@ impl Optimize<FunctionDefinition> for GvnInner {
                             dtype: dtype.clone(),
                         };
                         let classnum = *ctx.et.entry(expr.clone()).or_insert_with(|| {
-                            println!("ET new {:?} | ", expr.clone());
+                            debug_print!("ET new {:?} | ", expr.clone());
                             ctx.class_gen.fresh()
                         });
-                        println!(
+                        debug_print!(
                             "bid : {:?} | classnum : {:?} | instr : {:?} ",
-                            bid, instr, classnum
+                            bid,
+                            instr,
+                            classnum
                         );
 
                         let rid = RegisterId::temp(*bid, instr_idx);
@@ -338,7 +342,7 @@ impl Optimize<FunctionDefinition> for GvnInner {
 
                         // LT에 리더 없으면 등록
                         let _unused = current_lt.entry(classnum).or_insert_with(|| {
-                            println!("LT new | classnum : {:?}", classnum); // 존재할 때는 실행 안 됨!
+                            debug_print!("LT new | classnum : {:?}", classnum); // 존재할 때는 실행 안 됨!
                             cphi_flag = true;
                             let _unused = current_ct.insert(classnum);
                             operandvar
@@ -349,12 +353,14 @@ impl Optimize<FunctionDefinition> for GvnInner {
                         let ptr = operand_to_class(ptr, &mut ctx);
                         let expr = ExprV::Load { ptr };
                         let classnum = *ctx.et.entry(expr.clone()).or_insert_with(|| {
-                            println!("ET new {:?} | ", expr.clone());
+                            debug_print!("ET new {:?} | ", expr.clone());
                             ctx.class_gen.fresh()
                         });
-                        println!(
+                        debug_print!(
                             "bid : {:?} | classnum : {:?} | instr : {:?} ",
-                            bid, instr, classnum
+                            bid,
+                            instr,
+                            classnum
                         );
 
                         let rid = RegisterId::temp(*bid, instr_idx);
@@ -365,7 +371,7 @@ impl Optimize<FunctionDefinition> for GvnInner {
 
                         // LT에 리더 없으면 등록
                         let _unused = current_lt.entry(classnum).or_insert_with(|| {
-                            println!("LT new | classnum : {:?}", classnum); // 존재할 때는 실행 안 됨!
+                            debug_print!("LT new | classnum : {:?}", classnum); // 존재할 때는 실행 안 됨!
                             cphi_flag = true;
                             let _unused = current_ct.insert(classnum);
                             operandvar
@@ -379,7 +385,7 @@ impl Optimize<FunctionDefinition> for GvnInner {
                         let flag_ptr = args
                             .iter()
                             .any(|arg| arg.dtype().get_pointer_inner().is_some());
-                        println!("flag_ptr {}", flag_ptr);
+                        debug_print!("flag_ptr {}", flag_ptr);
 
                         let callee = operand_to_class(callee, &mut ctx);
                         let args = args
@@ -394,12 +400,14 @@ impl Optimize<FunctionDefinition> for GvnInner {
                         };
 
                         let classnum = *ctx.et.entry(expr.clone()).or_insert_with(|| {
-                            println!("ET new {:?} | ", expr.clone());
+                            debug_print!("ET new {:?} | ", expr.clone());
                             ctx.class_gen.fresh()
                         });
-                        println!(
+                        debug_print!(
                             "bid : {:?} | classnum : {:?} | instr : {:?} ",
-                            bid, instr, classnum
+                            bid,
+                            instr,
+                            classnum
                         );
 
                         let rid = RegisterId::temp(*bid, instr_idx);
@@ -417,7 +425,7 @@ impl Optimize<FunctionDefinition> for GvnInner {
                             let _unused = current_lt.insert(classnum, operandvar);
                         } else {
                             let _unused = current_lt.entry(classnum).or_insert_with(|| {
-                                println!("LT new | classnum : {:?}", classnum); // 존재할 때는 실행 안 됨!
+                                debug_print!("LT new | classnum : {:?}", classnum); // 존재할 때는 실행 안 됨!
                                 cphi_flag = true;
                                 let _unused = current_ct.insert(classnum);
                                 operandvar
@@ -434,12 +442,14 @@ impl Optimize<FunctionDefinition> for GvnInner {
                             target_dtype: target_dtype.clone(),
                         };
                         let classnum = *ctx.et.entry(expr.clone()).or_insert_with(|| {
-                            println!("ET new {:?} | ", expr.clone());
+                            debug_print!("ET new {:?} | ", expr.clone());
                             ctx.class_gen.fresh()
                         });
-                        println!(
+                        debug_print!(
                             "bid : {:?} | classnum : {:?} | instr : {:?} ",
-                            bid, instr, classnum
+                            bid,
+                            instr,
+                            classnum
                         );
 
                         let rid = RegisterId::temp(*bid, instr_idx);
@@ -453,7 +463,7 @@ impl Optimize<FunctionDefinition> for GvnInner {
 
                         // LT에 리더 없으면 등록
                         let _unused = current_lt.entry(classnum).or_insert_with(|| {
-                            println!("LT new | classnum : {:?}", classnum); // 존재할 때는 실행 안 됨!
+                            debug_print!("LT new | classnum : {:?}", classnum); // 존재할 때는 실행 안 됨!
                             cphi_flag = true;
                             let _unused = current_ct.insert(classnum);
                             operandvar
@@ -467,12 +477,14 @@ impl Optimize<FunctionDefinition> for GvnInner {
                             dtype: dtype.clone(),
                         };
                         let classnum = *ctx.et.entry(expr.clone()).or_insert_with(|| {
-                            println!("ET new {:?} | ", expr.clone());
+                            debug_print!("ET new {:?} | ", expr.clone());
                             ctx.class_gen.fresh()
                         });
-                        println!(
+                        debug_print!(
                             "bid : {:?} | classnum : {:?} | instr : {:?} ",
-                            bid, instr, classnum
+                            bid,
+                            instr,
+                            classnum
                         );
 
                         let rid = RegisterId::temp(*bid, instr_idx);
@@ -486,7 +498,7 @@ impl Optimize<FunctionDefinition> for GvnInner {
 
                         // LT에 리더 없으면 등록
                         let _unused = current_lt.entry(classnum).or_insert_with(|| {
-                            println!("LT new | classnum : {:?}", classnum); // 존재할 때는 실행 안 됨!
+                            debug_print!("LT new | classnum : {:?}", classnum); // 존재할 때는 실행 안 됨!
                             cphi_flag = true;
                             let _unused = current_ct.insert(classnum);
                             operandvar
@@ -498,7 +510,7 @@ impl Optimize<FunctionDefinition> for GvnInner {
                     // }
                     _ => {} // 다른 명령어는 추후 확장
                 }
-                println!();
+                debug_print!();
             }
 
             current_ct.retain(|cn| !mem2reg_cns.contains(cn));
@@ -533,12 +545,12 @@ impl Optimize<FunctionDefinition> for GvnInner {
             current <- phinode declaration, phinode 를 LT 채우기
             */
             if cphi_flag {
-                // println!(
+                // debug_print!(
                 //     "bid {:?} | candidate_classnums {:?}",
                 //     bid,
                 //     current_ct.clone()
                 // );
-                // println!("bid {:?} | preds_len {:?}", bid, prevs.len()); // preds.len() > 1 인 경우만 phinode 삽입
+                // debug_print!("bid {:?} | preds_len {:?}", bid, prevs.len()); // preds.len() > 1 인 경우만 phinode 삽입
 
                 let mut operands_from_preds = HashMap::new();
                 // 이게 왜 필요할까? 왜냐하면 phinode를 삽입하게 되면 이값을 argument에 넣어주어야 해서
@@ -568,7 +580,7 @@ impl Optimize<FunctionDefinition> for GvnInner {
                         break;
                     }
 
-                    // println!(
+                    // debug_print!(
                     //     "all_have: {} | classnum {} | operand_from_preds {:?} opernad {:?}",
                     //     all_have, classnum, operands_from_preds, operand
                     // );
@@ -584,7 +596,7 @@ impl Optimize<FunctionDefinition> for GvnInner {
                         let index = block.phinodes.len();
                         block.phinodes.push(Named::new(None, dtype.clone()));
                         let _unused = phinode_indexes.insert((*classnum, *bid), index);
-                        // println!(
+                        // debug_print!(
                         //     "phinode_indexes | (classnum ,bid): {:?} index: {:?}",
                         //     (*classnum, *bid),
                         //     index
@@ -620,7 +632,7 @@ impl Optimize<FunctionDefinition> for GvnInner {
 
             changed |= code.walk(|op| {
                 if let Some(replacement) = replaces.get(op) {
-                    println!(
+                    debug_print!(
                         "REPLACES | op : {:?} -> replacement : {:?}",
                         op.clone(),
                         replacement.clone()
@@ -631,13 +643,13 @@ impl Optimize<FunctionDefinition> for GvnInner {
                 false
             });
 
-            // println!("========== bid | {} ==========", bid);
-            // println!("REPLACES | {:?}", replaces);
-            // println!("RT | {:?}", ctx.rt);
-            // println!("ET | {:?}", ctx.et);
-            // println!("LT | {:?}", ctx.lt_map);
-            // println!("Phinode_indexes {:?}", phinode_indexes);
-            // println!("===============================");
+            // debug_print!("========== bid | {} ==========", bid);
+            // debug_print!("REPLACES | {:?}", replaces);
+            // debug_print!("RT | {:?}", ctx.rt);
+            // debug_print!("ET | {:?}", ctx.et);
+            // debug_print!("LT | {:?}", ctx.lt_map);
+            // debug_print!("Phinode_indexes {:?}", phinode_indexes);
+            // debug_print!("===============================");
         }
 
         // changed를 규합해야 하는 로직
@@ -648,7 +660,7 @@ impl Optimize<FunctionDefinition> for GvnInner {
 // fn operand_to_class_call(operand: &Operand, ctx: &mut GvnContext) -> ClassNumOrConst {
 //     match operand {
 //         Operand::Register { dtype, .. } => {
-//             println!(
+//             debug_print!(
 //                 "dtype ptr: {:?}, dtype cosnt: {:?}",
 //                 dtype.get_pointer_inner(),
 //                 dtype.is_const()
@@ -671,7 +683,7 @@ impl Optimize<FunctionDefinition> for GvnInner {
 fn operand_to_class_call(operand: &Operand, ctx: &mut GvnContext) -> ClassNum {
     match operand {
         Operand::Register { dtype, .. } => {
-            println!(
+            debug_print!(
                 "dtype ptr: {:?}, dtype cosnt: {:?}",
                 dtype.get_pointer_inner(),
                 dtype.is_const()
@@ -761,8 +773,10 @@ fn make_replaces_from_lt(
                 &old_op.dtype(), // 실제 dtype 필요시 LT 저장 구조 확장 가능
                 phinode_indexes,
             );
-            println!("new_opvar: {:?} new_op: {:?}", new_opvar, new_op);
-            let _unused = replaces.insert(old_op.clone(), new_op.clone());
+            debug_print!("new_opvar: {:?} new_op: {:?}", new_opvar, new_op);
+            if old_op != new_op {
+                let _unused = replaces.insert(old_op.clone(), new_op.clone());
+            }
         }
     }
 

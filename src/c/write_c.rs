@@ -679,7 +679,7 @@ impl WriteString for UnaryOperatorExpression {
             }
             // ✅ 전위 연산자 (++operand, -operand, *operand)
             _ => format!(
-                "({}{})",
+                "{}({})",
                 self.operator.write_string(),
                 self.operand.write_string()
             ),

@@ -45,6 +45,19 @@
 // For skeleton code.
 #![allow(unused)]
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
+pub static DEBUG_PRINT: AtomicBool = AtomicBool::new(false);
+
+#[macro_export]
+macro_rules! debug_print {
+    ($($arg:tt)*) => {
+        if $crate::DEBUG_PRINT.load(std::sync::atomic::Ordering::Relaxed) {
+            println!($($arg)*);
+        }
+    };
+}
+
 mod tests;
 mod utils;
 mod write_base;
