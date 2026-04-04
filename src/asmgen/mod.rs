@@ -2127,6 +2127,8 @@ impl Asmgen {
                     default,
                     cases,
                 } => {
+                    let mut seen_switch_targets = HashSet::new();
+                    let _unused = seen_switch_targets.insert(default.bid);
                     insert_argbid(
                         &default.bid,
                         bid,
@@ -2135,13 +2137,15 @@ impl Asmgen {
                         &mut predecessor_to_phinodes,
                     );
                     for (_, arg) in cases {
-                        insert_argbid(
-                            &arg.bid,
-                            bid,
-                            phinodes.clone(),
-                            &mut phinodes_to_predecessor,
-                            &mut predecessor_to_phinodes,
-                        );
+                        if seen_switch_targets.insert(arg.bid) {
+                            insert_argbid(
+                                &arg.bid,
+                                bid,
+                                phinodes.clone(),
+                                &mut phinodes_to_predecessor,
+                                &mut predecessor_to_phinodes,
+                            );
+                        }
                     }
                 }
                 _ => {}

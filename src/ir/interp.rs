@@ -1367,7 +1367,7 @@ impl<'i> State<'i> {
                 let value = self.interp_operand(condition)?;
                 let (value, width, _) = value.get_int().expect("`condition` must be `Value::Int`");
                 // Check if it is boolean
-                // println!("--------| [interp.rs] | width {}", width);
+                // debug_print!("--------| [interp.rs] | width {}", width);
 
                 assert!(width == 1);
 
@@ -1476,13 +1476,13 @@ impl<'i> State<'i> {
                         a.dtype().set_const(false) == d.deref().clone().set_const(false)
                     }))
                 {
-                    // println!("interp_instruction | {}", block_init.phinodes.len()); // debug
+                    // debug_print!("interp_instruction | {}", block_init.phinodes.len()); // debug
 
                     // let tmp = func_def.blocks.clone();
-                    // println!("BTreeMap BlockId {:?}", tmp);
+                    // debug_print!("BTreeMap BlockId {:?}", tmp);
 
-                    // println!("interp.rs | args: {:?}", args);
-                    // println!("interp.rs | block_init.phinodes: {:?}", block_init.phinodes);
+                    // debug_print!("interp.rs | args: {:?}", args);
+                    // debug_print!("interp.rs | block_init.phinodes: {:?}", block_init.phinodes);
                     panic!("dtype of args and phinodes of init block must be compatible");
                 }
 

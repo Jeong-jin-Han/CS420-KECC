@@ -795,7 +795,7 @@ impl Constant {
 
     #[inline]
     pub fn int(value: u128, dtype: Dtype) -> Self {
-        // println!("Constant | value {} dtype {}", value, dtype);
+        // debug_print!("Constant | value {} dtype {}", value, dtype);
 
         let width = dtype.get_int_width().expect("`dtype` must be `Dtype::Int`");
         let is_signed = dtype.is_int_signed();
