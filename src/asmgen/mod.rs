@@ -54,6 +54,9 @@ pub struct Asmgen {
     /// Callee-saved registers used by the register allocator this function,
     /// along with the stack offset where each is saved in the prologue.
     callee_saved_slots: Vec<(asm::Register, i32)>,
+    /// Callee-saved registers to save in the next prologue (set before calling
+    /// translate_function_prelogue so we don't exceed the 7-arg clippy limit).
+    pending_callee_saved: Vec<asm::Register>,
 }
 
 #[derive(Debug)]
@@ -76,6 +79,7 @@ impl Default for Asmgen {
             variable_name_list: HashMap::new(),
             structs: HashMap::new(),
             callee_saved_slots: Vec::new(),
+            pending_callee_saved: Vec::new(),
         }
     }
 }
@@ -876,7 +880,6 @@ impl Asmgen {
         bid: &ir::BlockId,
         allocations: Vec<Named<ir::Dtype>>,
         name: &str,
-        extra_callee_saved: &[asm::Register],
         asm_block_instrs: &mut Vec<asm::Instruction>,
     ) {
         // prelogue
@@ -922,9 +925,12 @@ impl Asmgen {
         }
 
         // Save callee-saved registers used by register allocator
-        for &reg in extra_callee_saved {
+        for reg in std::mem::take(&mut self.pending_callee_saved) {
             let off = self.stack_allocator.next_stack_offset;
-            let is_float = matches!(reg, asm::Register::Saved(asm::RegisterType::FloatingPoint, _));
+            let is_float = matches!(
+                reg,
+                asm::Register::Saved(asm::RegisterType::FloatingPoint, _)
+            );
             let store_instr = if is_float {
                 asm::SType::Store(asm::DataSize::DoublePrecision)
             } else {
@@ -1063,9 +1069,9 @@ impl Asmgen {
                     }
                 } else {
                     // Fall back to stack slot load
-                    let offset = self
-                        .stack_allocator
-                        .allocate_stack_slot(rid, dtype, &self.structs);
+                    let offset =
+                        self.stack_allocator
+                            .allocate_stack_slot(rid, dtype, &self.structs);
                     debug_print!("translate_operand | offset {}", offset);
                     asm_block_instrs.push(asm::Instruction::IType {
                         instr: load_instr_for_dtype(&operand.dtype(), &self.structs),
@@ -1265,7 +1271,10 @@ impl Asmgen {
 
                 // Restore callee-saved registers used by register allocator
                 for &(reg, off) in &self.callee_saved_slots {
-                    let is_float = matches!(reg, asm::Register::Saved(asm::RegisterType::FloatingPoint, _));
+                    let is_float = matches!(
+                        reg,
+                        asm::Register::Saved(asm::RegisterType::FloatingPoint, _)
+                    );
                     let load_instr = if is_float {
                         asm::IType::Load {
                             data_size: asm::DataSize::DoublePrecision,
@@ -1409,7 +1418,11 @@ impl Asmgen {
 
                     asm_block_instrs.push(asm::Instruction::Pseudo(pseudo));
                     self.stack_allocator.store_result(
-                        &dst_rid, dtype, t0_reg, asm_block_instrs, &self.structs,
+                        &dst_rid,
+                        dtype,
+                        t0_reg,
+                        asm_block_instrs,
+                        &self.structs,
                     );
                 }
                 ast::UnaryOperator::Negate => {
@@ -1424,7 +1437,11 @@ impl Asmgen {
                     }));
                     // 스택 슬롯 할당 및 저장
                     self.stack_allocator.store_result(
-                        &dst_rid, dtype, t0_reg, asm_block_instrs, &self.structs,
+                        &dst_rid,
+                        dtype,
+                        t0_reg,
+                        asm_block_instrs,
+                        &self.structs,
                     );
                 }
                 _ => {
@@ -1462,7 +1479,11 @@ impl Asmgen {
 
                     debug_print!("\n===== binop alloc =====\n");
                     self.stack_allocator.store_result(
-                        &dst_rid, dtype, t0_reg, asm_block_instrs, &self.structs,
+                        &dst_rid,
+                        dtype,
+                        t0_reg,
+                        asm_block_instrs,
+                        &self.structs,
                     );
                     debug_print!("\n=======================\n");
                 } else {
@@ -1924,7 +1945,11 @@ impl Asmgen {
                 if get_dtype_size(ret, &self.structs) > 0 {
                     let a0_reg = asm_register_args(0, ret);
                     self.stack_allocator.store_result(
-                        &dst_rid, ret, a0_reg, asm_block_instrs, &self.structs,
+                        &dst_rid,
+                        ret,
+                        a0_reg,
+                        asm_block_instrs,
+                        &self.structs,
                     );
                 }
 
@@ -2027,7 +2052,11 @@ impl Asmgen {
                 if get_dtype_size(return_type, &self.structs) > 0 {
                     let a0_reg = asm_register_args(0, return_type);
                     self.stack_allocator.store_result(
-                        &dst_rid, return_type, a0_reg, asm_block_instrs, &self.structs,
+                        &dst_rid,
+                        return_type,
+                        a0_reg,
+                        asm_block_instrs,
+                        &self.structs,
                     );
                 }
 
@@ -2113,7 +2142,11 @@ impl Asmgen {
                 }
 
                 self.stack_allocator.store_result(
-                    &dst_rid, target_dtype, t2_target_reg, asm_block_instrs, &self.structs,
+                    &dst_rid,
+                    target_dtype,
+                    t2_target_reg,
+                    asm_block_instrs,
+                    &self.structs,
                 );
             }
             ir::Instruction::GetElementPtr { ptr, offset, dtype } => {
@@ -2127,7 +2160,11 @@ impl Asmgen {
                     rs2: Some(asm::Register::T1),
                 });
                 self.stack_allocator.store_result(
-                    &dst_rid, dtype, asm::Register::T0, asm_block_instrs, &self.structs,
+                    &dst_rid,
+                    dtype,
+                    asm::Register::T0,
+                    asm_block_instrs,
+                    &self.structs,
                 );
             }
             _ => {
@@ -2268,13 +2305,13 @@ impl Asmgen {
                 // s0, ra, s1
                 // allocation
                 // phinode
+                self.pending_callee_saved = regalloc_result.used_callee_saved.clone();
                 self.translate_function_prelogue(
                     call_flag,
                     block,
                     bid,
                     func.allocations.clone(),
                     name,
-                    &regalloc_result.used_callee_saved.clone(),
                     &mut asm_block_instrs,
                 );
             }

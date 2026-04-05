@@ -64,8 +64,7 @@ pub(crate) fn allocate(func: &ir::FunctionDefinition) -> AllocResult {
 
     // RPO traversal
     let rpo = rpo_order(func.bid_init, &cfg);
-    let rpo_idx: HashMap<BlockId, usize> =
-        rpo.iter().enumerate().map(|(i, &b)| (b, i)).collect();
+    let rpo_idx: HashMap<BlockId, usize> = rpo.iter().enumerate().map(|(i, &b)| (b, i)).collect();
 
     // ── 1. Liveness ───────────────────────────────────────────────────────────
     let (live_in, _live_out) = compute_liveness(func, &rpo, &cfg);
@@ -122,7 +121,7 @@ pub(crate) fn allocate(func: &ir::FunctionDefinition) -> AllocResult {
     let mut sorted: Vec<(RegisterId, usize, usize, bool)> = intervals
         .iter()
         .filter_map(|(&rid, &(start, end, is_float))| match rid {
-            RegisterId::Temp { .. } | RegisterId::Arg { .. } => {
+            RegisterId::Temp { .. } => {
                 // Only allocate to physical regs if the type is a full 64-bit int/pointer,
                 // a 32-bit int, or a float.  Narrow integers (u8, i8, u16, i16, u1) keep
                 // their stack slots to preserve the truncation semantics that sb/lb provides.
@@ -131,7 +130,9 @@ pub(crate) fn allocate(func: &ir::FunctionDefinition) -> AllocResult {
                 }
                 Some((rid, start, end, is_float))
             }
-            RegisterId::Local { .. } => None, // address registers — keep on stack
+            // Arg registers are phi-node destinations.  They are always written by the
+            // phi-move machinery (which uses stack slots), so they must stay on the stack.
+            RegisterId::Arg { .. } | RegisterId::Local { .. } => None,
         })
         .collect();
     sorted.sort_by_key(|&(_, start, _, _)| start);
@@ -197,18 +198,16 @@ fn expire(
 /// Narrow types (u1, i8, u8, i16, u16) keep stack-slot semantics.
 fn is_wide_int_rid(rid: RegisterId, func: &ir::FunctionDefinition) -> bool {
     let dtype = match rid {
-        RegisterId::Arg { bid, aid } => {
-            func.blocks
-                .get(&bid)
-                .and_then(|b| b.phinodes.get(aid))
-                .map(|phi| phi.deref().clone())
-        }
-        RegisterId::Temp { bid, iid } => {
-            func.blocks
-                .get(&bid)
-                .and_then(|b| b.instructions.get(iid))
-                .map(|instr| instr.deref().dtype())
-        }
+        RegisterId::Arg { bid, aid } => func
+            .blocks
+            .get(&bid)
+            .and_then(|b| b.phinodes.get(aid))
+            .map(|phi| phi.deref().clone()),
+        RegisterId::Temp { bid, iid } => func
+            .blocks
+            .get(&bid)
+            .and_then(|b| b.instructions.get(iid))
+            .map(|instr| instr.deref().dtype()),
         _ => return false,
     };
     match dtype {
@@ -280,14 +279,10 @@ pub(crate) fn compute_liveness(
     HashMap<BlockId, HashSet<RegisterId>>,
     HashMap<BlockId, HashSet<RegisterId>>,
 ) {
-    let mut live_in: HashMap<BlockId, HashSet<RegisterId>> = rpo
-        .iter()
-        .map(|&b| (b, HashSet::new()))
-        .collect();
-    let mut live_out: HashMap<BlockId, HashSet<RegisterId>> = rpo
-        .iter()
-        .map(|&b| (b, HashSet::new()))
-        .collect();
+    let mut live_in: HashMap<BlockId, HashSet<RegisterId>> =
+        rpo.iter().map(|&b| (b, HashSet::new())).collect();
+    let mut live_out: HashMap<BlockId, HashSet<RegisterId>> =
+        rpo.iter().map(|&b| (b, HashSet::new())).collect();
 
     let mut changed = true;
     while changed {
@@ -358,9 +353,7 @@ pub(crate) fn compute_liveness(
                 }
             }
 
-            if new_li != *live_in.get(&bid).unwrap()
-                || new_lo != *live_out.get(&bid).unwrap()
-            {
+            if new_li != *live_in.get(&bid).unwrap() || new_lo != *live_out.get(&bid).unwrap() {
                 changed = true;
                 *live_in.get_mut(&bid).unwrap() = new_li;
                 *live_out.get_mut(&bid).unwrap() = new_lo;
