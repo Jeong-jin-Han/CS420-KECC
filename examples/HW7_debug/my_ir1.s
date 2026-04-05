@@ -23,8 +23,8 @@ fibonacci:
         lw	t1,56(sp)
         lw	t2,64(sp)
         addw	t0,t1,t2
-        mv	s11,t0
-        mv	t1,s11
+        mv	s10,t0
+        mv	t1,s10
         li	t2,0
         xor	t0,t1,t2
         snez	t0,t0

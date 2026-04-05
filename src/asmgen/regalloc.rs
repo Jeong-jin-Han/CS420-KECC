@@ -32,7 +32,8 @@ pub(crate) const ALLOC_INT_REGS: &[asm::Register] = &[
     asm::Register::S11,
 ];
 
-pub(crate) const ALLOC_FLOAT_REGS: &[asm::Register] = &[
+// Callee-saved float regs.
+const ALLOC_FLOAT_CALLEE: &[asm::Register] = &[
     asm::Register::FS0,
     asm::Register::FS1,
     asm::Register::FS2,
@@ -46,6 +47,21 @@ pub(crate) const ALLOC_FLOAT_REGS: &[asm::Register] = &[
     asm::Register::FS10,
     asm::Register::FS11,
 ];
+
+// Caller-saved float regs safe for allocation when the function has no calls.
+// ft0-ft3 are used as scratch regs by the instruction translators, so skip them.
+const ALLOC_FLOAT_CALLER: &[asm::Register] = &[
+    asm::Register::FT4,
+    asm::Register::FT5,
+    asm::Register::FT6,
+    asm::Register::FT7,
+    asm::Register::FT8,
+    asm::Register::FT9,
+    asm::Register::FT10,
+    asm::Register::FT11,
+];
+
+pub(crate) const ALLOC_FLOAT_REGS: &[asm::Register] = ALLOC_FLOAT_CALLEE;
 
 // ── Result ────────────────────────────────────────────────────────────────────
 
@@ -111,8 +127,24 @@ pub(crate) fn allocate(func: &ir::FunctionDefinition) -> AllocResult {
     }
 
     // ── 3. Linear scan ────────────────────────────────────────────────────────
+    // When the function has no Call instructions, caller-saved float regs are also
+    // safe — nothing will clobber them.  This doubles the float allocation pool for
+    // float-heavy functions like float2 (27 live floats → spills 7 instead of 15).
+    let func_has_calls = func.blocks.values().any(|b| {
+        b.instructions
+            .iter()
+            .any(|i| matches!(i.deref(), Instruction::Call { .. }))
+    });
+
     let mut int_free: Vec<asm::Register> = ALLOC_INT_REGS.to_vec();
-    let mut float_free: Vec<asm::Register> = ALLOC_FLOAT_REGS.to_vec();
+    let mut float_free: Vec<asm::Register> = if func_has_calls {
+        ALLOC_FLOAT_CALLEE.to_vec()
+    } else {
+        // callee-saved first (preferred: no save/restore needed), then caller-saved
+        let mut v = ALLOC_FLOAT_CALLEE.to_vec();
+        v.extend_from_slice(ALLOC_FLOAT_CALLER);
+        v
+    };
 
     // active: (end_rpo, rid, phys)  kept sorted by end
     let mut active_int: Vec<(usize, RegisterId, asm::Register)> = Vec::new();
@@ -161,10 +193,18 @@ pub(crate) fn allocate(func: &ir::FunctionDefinition) -> AllocResult {
         // else: spill — leave unassigned → falls back to stack slot
     }
 
-    // Collect callee-saved regs actually used
+    // Collect only callee-saved regs actually used (those need save/restore in prologue).
+    // Caller-saved regs assigned to call-free functions don't need prologue save/restore.
+    let callee_saved_set: HashSet<asm::Register> = ALLOC_INT_REGS
+        .iter()
+        .chain(ALLOC_FLOAT_CALLEE.iter())
+        .copied()
+        .collect();
     let mut used_set: HashSet<asm::Register> = HashSet::new();
     for &phys in alloc.values() {
-        let _unused = used_set.insert(phys);
+        if callee_saved_set.contains(&phys) {
+            let _unused = used_set.insert(phys);
+        }
     }
     let mut used_callee_saved: Vec<asm::Register> = used_set.into_iter().collect();
     used_callee_saved.sort_by_key(|r| format!("{r}"));
