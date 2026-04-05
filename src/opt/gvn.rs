@@ -176,51 +176,51 @@ impl Optimize<FunctionDefinition> for GvnInner {
                 for (prev_bid, jump) in &prevs {
                     if let Some(arg_op) = jump.args.get(aid) {
                         if let Some(classnum) = ctx.rt.get(arg_op) {
-                                /* jump.bid == prev_bid */
-                                cn_list.push(*classnum);
-                                let _unused = mem2reg_cns.insert(*classnum);
-                                // arg_operand = arg_op.clone(); // maybe
-                                let prev_lt = ctx.lt_map.entry(*prev_bid).or_default();
-                                let mut prev_lt = std::mem::take(prev_lt);
-                                let new_operand = OperandVar::Operand(arg_op.clone()); // classnum 은 존재하지만 lt_map에는 존재하지 않는 케이스
-                                let operand_var = prev_lt
-                                    .entry(*classnum)
-                                    .or_insert_with(|| new_operand.clone());
+                            /* jump.bid == prev_bid */
+                            cn_list.push(*classnum);
+                            let _unused = mem2reg_cns.insert(*classnum);
+                            // arg_operand = arg_op.clone(); // maybe
+                            let prev_lt = ctx.lt_map.entry(*prev_bid).or_default();
+                            let mut prev_lt = std::mem::take(prev_lt);
+                            let new_operand = OperandVar::Operand(arg_op.clone()); // classnum 은 존재하지만 lt_map에는 존재하지 않는 케이스
+                            let operand_var = prev_lt
+                                .entry(*classnum)
+                                .or_insert_with(|| new_operand.clone());
 
-                                cn_list.push(*classnum);
-                                let _unused = mem2reg_cns.insert(*classnum);
-                                arg_operand = operand_var.clone();
-                                // debug_print!(
-                                //     "bid {:?} jumpbid {:?} arg_op {:?} arg_operand {:?}",
-                                //     bid,
-                                //     prev_bid,
-                                //     arg_op.clone(),
-                                //     arg_operand.clone()
-                                // );
+                            cn_list.push(*classnum);
+                            let _unused = mem2reg_cns.insert(*classnum);
+                            arg_operand = operand_var.clone();
+                            // debug_print!(
+                            //     "bid {:?} jumpbid {:?} arg_op {:?} arg_operand {:?}",
+                            //     bid,
+                            //     prev_bid,
+                            //     arg_op.clone(),
+                            //     arg_operand.clone()
+                            // );
 
-                                let _unused = ctx.lt_map.insert(*prev_bid, prev_lt);
-                                new_op = false;
-                            } else {
-                                /* classnum을 할당해주는 logic
-                                prev_bid에 해당하는 LT table도 채워주고
-                                RT table도 채워주고
-                                */
-                                let classnum = *ctx
-                                    .rt
-                                    .entry(arg_op.clone())
-                                    .or_insert_with(|| ctx.class_gen.fresh());
-                                let prev_lt = ctx.lt_map.entry(*prev_bid).or_default();
-                                let mut prev_lt = std::mem::take(prev_lt);
-                                let new_operand = OperandVar::Operand(arg_op.clone());
-                                let _unused = prev_lt.insert(classnum, new_operand.clone());
-                                let _unused = ctx.lt_map.insert(*prev_bid, prev_lt);
-                                cn_list.push(classnum);
-                                let _unused = mem2reg_cns.insert(classnum);
-                                arg_operand = new_operand;
-                                // debug_print!("Missing classnum for operand {:?}", arg_op); // maybe
-                            }
+                            let _unused = ctx.lt_map.insert(*prev_bid, prev_lt);
+                            new_op = false;
+                        } else {
+                            /* classnum을 할당해주는 logic
+                            prev_bid에 해당하는 LT table도 채워주고
+                            RT table도 채워주고
+                            */
+                            let classnum = *ctx
+                                .rt
+                                .entry(arg_op.clone())
+                                .or_insert_with(|| ctx.class_gen.fresh());
+                            let prev_lt = ctx.lt_map.entry(*prev_bid).or_default();
+                            let mut prev_lt = std::mem::take(prev_lt);
+                            let new_operand = OperandVar::Operand(arg_op.clone());
+                            let _unused = prev_lt.insert(classnum, new_operand.clone());
+                            let _unused = ctx.lt_map.insert(*prev_bid, prev_lt);
+                            cn_list.push(classnum);
+                            let _unused = mem2reg_cns.insert(classnum);
+                            arg_operand = new_operand;
+                            // debug_print!("Missing classnum for operand {:?}", arg_op); // maybe
                         }
                     }
+                }
 
                 // debug_print!("bid {:?}, mem2reg_cns  {:?}", bid, mem2reg_cns);
                 /*
