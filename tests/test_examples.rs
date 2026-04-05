@@ -837,3 +837,8 @@ fn test_examples_end_to_end() {
         test_end_to_end(path);
     });
 }
+
+#[test]
+fn test_ir2_temp2_dump() {
+    test_asmgen(std::path::Path::new("examples/ir2/temp2.ir"));
+}

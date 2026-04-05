@@ -1,3 +1,5 @@
+pub(crate) mod regalloc;
+
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::ops::Deref;
 
@@ -49,6 +51,9 @@ pub struct Asmgen {
     function_name_list: HashMap<String, (usize, ir::FunctionSignature)>,
     variable_name_list: HashMap<String, ir::Dtype>,
     structs: HashMap<String, Option<ir::Dtype>>,
+    /// Callee-saved registers used by the register allocator this function,
+    /// along with the stack offset where each is saved in the prologue.
+    callee_saved_slots: Vec<(asm::Register, i32)>,
 }
 
 #[derive(Debug)]
@@ -70,6 +75,7 @@ impl Default for Asmgen {
             function_name_list: HashMap::new(),
             variable_name_list: HashMap::new(),
             structs: HashMap::new(),
+            callee_saved_slots: Vec::new(),
         }
     }
 }
@@ -93,9 +99,28 @@ impl StackAllocator {
         match self.stack_map.get(rid) {
             Some(Loc::Stack(off)) => *off,
             Some(Loc::Reg(_)) => {
-                debug_print!("allocate_stack_slot | Reg");
-                0
-            } // 레지스터면 offset 의미 0 (안 씀)
+                // Pre-assigned to a physical register, but the instruction handler that calls
+                // this function doesn't use store_result — allocate a real stack slot and
+                // downgrade the mapping so translate_operand uses ld instead of mv.
+                let size = get_dtype_size(dtype, structs);
+                let align = if size >= 8 {
+                    8
+                } else if size >= 4 {
+                    4
+                } else if size >= 2 {
+                    2
+                } else {
+                    1
+                };
+                let remainder = self.next_stack_offset % align;
+                if remainder != 0 {
+                    self.next_stack_offset += align - remainder;
+                }
+                let off = self.next_stack_offset;
+                let _ = self.stack_map.insert(*rid, Loc::Stack(off));
+                self.next_stack_offset += size;
+                off
+            }
             None => {
                 let size = get_dtype_size(dtype, structs);
                 let align = if size >= 8 {
@@ -118,6 +143,55 @@ impl StackAllocator {
             }
         }
     }
+    /// Emit the store/move that saves `result_reg` into the location for `rid`.
+    /// - If rid was register-allocated → emit `mv dst, result_reg` (or fmv for floats).
+    /// - Otherwise → allocate a stack slot and emit `sd result_reg, [sp+off]`.
+    fn store_result(
+        &mut self,
+        rid: &ir::RegisterId,
+        dtype: &ir::Dtype,
+        result_reg: asm::Register,
+        asm_instrs: &mut Vec<asm::Instruction>,
+        structs: &HashMap<String, Option<ir::Dtype>>,
+    ) {
+        match self.stack_map.get(rid).copied() {
+            Some(Loc::Reg(dst)) => {
+                if dst != result_reg {
+                    let instr = if matches!(dtype, ir::Dtype::Float { .. }) {
+                        asm::Instruction::Pseudo(asm::Pseudo::Fmv {
+                            data_size: asm::DataSize::from_dtype(dtype),
+                            rd: dst,
+                            rs: result_reg,
+                        })
+                    } else {
+                        asm::Instruction::Pseudo(asm::Pseudo::Mv {
+                            rd: dst,
+                            rs: result_reg,
+                        })
+                    };
+                    asm_instrs.push(instr);
+                }
+                // result already IS the destination register — no-op
+            }
+            _ => {
+                // Stack slot path
+                let off = self.allocate_stack_slot(rid, dtype, structs);
+                // Keep 8-byte alignment for subsequent allocations
+                let mut rem = self.next_stack_offset % 8;
+                if rem == 0 {
+                    rem = 8;
+                }
+                self.next_stack_offset += 8 - rem;
+                asm_instrs.push(asm::Instruction::SType {
+                    instr: store_instr_for_dtype(dtype, structs),
+                    rs1: asm::Register::Sp,
+                    rs2: result_reg,
+                    imm: asm::Immediate::Value(off as u64),
+                });
+            }
+        }
+    }
+
     fn force_spill_if_reg(
         &mut self,
         rid: &ir::RegisterId,
@@ -802,6 +876,7 @@ impl Asmgen {
         bid: &ir::BlockId,
         allocations: Vec<Named<ir::Dtype>>,
         name: &str,
+        extra_callee_saved: &[asm::Register],
         asm_block_instrs: &mut Vec<asm::Instruction>,
     ) {
         // prelogue
@@ -843,6 +918,25 @@ impl Asmgen {
                 rs2: asm::Register::S1,
                 imm: asm::Immediate::Value(self.stack_allocator.next_stack_offset as u64),
             });
+            self.stack_allocator.next_stack_offset += 8;
+        }
+
+        // Save callee-saved registers used by register allocator
+        for &reg in extra_callee_saved {
+            let off = self.stack_allocator.next_stack_offset;
+            let is_float = matches!(reg, asm::Register::Saved(asm::RegisterType::FloatingPoint, _));
+            let store_instr = if is_float {
+                asm::SType::Store(asm::DataSize::DoublePrecision)
+            } else {
+                asm::SType::Store(asm::DataSize::Double)
+            };
+            asm_block_instrs.push(asm::Instruction::SType {
+                instr: store_instr,
+                rs1: asm::Register::Sp,
+                rs2: reg,
+                imm: asm::Immediate::Value(off as u64),
+            });
+            self.callee_saved_slots.push((reg, off));
             self.stack_allocator.next_stack_offset += 8;
         }
 
@@ -950,17 +1044,36 @@ impl Asmgen {
     ) {
         match &operand {
             ir::Operand::Register { rid, dtype } => {
-                // 여기서는 resuse 하는 상황
-                let offset = self
-                    .stack_allocator
-                    .allocate_stack_slot(rid, dtype, &self.structs);
-                debug_print!("translate_operand | offset {}", offset);
-                asm_block_instrs.push(asm::Instruction::IType {
-                    instr: load_instr_for_dtype(&operand.dtype(), &self.structs),
-                    rd,
-                    rs1: asm::Register::Sp,
-                    imm: asm::Immediate::Value(offset as u64),
-                });
+                // Check if this SSA register was allocated to a physical register
+                if let Some(Loc::Reg(phys)) = self.stack_allocator.stack_map.get(rid).copied() {
+                    // Already in a physical register — emit mv/fmv to the destination
+                    if phys == rd {
+                        // Same register: no-op
+                    } else {
+                        let instr = if matches!(dtype, ir::Dtype::Float { .. }) {
+                            asm::Instruction::Pseudo(asm::Pseudo::Fmv {
+                                data_size: asm::DataSize::from_dtype(dtype),
+                                rd,
+                                rs: phys,
+                            })
+                        } else {
+                            asm::Instruction::Pseudo(asm::Pseudo::Mv { rd, rs: phys })
+                        };
+                        asm_block_instrs.push(instr);
+                    }
+                } else {
+                    // Fall back to stack slot load
+                    let offset = self
+                        .stack_allocator
+                        .allocate_stack_slot(rid, dtype, &self.structs);
+                    debug_print!("translate_operand | offset {}", offset);
+                    asm_block_instrs.push(asm::Instruction::IType {
+                        instr: load_instr_for_dtype(&operand.dtype(), &self.structs),
+                        rd,
+                        rs1: asm::Register::Sp,
+                        imm: asm::Immediate::Value(offset as u64),
+                    });
+                }
             }
             ir::Operand::Constant(c) => {
                 debug_print!("translate_operand | Constant c {}", c);
@@ -1150,6 +1263,28 @@ impl Asmgen {
                     imm: asm::Immediate::Value(0),
                 });
 
+                // Restore callee-saved registers used by register allocator
+                for &(reg, off) in &self.callee_saved_slots {
+                    let is_float = matches!(reg, asm::Register::Saved(asm::RegisterType::FloatingPoint, _));
+                    let load_instr = if is_float {
+                        asm::IType::Load {
+                            data_size: asm::DataSize::DoublePrecision,
+                            is_signed: false,
+                        }
+                    } else {
+                        asm::IType::Load {
+                            data_size: asm::DataSize::Double,
+                            is_signed: true,
+                        }
+                    };
+                    asm_block_instrs.push(asm::Instruction::IType {
+                        instr: load_instr,
+                        rd: reg,
+                        rs1: asm::Register::Sp,
+                        imm: asm::Immediate::Value(off as u64),
+                    });
+                }
+
                 // addi sp, sp, MN
                 asm_block_instrs.push(asm::Instruction::IType {
                     instr: asm::IType::Addi(asm::DataSize::Double),
@@ -1273,17 +1408,9 @@ impl Asmgen {
                     };
 
                     asm_block_instrs.push(asm::Instruction::Pseudo(pseudo));
-                    let offset =
-                        self.stack_allocator
-                            .allocate_stack_slot(&dst_rid, dtype, &self.structs);
-                    debug_print!("unaryop offset {}", offset);
-                    add_padding(&mut self.stack_allocator.next_stack_offset);
-                    asm_block_instrs.push(asm::Instruction::SType {
-                        instr: store_instr_for_dtype(dtype, &self.structs),
-                        rs1: asm::Register::Sp,
-                        rs2: t0_reg,
-                        imm: asm::Immediate::Value(offset as u64),
-                    });
+                    self.stack_allocator.store_result(
+                        &dst_rid, dtype, t0_reg, asm_block_instrs, &self.structs,
+                    );
                 }
                 ast::UnaryOperator::Negate => {
                     let t0_reg = asm_register_instruction(0, dtype);
@@ -1296,18 +1423,9 @@ impl Asmgen {
                         rs: t0_reg,
                     }));
                     // 스택 슬롯 할당 및 저장
-                    let offset =
-                        self.stack_allocator
-                            .allocate_stack_slot(&dst_rid, dtype, &self.structs);
-                    debug_print!("unaryop negate offset {}", offset);
-                    add_padding(&mut self.stack_allocator.next_stack_offset);
-
-                    asm_block_instrs.push(asm::Instruction::SType {
-                        instr: store_instr_for_dtype(dtype, &self.structs),
-                        rs1: asm::Register::Sp,
-                        rs2: t0_reg,
-                        imm: asm::Immediate::Value(offset as u64),
-                    });
+                    self.stack_allocator.store_result(
+                        &dst_rid, dtype, t0_reg, asm_block_instrs, &self.structs,
+                    );
                 }
                 _ => {
                     debug_print!("TODO unaryop {:?}", op);
@@ -1343,27 +1461,10 @@ impl Asmgen {
                     });
 
                     debug_print!("\n===== binop alloc =====\n");
-                    // dst_rid에 대해서 T0를 저장해야 함
-                    let offset =
-                        self.stack_allocator
-                            .allocate_stack_slot(&dst_rid, dtype, &self.structs);
-                    add_padding(&mut self.stack_allocator.next_stack_offset);
+                    self.stack_allocator.store_result(
+                        &dst_rid, dtype, t0_reg, asm_block_instrs, &self.structs,
+                    );
                     debug_print!("\n=======================\n");
-
-                    // // binop test
-                    // asm_block_instrs.push(asm::Instruction::IType {
-                    //     instr: asm::IType::Addi(asm::DataSize::Double),
-                    //     rd: asm::Register::T5,
-                    //     rs1: asm::Register::T5,
-                    //     imm: asm::Immediate::Value(0),
-                    // });
-
-                    asm_block_instrs.push(asm::Instruction::SType {
-                        instr: store_instr_for_dtype(dtype, &self.structs),
-                        rs1: asm::Register::Sp,
-                        rs2: t0_reg,
-                        imm: asm::Immediate::Value(offset as u64),
-                    });
                 } else {
                     debug_print!("TODO maybe | instruction {}", instruction);
                 }
@@ -1819,15 +1920,12 @@ impl Asmgen {
                     offset: asm::Label(call_name.clone()),
                 }));
 
-                // save return value (a0 or fa0) into ret_offset slot
+                // save return value (a0 or fa0) into dst_rid's location (reg or stack)
                 if get_dtype_size(ret, &self.structs) > 0 {
                     let a0_reg = asm_register_args(0, ret);
-                    asm_block_instrs.push(asm::Instruction::SType {
-                        instr: store_instr_for_dtype(ret, &self.structs),
-                        rs1: asm::Register::Sp,
-                        rs2: a0_reg,
-                        imm: asm::Immediate::Value(ret_offset as u64),
-                    });
+                    self.stack_allocator.store_result(
+                        &dst_rid, ret, a0_reg, asm_block_instrs, &self.structs,
+                    );
                 }
 
                 add_padding(&mut self.stack_allocator.next_stack_offset);
@@ -1925,15 +2023,12 @@ impl Asmgen {
                 // call 실행
                 asm_block_instrs.push(asm::Instruction::Pseudo(asm::Pseudo::Jalr { rs: t0_reg }));
 
-                // save return value (a0 or fa0) into ret_offset slot
+                // save return value (a0 or fa0) into dst_rid's location (reg or stack)
                 if get_dtype_size(return_type, &self.structs) > 0 {
                     let a0_reg = asm_register_args(0, return_type);
-                    asm_block_instrs.push(asm::Instruction::SType {
-                        instr: store_instr_for_dtype(return_type, &self.structs),
-                        rs1: asm::Register::Sp,
-                        rs2: a0_reg,
-                        imm: asm::Immediate::Value(ret_offset as u64),
-                    });
+                    self.stack_allocator.store_result(
+                        &dst_rid, return_type, a0_reg, asm_block_instrs, &self.structs,
+                    );
                 }
 
                 add_padding(&mut self.stack_allocator.next_stack_offset);
@@ -1950,10 +2045,6 @@ impl Asmgen {
 
                 self.translate_operand(value.clone(), t1_value_reg, asm_block_instrs);
                 // Load then 상황
-                let offset =
-                    self.stack_allocator
-                        .allocate_stack_slot(&dst_rid, target_dtype, &self.structs);
-
                 match (t1_value_reg, t2_target_reg) {
                     (asm::Register::T1, asm::Register::FT2) => {
                         let int_size = asm::DataSize::from_dtype(&value.dtype());
@@ -2021,12 +2112,9 @@ impl Asmgen {
                     }
                 }
 
-                asm_block_instrs.push(asm::Instruction::SType {
-                    instr: store_instr_for_dtype(target_dtype, &self.structs),
-                    rs1: asm::Register::Sp,
-                    rs2: t2_target_reg,
-                    imm: asm::Immediate::Value(offset as u64),
-                });
+                self.stack_allocator.store_result(
+                    &dst_rid, target_dtype, t2_target_reg, asm_block_instrs, &self.structs,
+                );
             }
             ir::Instruction::GetElementPtr { ptr, offset, dtype } => {
                 // Compute ptr + byte_offset and store the resulting pointer
@@ -2038,16 +2126,9 @@ impl Asmgen {
                     rs1: asm::Register::T0,
                     rs2: Some(asm::Register::T1),
                 });
-                let slot = self
-                    .stack_allocator
-                    .allocate_stack_slot(&dst_rid, dtype, &self.structs);
-                asm_block_instrs.push(asm::Instruction::SType {
-                    instr: asm::SType::SD,
-                    rs1: asm::Register::Sp,
-                    rs2: asm::Register::T0,
-                    imm: asm::Immediate::Value(slot as u64),
-                });
-                add_padding(&mut self.stack_allocator.next_stack_offset);
+                self.stack_allocator.store_result(
+                    &dst_rid, dtype, asm::Register::T0, asm_block_instrs, &self.structs,
+                );
             }
             _ => {
                 debug_print!("todo insturction {}", instruction);
@@ -2067,7 +2148,16 @@ impl Asmgen {
         */
         self.stack_allocator.next_stack_offset = 0;
         self.stack_allocator.stack_map.clear();
+        self.callee_saved_slots.clear();
         let mut asm_blocks: Vec<asm::Block> = vec![];
+
+        // ── Register allocation ──────────────────────────────────────────────
+        // Run linear-scan allocator and pre-populate stack_map with Loc::Reg
+        // for SSA registers that got a physical register.
+        let regalloc_result = regalloc::allocate(func);
+        for (rid, phys) in &regalloc_result.alloc {
+            let _unused = self.stack_allocator.stack_map.insert(*rid, Loc::Reg(*phys));
+        }
 
         let call_flag = call_flag(func);
 
@@ -2184,6 +2274,7 @@ impl Asmgen {
                     bid,
                     func.allocations.clone(),
                     name,
+                    &regalloc_result.used_callee_saved.clone(),
                     &mut asm_block_instrs,
                 );
             }

@@ -1,66 +1,355 @@
-        .globl	fibonacci
+        .globl	init
         .section	.text
-        .type	fibonacci, @function
-fibonacci:
-        addi	sp,sp,-72
+        .type	init, @function
+init:
+        addi	sp,sp,-272
         sd	s0,0(sp)
-        addi	s0,sp,72
-        addi	t0,sp,8
-        sd	t0,16(sp)
-        sw	a0,24(sp)
-        ld	t0,16(sp)
-        lw	t1,24(sp)
+        sd	s10,8(sp)
+        sd	s11,16(sp)
+        sd	s2,24(sp)
+        sd	s3,32(sp)
+        sd	s4,40(sp)
+        sd	s5,48(sp)
+        sd	s6,56(sp)
+        sd	s7,64(sp)
+        sd	s8,72(sp)
+        sd	s9,80(sp)
+        addi	s0,sp,272
+        addi	t0,sp,88
+        sd	t0,112(sp)
+        addi	t0,sp,92
+        sd	t0,120(sp)
+        addi	t0,sp,96
+        sd	t0,128(sp)
+        addi	t0,sp,104
+        sd	t0,136(sp)
+        addi	t0,sp,108
+        sd	t0,144(sp)
+        sw	a0,152(sp)
+        sw	a1,156(sp)
+        sd	a2,160(sp)
+        ld	t0,112(sp)
+        lw	t1,152(sp)
         sw	t1,0(t0)
-        j	.fibonacci_L1
-.fibonacci_L1:
-        ld	t0,16(sp)
+        ld	t0,120(sp)
+        lw	t1,156(sp)
+        sw	t1,0(t0)
+        ld	t0,128(sp)
+        ld	t1,160(sp)
+        sd	t1,0(t0)
+        j	.init_L1
+.init_L1:
+        ld	t0,136(sp)
+        li	t1,0
+        sw	t1,0(t0)
+        j	.init_L2
+.init_L2:
+        ld	t0,136(sp)
         lw	t0,0(t0)
-        sw	t0,32(sp)
-        ld	t0,16(sp)
+        sw	t0,168(sp)
+        ld	t0,112(sp)
         lw	t0,0(t0)
-        sw	t0,40(sp)
-        lw	t1,32(sp)
-        lw	t2,40(sp)
+        sw	t0,176(sp)
+        lw	t1,168(sp)
+        lw	t2,176(sp)
+        slt	t0,t1,t2
+        sb	t0,184(sp)
+        lbu	t0,184(sp)
+        beq	t0,zero, .init_L5
+        j	.init_L3
+.init_L3:
+        j	.init_L6
+.init_L4:
+        ld	t0,136(sp)
+        lw	t0,0(t0)
+        sw	t0,192(sp)
+        lw	t1,192(sp)
+        li	t2,1
         addw	t0,t1,t2
-        sw	t0,48(sp)
-        lw	t1,48(sp)
-        li	t2,0
-        xor	t0,t1,t2
-        snez	t0,t0
-        sb	t0,56(sp)
-        lbu	t0,56(sp)
-        beq	t0,zero, .fibonacci_L3
-        j	.fibonacci_L2
-.fibonacci_L2:
-        ld	t0,16(sp)
+        mv	s9,t0
+        ld	t0,136(sp)
+        mv	t1,s9
+        sw	t1,0(t0)
+        j	.init_L2
+.init_L5:
+        ld	s0,0(sp)
+        ld	s10,8(sp)
+        ld	s11,16(sp)
+        ld	s2,24(sp)
+        ld	s3,32(sp)
+        ld	s4,40(sp)
+        ld	s5,48(sp)
+        ld	s6,56(sp)
+        ld	s7,64(sp)
+        ld	s8,72(sp)
+        ld	s9,80(sp)
+        addi	sp,sp,272
+        ret
+.init_L6:
+        ld	t0,144(sp)
+        li	t1,0
+        sw	t1,0(t0)
+        j	.init_L7
+.init_L7:
+        ld	t0,144(sp)
         lw	t0,0(t0)
-        sw	t0,64(sp)
-        lw	a0,64(sp)
-        sw	a0,-8(s1)
-        ld	s0,0(sp)
-        addi	sp,sp,72
-        ret
-.fibonacci_L3:
-        li	a0,0
-        sw	a0,-8(s1)
-        ld	s0,0(sp)
-        addi	sp,sp,72
-        ret
-.fibonacci_L4:
-        j	.fibonacci_L1
+        sw	t0,200(sp)
+        ld	t0,120(sp)
+        lw	t0,0(t0)
+        sw	t0,208(sp)
+        lw	t1,200(sp)
+        lw	t2,208(sp)
+        slt	t0,t1,t2
+        sb	t0,216(sp)
+        lbu	t0,216(sp)
+        beq	t0,zero, .init_L10
+        j	.init_L8
+.init_L8:
+        ld	t0,128(sp)
+        ld	t0,0(t0)
+        sd	t0,224(sp)
+        ld	t0,136(sp)
+        lw	t0,0(t0)
+        sw	t0,232(sp)
+        lw	t1,232(sp)
+        mv	t2,t1
+        mv	s11,t2
+        mv	t1,s11
+        li	t2,20
+        mul	t0,t1,t2
+        mv	s6,t0
+        ld	t0,224(sp)
+        mv	t1,s6
+        add	t0,t0,t1
+        mv	s3,t0
+        mv	t0,s3
+        li	t1,0
+        add	t0,t0,t1
+        mv	s10,t0
+        ld	t0,144(sp)
+        lw	t0,0(t0)
+        sw	t0,240(sp)
+        lw	t1,240(sp)
+        mv	t2,t1
+        mv	s9,t2
+        mv	t1,s9
+        li	t2,4
+        mul	t0,t1,t2
+        mv	s4,t0
+        mv	t0,s10
+        mv	t1,s4
+        add	t0,t0,t1
+        mv	s2,t0
+        ld	t0,136(sp)
+        lw	t0,0(t0)
+        sw	t0,248(sp)
+        ld	t0,144(sp)
+        lw	t0,0(t0)
+        sw	t0,256(sp)
+        lw	t1,248(sp)
+        lw	t2,256(sp)
+        mulw	t0,t1,t2
+        mv	s7,t0
+        mv	t0,s2
+        mv	t1,s7
+        sw	t1,0(t0)
+        j	.init_L9
+.init_L9:
+        ld	t0,144(sp)
+        lw	t0,0(t0)
+        sw	t0,264(sp)
+        lw	t1,264(sp)
+        li	t2,1
+        addw	t0,t1,t2
+        mv	s2,t0
+        ld	t0,144(sp)
+        mv	t1,s2
+        sw	t1,0(t0)
+        j	.init_L7
+.init_L10:
+        j	.init_L4
         .globl	main
         .section	.text
         .type	main, @function
 main:
-        addi	sp,sp,-8
+        addi	sp,sp,-496
         sd	s0,0(sp)
-        addi	s0,sp,8
-        li	a0,1
+        sd	ra,8(sp)
+        sd	s1,16(sp)
+        sd	s10,24(sp)
+        sd	s11,32(sp)
+        sd	s2,40(sp)
+        sd	s3,48(sp)
+        sd	s4,56(sp)
+        sd	s5,64(sp)
+        sd	s6,72(sp)
+        sd	s7,80(sp)
+        sd	s8,88(sp)
+        sd	s9,96(sp)
+        addi	s0,sp,496
+        addi	t0,sp,104
+        sd	t0,304(sp)
+        addi	t0,sp,200
+        sd	t0,312(sp)
+        addi	t0,sp,204
+        sd	t0,320(sp)
+        addi	t0,sp,208
+        sd	t0,328(sp)
+        ld	t0,312(sp)
+        li	t1,4
+        sw	t1,0(t0)
+        ld	t0,320(sp)
+        li	t1,5
+        sw	t1,0(t0)
+        ld	t0,312(sp)
+        lw	t0,0(t0)
+        sw	t0,336(sp)
+        ld	t0,320(sp)
+        lw	t0,0(t0)
+        sw	t0,344(sp)
+        ld	t0,304(sp)
+        li	t1,4
+        add	t0,t0,t1
+        sd	t0,352(sp)
+        ld	t0,352(sp)
+        li	t1,0
+        add	t0,t0,t1
+        sd	t0,360(sp)
+        addi	s1,sp,368
+        lw	t0,336(sp)
+        mv	a0,t0
+        lw	t0,344(sp)
+        mv	a1,t0
+        ld	t0,360(sp)
+        mv	a2,t0
+        call	init
+        ld	t0,304(sp)
+        addi	t1,sp,368
+        ld	t2,0(t0)
+        sd	t2,0(t1)
+        ld	t2,8(t0)
+        sd	t2,8(t1)
+        ld	t2,16(t0)
+        sd	t2,16(t1)
+        ld	t2,24(t0)
+        sd	t2,24(t1)
+        ld	t2,32(t0)
+        sd	t2,32(t1)
+        ld	t2,40(t0)
+        sd	t2,40(t1)
+        ld	t2,48(t0)
+        sd	t2,48(t1)
+        ld	t2,56(t0)
+        sd	t2,56(t1)
+        ld	t2,64(t0)
+        sd	t2,64(t1)
+        ld	t2,72(t0)
+        sd	t2,72(t1)
+        ld	t2,80(t0)
+        sd	t2,80(t1)
+        ld	t2,88(t0)
+        sd	t2,88(t1)
+        ld	t0,328(sp)
+        addi	t1,sp,368
+        ld	t2,0(t1)
+        sd	t2,0(t0)
+        ld	t2,8(t1)
+        sd	t2,8(t0)
+        ld	t2,16(t1)
+        sd	t2,16(t0)
+        ld	t2,24(t1)
+        sd	t2,24(t0)
+        ld	t2,32(t1)
+        sd	t2,32(t0)
+        ld	t2,40(t1)
+        sd	t2,40(t0)
+        ld	t2,48(t1)
+        sd	t2,48(t0)
+        ld	t2,56(t1)
+        sd	t2,56(t0)
+        ld	t2,64(t1)
+        sd	t2,64(t0)
+        ld	t2,72(t1)
+        sd	t2,72(t0)
+        ld	t2,80(t1)
+        sd	t2,80(t0)
+        ld	t2,88(t1)
+        sd	t2,88(t0)
+        ld	t0,328(sp)
+        li	t1,4
+        add	t0,t0,t1
+        sd	t0,464(sp)
+        ld	t0,464(sp)
+        li	t1,0
+        add	t0,t0,t1
+        mv	s6,t0
+        li	t1,2
+        mv	t2,t1
+        mv	s7,t2
+        mv	t1,s7
+        li	t2,20
+        mul	t0,t1,t2
+        mv	s8,t0
+        mv	t0,s6
+        mv	t1,s8
+        add	t0,t0,t1
+        mv	s9,t0
+        mv	t0,s9
+        li	t1,0
+        add	t0,t0,t1
+        mv	s3,t0
+        li	t1,3
+        mv	t2,t1
+        sd	t2,472(sp)
+        ld	t1,472(sp)
+        li	t2,4
+        mul	t0,t1,t2
+        mv	s10,t0
+        mv	t0,s3
+        mv	t1,s10
+        add	t0,t0,t1
+        mv	s5,t0
+        mv	t0,s5
+        lw	t0,0(t0)
+        sw	t0,480(sp)
+        lw	t1,480(sp)
+        li	t2,6
+        xor	t0,t1,t2
+        seqz	t0,t0
+        sb	t0,488(sp)
+        lbu	t1,488(sp)
+        mv	t2,t1
+        mv	s2,t2
+        mv	a0,s2
+        ld	s1,16(sp)
+        ld	ra,8(sp)
         ld	s0,0(sp)
-        addi	sp,sp,8
+        ld	s10,24(sp)
+        ld	s11,32(sp)
+        ld	s2,40(sp)
+        ld	s3,48(sp)
+        ld	s4,56(sp)
+        ld	s5,64(sp)
+        ld	s6,72(sp)
+        ld	s7,80(sp)
+        ld	s8,88(sp)
+        ld	s9,96(sp)
+        addi	sp,sp,496
         ret
 .main_L1:
         li	a0,0
+        ld	s1,16(sp)
+        ld	ra,8(sp)
         ld	s0,0(sp)
-        addi	sp,sp,8
+        ld	s10,24(sp)
+        ld	s11,32(sp)
+        ld	s2,40(sp)
+        ld	s3,48(sp)
+        ld	s4,56(sp)
+        ld	s5,64(sp)
+        ld	s6,72(sp)
+        ld	s7,80(sp)
+        ld	s8,88(sp)
+        ld	s9,96(sp)
+        addi	sp,sp,496
         ret
