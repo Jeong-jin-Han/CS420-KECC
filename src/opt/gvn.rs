@@ -123,7 +123,9 @@ impl Optimize<FunctionDefinition> for GvnInner {
             current_lt.extend(inherited_lt);
 
             /* phinode에 대한 classnum을 미리 설정해주기 */
-            let prevs = reverse_cfg.get(bid).cloned().unwrap_or(vec![]);
+            let mut prevs = reverse_cfg.get(bid).cloned().unwrap_or(vec![]);
+            // Sort by predecessor BlockId so the representative operand is deterministic.
+            prevs.sort_by_key(|(bid, _)| *bid);
             /* JumpArg로부터 어떤 값이 들어갈 것인지를 미리 알 수 있어? */
             /* 그런데 여러개의 phinode가 존재한다면??
             phi_a(cfg1_a, cfg2_a)
@@ -169,17 +171,11 @@ impl Optimize<FunctionDefinition> for GvnInner {
                 // 각 pred 블록에서 해당 aid 위치의 값을 수집
                 let mut cn_list = Vec::new();
                 let mut new_op = true;
-                if let Some(prev_list) = reverse_cfg.get(bid) {
-                    for (prev_bid, jump) in prev_list {
-                        if let Some(arg_op) = jump.args.get(aid) {
-                            /*
-                            현재 문제가
-                            LT에서 classnum -> argument 에 대한 정보가 없어서 이 정보를 추가해주어야 함
-                            phinode에 operand 넣어주기 전에
-
-                            const여도 lt_table을 봐야 한다.
-                            */
-                            if let Some(classnum) = ctx.rt.get(arg_op) {
+                // Use sorted `prevs` (sorted by BlockId at line 128) so arg_operand
+                // is assigned deterministically regardless of HashMap iteration order.
+                for (prev_bid, jump) in &prevs {
+                    if let Some(arg_op) = jump.args.get(aid) {
+                        if let Some(classnum) = ctx.rt.get(arg_op) {
                                 /* jump.bid == prev_bid */
                                 cn_list.push(*classnum);
                                 let _unused = mem2reg_cns.insert(*classnum);
@@ -225,7 +221,6 @@ impl Optimize<FunctionDefinition> for GvnInner {
                             }
                         }
                     }
-                }
 
                 // debug_print!("bid {:?}, mem2reg_cns  {:?}", bid, mem2reg_cns);
                 /*
@@ -419,18 +414,15 @@ impl Optimize<FunctionDefinition> for GvnInner {
 
                         let operandvar = OperandVar::Operand(operand.clone()); // maybe??
 
-                        // LT에 리더 없으면 등록
-                        if flag_ptr {
-                            // 무조건 LT에 등록!!
-                            let _unused = current_lt.insert(classnum, operandvar);
-                        } else {
-                            let _unused = current_lt.entry(classnum).or_insert_with(|| {
-                                debug_print!("LT new | classnum : {:?}", classnum); // 존재할 때는 실행 안 됨!
-                                cphi_flag = true;
-                                let _unused = current_ct.insert(classnum);
-                                operandvar
-                            });
-                        }
+                        // First call with this expression becomes the leader (or_insert_with).
+                        // Subsequent identical calls reuse the same class and will be
+                        // replaced with the leader by make_replaces_from_lt.
+                        let _unused = current_lt.entry(classnum).or_insert_with(|| {
+                            debug_print!("LT new | classnum : {:?}", classnum);
+                            cphi_flag = true;
+                            let _unused = current_ct.insert(classnum);
+                            operandvar
+                        });
                     }
                     Instruction::TypeCast {
                         value,
@@ -504,10 +496,12 @@ impl Optimize<FunctionDefinition> for GvnInner {
                             operandvar
                         });
                     }
-                    // Instruction::Store { ptr, value } => {
-                    //     let ptr = operand_to_class(ptr, &mut ctx);
-                    //     let value = operand_to_class(value, &mut ctx);
-                    // }
+                    Instruction::Store { .. } => {
+                        // A store may modify memory that a future call reads.
+                        // Invalidate all Call entries in ET so calls after this store
+                        // are not merged with calls before it (store-barrier rule).
+                        ctx.et.retain(|expr, _| !matches!(expr, ExprV::Call { .. }));
+                    }
                     _ => {} // 다른 명령어는 추후 확장
                 }
                 debug_print!();
@@ -554,7 +548,11 @@ impl Optimize<FunctionDefinition> for GvnInner {
 
                 let mut operands_from_preds = HashMap::new();
                 // 이게 왜 필요할까? 왜냐하면 phinode를 삽입하게 되면 이값을 argument에 넣어주어야 해서
-                for classnum in ctx.ct_map.get(bid).unwrap() {
+                // Sort classnums for deterministic phinode insertion order.
+                let mut ct_classnums: Vec<ClassNum> =
+                    ctx.ct_map.get(bid).unwrap().iter().cloned().collect();
+                ct_classnums.sort();
+                for classnum in &ct_classnums {
                     // classnum 에 대해서 이전 block이 가지고 있는지 ct로 확인하기, ct에서 있으면
                     // Check if all predecessor blocks of bid have LT[classnum]
                     let mut all_have = true;
@@ -681,25 +679,10 @@ impl Optimize<FunctionDefinition> for GvnInner {
 // }
 
 fn operand_to_class_call(operand: &Operand, ctx: &mut GvnContext) -> ClassNum {
+    // Use consistent class numbers for all call arguments so that GVN can
+    // recognize two calls with identical arguments as the same expression.
     match operand {
-        Operand::Register { dtype, .. } => {
-            debug_print!(
-                "dtype ptr: {:?}, dtype cosnt: {:?}",
-                dtype.get_pointer_inner(),
-                dtype.is_const()
-            );
-            if dtype.get_pointer_inner().is_some() {
-                // 포인터는 alias 분석 없으므로 보수적으로 매번 fresh
-                ctx.class_gen.fresh()
-            } else {
-                let classnum = ctx
-                    .rt
-                    .entry(operand.clone())
-                    .or_insert_with(|| ctx.class_gen.fresh());
-                *classnum
-            }
-        }
-        Operand::Constant(c) => {
+        Operand::Register { .. } | Operand::Constant(_) => {
             let classnum = ctx
                 .rt
                 .entry(operand.clone())
