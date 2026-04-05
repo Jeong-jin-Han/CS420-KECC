@@ -65,8 +65,6 @@ impl Optimize<FunctionDefinition> for DeadcodeInner {
         */
         let mut nop_reg = HashSet::<RegisterId>::new();
         let mut used_reg = HashSet::<RegisterId>::new();
-        let mut call_reg = HashSet::<RegisterId>::new();
-        /* call에서만 예외적으로 unused_reg에서 제외 */
         for (bid, block) in &code.blocks {
             debug_print!("used_insertion");
             for (iid, instr) in block.instructions.iter().enumerate() {
@@ -102,8 +100,11 @@ impl Optimize<FunctionDefinition> for DeadcodeInner {
                     } => {
                         insert_register(callee, &mut used_reg);
                         insert_registers(args, &mut used_reg);
-                        let _unused = used_reg.insert(RegisterId::temp(*bid, iid));
-                        let _unused = call_reg.insert(RegisterId::temp(*bid, iid));
+                        // Unit-returning calls are always kept (called for side effects).
+                        // Non-unit calls can be removed if their result is unused.
+                        if *return_type == Dtype::unit() {
+                            let _unused = used_reg.insert(RegisterId::temp(*bid, iid));
+                        }
                     }
                     Instruction::TypeCast {
                         value,
@@ -187,10 +188,13 @@ impl Optimize<FunctionDefinition> for DeadcodeInner {
             for (iid, instr) in block.instructions.iter().enumerate().rev() {
                 let temp = RegisterId::temp(*bid, iid);
 
-                let side_effect = matches!(
-                    instr.deref(),
-                    Instruction::Store { .. } | Instruction::Call { .. }
-                );
+                let side_effect = match instr.deref() {
+                    Instruction::Store { .. } => true,
+                    // Unit-returning calls are always side-effectful (kept regardless).
+                    // Non-unit calls are removable if their result register is unused.
+                    Instruction::Call { return_type, .. } => *return_type == Dtype::unit(),
+                    _ => false,
+                };
 
                 // "사용되었거나", "side-effect 있거나" → 유지
                 if used_reg.contains(&temp) || side_effect {
@@ -241,12 +245,8 @@ impl Optimize<FunctionDefinition> for DeadcodeInner {
         }
 
         // Re-subtract used_reg: operands of dead instructions may also be used by live ones
-        let unused_reg = unused_reg
-            .difference(&used_reg)
-            .cloned()
-            .collect::<HashSet<_>>();
         let mut unused_reg = unused_reg
-            .difference(&call_reg)
+            .difference(&used_reg)
             .cloned()
             .collect::<HashSet<_>>();
 
